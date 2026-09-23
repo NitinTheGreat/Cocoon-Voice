@@ -124,8 +124,13 @@ class SessionMetrics:
         if self._current is not None and self._current.outcome == "open":
             self._current.outcome = outcome
             self._flush(self._current)
-            log.info("turn %s outcome=%s timings_ms=%s", self._current.turn_id, outcome,
-                     self._current.durations_ms())
+            if outcome.startswith("gated:"):
+                # routed away before the brain: not an answered turn (the route line says why)
+                log.info("turn %s not answered (%s)", self._current.turn_id, outcome)
+            else:
+                # generation outcome only; playback status is logged separately ("playback ...")
+                log.info("turn %s generation=%s timings_ms=%s", self._current.turn_id, outcome,
+                         self._current.durations_ms())
         self._current = None
 
     def _flush(self, turn: TurnTimeline) -> None:

@@ -101,8 +101,10 @@ class VoiceSettings(BaseSettings):
                                 min_length=1, max_length=200)
 
     # ---------------------------------------------------------------- wake gate
-    wake_mode: Literal["transcript", "livekit_wakeword", "porcupine"] = Field(default="transcript",
-                                                                              alias="WAKE_MODE")
+    # off = no wake gating (local Playground/diagnostic mode): starts ACTIVE, never re-arms, every final
+    # transcript goes to the agent. Rejected in VOICE_PROFILE=production.
+    wake_mode: Literal["transcript", "livekit_wakeword", "porcupine", "off"] = Field(default="transcript",
+                                                                                     alias="WAKE_MODE")
     wake_phrase: str = Field(default="Hey Cat", alias="WAKE_PHRASE")
     wake_active_timeout_s: float = Field(default=45.0, alias="WAKE_ACTIVE_TIMEOUT_SECONDS", ge=5, le=600)
     wake_debounce_s: float = Field(default=2.0, alias="WAKE_DEBOUNCE_SECONDS", ge=0, le=30)
@@ -206,6 +208,15 @@ class VoiceSettings(BaseSettings):
     def acoustic_wake(self) -> bool:
         return self.wake_mode in ("livekit_wakeword", "porcupine")
 
+    def wake_mode_description(self) -> str:
+        return {
+            "off": "off (no wake gating: starts ACTIVE, never re-arms, every final transcript reaches the agent)",
+            "transcript": f"transcript (say '{self.wake_phrase}' first; follow-ups accepted for "
+                          f"{self.wake_active_timeout_s:.0f}s of inactivity, then re-armed)",
+            "livekit_wakeword": "livekit_wakeword (acoustic keyword spotting; STT opens after the keyword)",
+            "porcupine": "porcupine (acoustic keyword spotting; STT opens after the keyword)",
+        }[self.wake_mode]
+
     def wake_model_mismatch(self) -> str | None:
         """Warn when the keyword model's name does not match WAKE_PHRASE (e.g. testing with hey_livekit)."""
         from .wake import normalize
@@ -263,8 +274,9 @@ class VoiceSettings(BaseSettings):
             elif self.porcupine_keyword_path.suffix.lower() != ".ppn":
                 issues.append("PORCUPINE_KEYWORD_PATH must be a Porcupine .ppn keyword file")
         if self.voice_profile == "production":
-            if self.wake_mode == "transcript":
-                issues.append("VOICE_PROFILE=production rejects WAKE_MODE=transcript (idle speech is streamed to STT)")
+            if self.wake_mode in ("transcript", "off"):
+                issues.append(f"VOICE_PROFILE=production rejects WAKE_MODE={self.wake_mode} "
+                              "(idle speech is streamed to STT)")
             if self.noise_cancellation != "krisp" or self.allow_degraded_audio:
                 issues.append("VOICE_PROFILE=production requires NOISE_CANCELLATION=krisp and ALLOW_DEGRADED_AUDIO=false")
             if self.preemptive_generation:

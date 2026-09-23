@@ -2,8 +2,9 @@
 
 Pure logic with an injected clock so it can be tested without audio. The worker feeds it
 finalized user utterances (transcript mode) or acoustic detections (livekit-wakeword or Porcupine) and acts
-on the returned Decision. Matching is exact after case/punctuation normalisation: no fuzzy
-matching, so "hey cap" or "hey cats" never wake the assistant. Activation is not authentication.
+on the returned Decision. Matching compares normalised words (case, punctuation and whitespace removed) at the
+start of the utterance: no fuzzy matching, so "hey cap" or "hey cats" never wake the assistant. Mode "off"
+disables gating entirely (always ACTIVE). Activation is not authentication.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ class WakeState(str, enum.Enum):
 Action = Literal["ignore", "ack", "respond", "stop", "sleep"]
 
 _WORD = re.compile(r"[a-z0-9']+")
+_WORD_SPAN = re.compile(r"[A-Za-z0-9'’]+")  # the same words, located in the original (un-normalised) text
 
 STOP_COMMANDS = {"stop", "stop talking", "stop please", "please stop", "stop it", "cat stop", "okay stop",
                  "ok stop", "that's enough", "be quiet", "quiet", "wait", "wait wait", "hold on", "hang on",
@@ -54,17 +56,23 @@ class WakeMatcher:
         self.words = normalize(phrase).split()
         if not self.words:
             raise ValueError("wake phrase has no words")
-        sep = r"[\s,.!?;:\-\"'“”]+"
-        body = sep.join(re.escape(w) for w in self.words)
-        # leading, word-bounded phrase followed by end or a separator (so "hey cats" does not match)
-        self._re = re.compile(rf"^[\s,.!?;:\-\"'“”]*{body}(?=$|[\s,.!?;:\-\"'“”])", re.IGNORECASE)
 
     def split(self, text: str) -> tuple[bool, str]:
-        """(matched, remainder) where remainder keeps original wording minus the leading phrase."""
-        m = self._re.match(text.replace("’", "'"))
-        if not m:
+        """(matched, remainder): the first words, normalised, must equal the phrase words exactly.
+
+        Any punctuation or whitespace between/around the words is accepted ("Hey, Cat!", "hey—cat").
+        Whole words only, so "hey cats" or "hey cat's" do not match. The remainder keeps the original
+        wording of the request after the phrase.
+        """
+        n = len(self.words)
+        spans = []
+        for m in _WORD_SPAN.finditer(text):
+            spans.append(m)
+            if len(spans) == n:
+                break
+        if len(spans) < n or [normalize(m.group()).strip("'") for m in spans] != self.words:
             return False, text.strip()
-        rest = text[m.end():].lstrip(" \t,.!?;:-\"'“”").strip()
+        rest = text[spans[-1].end():].lstrip(" \t\r\n,.!?;:-–—…\"'“”").strip()
         return True, rest
 
 
@@ -73,19 +81,21 @@ class WakeGate:
         self,
         phrase: str,
         *,
-        mode: Literal["transcript", "acoustic", "porcupine"] = "transcript",
+        mode: Literal["transcript", "acoustic", "porcupine", "off"] = "transcript",
         active_timeout_s: float = 45.0,
         debounce_s: float = 2.0,
         echo_guard_s: float = 0.6,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.matcher = WakeMatcher(phrase)
-        self.mode = "transcript" if mode == "transcript" else "acoustic"  # "porcupine" kept as an alias
+        # "porcupine" is kept as an alias of "acoustic"
+        self.mode = mode if mode in ("transcript", "off") else "acoustic"
         self.active_timeout_s = active_timeout_s
         self.debounce_s = debounce_s
         self.echo_guard_s = echo_guard_s
         self._clock = clock
-        self.state = WakeState.ARMED
+        # off: no gating at all, so the session starts ACTIVE and nothing ever re-arms it
+        self.state = WakeState.ACTIVE if self.mode == "off" else WakeState.ARMED
         self._last_activity = clock()
         self._last_activation: float | None = None
         self._last_utterance: tuple[str, float] | None = None
@@ -108,7 +118,7 @@ class WakeGate:
     def check_timeout(self, *, busy: bool) -> bool:
         """ACTIVE -> ARMED after inactivity. Never while the agent speaks/thinks or a request is in flight."""
         now = self._clock()
-        if self.state != WakeState.ACTIVE:
+        if self.state != WakeState.ACTIVE or self.mode == "off":
             return False
         if busy:
             self._last_activity = now
@@ -196,6 +206,8 @@ class WakeGate:
         if norm in STOP_COMMANDS:
             return Decision("stop", reason="stop command", activated=activated)
         if norm in SLEEP_COMMANDS:
+            if self.mode == "off":  # nothing could wake it again: treat as a stop and stay ACTIVE
+                return Decision("stop", reason="sleep command (wake gating off: stays active)", activated=activated)
             self._set(WakeState.ARMED, "sleep command")
             return Decision("sleep", reason="sleep command", activated=activated)
         return Decision("respond", text=text, reason=reason, activated=activated)

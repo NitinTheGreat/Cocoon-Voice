@@ -61,7 +61,8 @@ class VoiceController:
                  keyword_engine: KeywordEngine | None = None, recorder: InputRecorder | None = None,
                  threaded_engine: bool = True):
         self.s = settings
-        self.gate = WakeGate(settings.wake_phrase, mode="acoustic" if settings.acoustic_wake else "transcript",
+        gate_mode = "off" if settings.wake_mode == "off" else ("acoustic" if settings.acoustic_wake else "transcript")
+        self.gate = WakeGate(settings.wake_phrase, mode=gate_mode,
                              active_timeout_s=settings.wake_active_timeout_s, debounce_s=settings.wake_debounce_s,
                              echo_guard_s=settings.wake_echo_guard_ms / 1000)
         self.phrases = phrases
@@ -212,6 +213,14 @@ class VoiceController:
     # ------------------------------------------------------------------ user turns (single submission path)
 
     async def on_user_turn(self, new_message: llm.ChatMessage) -> None:
+        try:
+            await self._route_turn(new_message)
+        except asyncio.CancelledError:
+            # the SDK replaced this turn (a newer final arrived) before routing finished
+            self._log_route("cancelled", "superseded before routing completed", new_message.text_content or "")
+            raise
+
+    async def _route_turn(self, new_message: llm.ChatMessage) -> None:
         text = new_message.text_content or ""
         self.turns_committed += 1
         self.interruption_pending = False
@@ -244,11 +253,18 @@ class VoiceController:
             log.debug("interrupt: %s", exc)
 
     def _log_decision(self, action: str, reason: str, text: str) -> None:
-        if self.s.log_transcripts:
-            log.info("wake decision=%s reason=%s state=%s text=%r", action, reason, self.gate.state.value, text)
+        if action == "respond":
+            route = "accepted"  # handed to the brain; generation and playback are logged separately
+        elif action == "ignore":
+            route = "empty" if reason == "empty" else "wake-gated"
         else:
-            log.info("wake decision=%s reason=%s state=%s chars=%d", action, reason, self.gate.state.value,
-                     len(text))
+            route = f"command:{action}"  # ack / stop / sleep: handled locally, never sent to the brain
+        self._log_route(route, reason, text, action=action)
+
+    def _log_route(self, route: str, reason: str, text: str, *, action: str | None = None) -> None:
+        detail = f"text={text!r}" if self.s.log_transcripts else f"chars={len(text)}"
+        log.info("turn route=%s reason=%s action=%s state=%s wake=%s %s", route, reason, action or "-",
+                 self.gate.state.value, self.s.wake_mode, detail)
 
     # ------------------------------------------------------------------ brain (llm_node)
 
@@ -440,8 +456,9 @@ class VoiceController:
 
     def is_busy(self) -> bool:
         """Never expire the wake window while listening, generating, speaking or recovering an interruption."""
+        sdk_state = getattr(self.session, "agent_state", None)
         return (self._agent_speaking or self._user_speaking or self.llm_in_flight > 0
-                or self.interruption_pending)
+                or self.interruption_pending or sdk_state in ("thinking", "speaking"))
 
     async def _timeout_loop(self) -> None:
         while True:
@@ -581,6 +598,8 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
     if settings.wake_mode == "transcript":
         log.warning("WAKE_MODE=transcript: room audio is streamed to AssemblyAI even while armed (billed); "
                     "this is Playground test mode, not on-device keyword spotting")
+    elif settings.wake_mode == "off":
+        log.warning("WAKE_MODE=off: no wake gating; every final transcript is answered (local Playground mode)")
     if noise.degraded:
         log.warning("AUDIO DEGRADED: %s", noise.effective)
     log.info("starting session room=%s participant=%s noise=%s wake=%s brain=%s:%s", ctx.room.name,
@@ -624,6 +643,8 @@ def main() -> None:
             log.warning("RECORD_AUDIO=true: participant input will be written locally (%d old file(s) removed)",
                         removed)
         log.info("effective config %s", settings.safe_summary())
+        log.info("effective wake mode: %s", settings.wake_mode_description())
+        log.info("transcript logging: %s", "ON (local only)" if settings.log_transcripts else "off")
     cli.run_app(build_server(settings))
 
 
