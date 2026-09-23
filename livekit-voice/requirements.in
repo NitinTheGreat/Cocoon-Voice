@@ -1,5 +1,9 @@
-# Top-level runtime deps for livekit-voice. Compile: uv pip compile --universal --python-version 3.11 requirements.in -o requirements.txt
-livekit-agents==1.8.2
+# Top-level runtime deps for livekit-voice (standalone voice phase).
+# Compile: uv pip compile --universal --python-version 3.11 requirements.in -o requirements.txt
+livekit-agents[assemblyai,cartesia,google,silero]==1.8.2
+livekit-plugins-krisp==0.4.2
+livekit-plugins-noise-cancellation==0.3.2
+pvporcupine==4.0.3
 httpx
 pydantic
 pydantic-settings

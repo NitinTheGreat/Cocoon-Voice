@@ -8,10 +8,10 @@ venv/
 build/
 dist/
 
-# Secrets: commit only .env.example
+# Secrets: commit only .env.example (every other .env* file stays private, including backups)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Service-owned SQLite data (langgraph-agent/data/)
 *.db
@@ -26,3 +26,12 @@ langgraph-agent/data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Claude Code personal project settings (attribution etc.)
+.claude/settings.local.json
+
+# livekit-voice local artefacts: phrase audio cache, opt-in recordings, metrics, wake keyword models
+livekit-voice/.cache/
+livekit-voice/recordings/
+livekit-voice/metrics/
+livekit-voice/keywords/*.ppn

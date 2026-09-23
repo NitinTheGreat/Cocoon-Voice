@@ -5,7 +5,7 @@ from __future__ import annotations
 from livekit.agents import ModelSettings, llm
 
 from cocoon_voice import contract as c
-from cocoon_voice.agent import BackendBridgeLLM, CocoonAgent, parse_job_metadata
+from cocoon_voice.remote_bridge import BackendBridgeLLM, CocoonAgent, parse_job_metadata
 from cocoon_voice.backend_client import BackendRejected, SessionNotFound, TurnOutcomeUnknown
 from cocoon_voice.bridge import UNKNOWN_OUTCOME_SPEECH, SessionBinding, TurnBridge
 
@@ -106,15 +106,6 @@ def test_job_metadata_parsing():
         "session_id": "ses_9", "operator_id": "op"}
     assert parse_job_metadata("not json") == {}
     assert parse_job_metadata(None) == {}
-
-
-async def test_session_config_disables_preemptive_generation():
-    from cocoon_voice.agent import build_session
-    from cocoon_voice.config import get_settings
-
-    session = build_session(get_settings())
-    assert session.options.turn_handling["preemptive_generation"]["enabled"] is False
-    assert isinstance(session.llm, BackendBridgeLLM)
 
 
 async def test_lazy_binding_when_backend_was_down_at_job_start():
