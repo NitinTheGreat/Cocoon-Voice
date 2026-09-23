@@ -112,14 +112,15 @@ def build_graph(store: Store, brain: Brain):
         r = state["route"]
         lessons = store.list_lessons()
         if r.get("training_action") == "assign":
-            assigned = {a.lesson_id for a in store.list_assignments(session.operator_id)}
+            assigned = {a.lesson_id for a in store.list_assignments(session)}
             lesson_id = r.get("lesson_id") or next((l.lesson_id for l in lessons if l.lesson_id not in assigned), None)
             if lesson_id and store.get_lesson(lesson_id):
                 assignment, created = store.assign_training(session, lesson_id, state["turn_id"])
-                action = s.TrainingAssignedAction(type="training_assigned", assignment=assignment, created=created)
-                return {"actions": [action.model_dump(mode="json")]}
+                if assignment is not None:  # None: a withheld legacy record holds this pair; report status instead
+                    action = s.TrainingAssignedAction(type="training_assigned", assignment=assignment, created=created)
+                    return {"actions": [action.model_dump(mode="json")]}
         action = s.TrainingStatusAction(
-            type="training_status", assignments=store.list_assignments(session.operator_id), available_lessons=lessons
+            type="training_status", assignments=store.list_assignments(session), available_lessons=lessons
         )
         return {"actions": [action.model_dump(mode="json")]}
 

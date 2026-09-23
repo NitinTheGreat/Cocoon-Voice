@@ -2,6 +2,85 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## I02b: actor authentication and `/v1/me`
+
+- **Recorded:** 2026-09-24. Branch `backend`, base `2ea49eb`. That commit merges `main` (voice PR #2, `livekit-voice/**` only) on top of I02a `ec9f02c`. Chain verified: `6bcbf88` ← `ec9f02c` ← `2ea49eb` = HEAD. Backend and contract files at `2ea49eb` are identical to `ec9f02c`.
+- **Scope:** the actor-identity slice of I02. **I02 is still partial.** Consent (I02c) and the command/action ledger with recovery (I02d) are not done.
+- **Commit:** `feat(auth): add scoped actor tokens and current-principal endpoint`; see `git log -1 -- langgraph-agent/docs/HANDOFF.md`.
+
+### What changed
+
+- **Schema version 3** (`actor_tokens`). New `principals` table (operator or supervisor, immutable; an operator principal is bound to one catalog operator and the snapshot it was verified against; at most one principal per operator). New `actor_tokens` table: SHA-256 digest only, scopes, issue/expiry; only revocation can change, once; no deletes. All v2 records, catalog snapshots and the session immutability rule are unchanged; this was tested on a populated v2 database.
+- **Tokens.**
+  - Format: `cct_` + `secrets.token_urlsafe(32)`, i.e. 256 random bits.
+  - Lifetime: 5 minutes to 30 days (default 12 h), on the wall clock. Data time and client timestamps never affect it.
+  - Scopes: operator `me:read sessions:own`, supervisor `me:read`. The scopes a token presents are intersected with its role's scopes, so a token can never widen itself.
+  - Expiry and revocation are checked on every request, with no cache.
+- **Service credential** (`COCOON_SERVICE_TOKEN`): unchanged. It is compared in constant time before any token lookup and never stored. An unrecognised `cct_` token never falls back to service access.
+- **Resolver.**
+  - Exactly one `Authorization` header; a credential of at most 256 characters.
+  - Every failure gets the same sanitized 401. A token-store error gets 503 `auth_unavailable` and never succeeds.
+  - Route dependencies deny before the body is parsed or any tool runs.
+- **CLI** `scripts/actor_tokens.py` (`issue`, `list`, `show`, `revoke`):
+  - The token is written once to a new `--out` file. It refuses to overwrite, and it revokes the new token if the file cannot be written.
+  - The token is never printed. `list` and `show` never show the token or its digest. Revocation is by `token_id`.
+- **Access matrix (implemented):**
+
+| Operation | Service | Operator token | Supervisor token |
+|---|---|---|---|
+| `/healthz`, `/readyz` | public | public | public |
+| `GET /v1/me` | service principal | own principal + own verified sessions | own principal |
+| `POST /v1/sessions` | unchanged | 403 | 403 |
+| turns (POST, GET), state, events | unchanged | own `catalog_verified` session, else 404 | 403 |
+| telemetry, event delivery | unchanged | 403 | 403 |
+
+- **Ownership checked for operators.**
+  - **Parent session:** it must be `catalog_verified` and its stored `operator_id` must equal the token's operator; otherwise the same 404 as a missing session.
+  - **Children:** turn and event lookups stay inside that session.
+  - **Tools:** incidents, alerts, announcements, pending questions and the conversation checkpoint are per session. The incident tool writes under the trusted session, not utterance text; request bodies with unknown fields (`operator_id`, `session_id`, `role`) are 422.
+  - **Training (a fix found during I02b testing):** assignments are keyed by an operator string that legacy sessions may share. An assignment is now visible and reusable only when its owning session has the **same binding class** as the reader.
+    - A verified operator never sees or receives a legacy record.
+    - A legacy session no longer sees a verified operator's assignment. That is a narrowing of the service's view of legacy sessions, and it only applies when a legacy session's free-text operator equals a catalog ID.
+    - A pair held by the other class is withheld (the tool answers with training status) rather than handed over.
+- **Shared content, deliberately not scoped:** the seed task list (T-101..T-103) and the lesson catalogue. They have no owner and no mutation path; operator assignments come in I07A. No actor operation on the seven routes is withheld beyond the matrix above.
+- **Legacy sessions:** service-only. No actor adopts them through a name match, and their association is unchanged.
+- **`GET /v1/me`:** `Cache-Control: no-store`. It returns kind, subject, operator, scopes, `token_id` (non-secret) and expiry. `site_ids` is always empty. Associations are only the operator's own verified sessions; catalog membership is never listed.
+
+### Contracts
+
+- **Runtime `contracts/openapi.yaml` (additive):**
+  - new path `GET /v1/me` and schemas `MeResponse` and `SessionAssociation`;
+  - new error codes `forbidden` and `auth_unavailable`;
+  - 403 (and 503 `auth_unavailable`) responses documented on the seven routes;
+  - the security scheme text describes the two alternative credentials.
+  - No property was removed, and required lists are unchanged.
+- **Proposed contract:** `GET /v1/me` is promoted to `implemented` (stage I02b), and the proposed `MeResponse` now *is* the runtime model. All other proposed routes stay proposed and unregistered.
+- **Docs:** `API_CONTRACT.md` has a new "Actor access (I02b)" section, the updated auth rule and error table, and the TLS note.
+
+### Checks run and observed results
+
+| Check | Result |
+| --- | --- |
+| `COCOON_LLM_MODE=mock python -m pytest -q` | **270 passed, 1 skipped.** The skip is the Windows symlink case, still not exercised on this machine. |
+| New `tests/test_auth.py` | 22 passed. Version-2 upgrade, CLI and refusal cases, credential validation, expiry via an injected clock, live revocation, fail-closed token store, the full matrix, `/v1/me` for each principal, two-operator isolation, nested state and training-tool scoping, legacy sessions, and catalog loss after issuance. |
+| Updated tests | `test_migrations.py` and `test_sessions.py` now expect schema version 3 (intentional). |
+| `export_openapi.py --check` / `export_proposed_contract.py --check` | Both up to date |
+| Real processes (temp DB, random service secret, port 8768, local dataset) | CLI issued two operator tokens and one supervisor token (values never printed) and refused an unknown operator. Smoke passed. Operator 1: `/me` 200 with its own sessions and `no-store`; own state 200; own turn 200; operator 2's state and turn 404; session create and telemetry 403. Supervisor: `/me` 200 with no sites or associations; state 403. Service `/me` returns the service principal. **Revoked operator 1 while running → next request 401.** |
+| Orderly restart on the same DB | Revoked token still 401; operator 2, supervisor and service still 200; `list` shows 1 revoked and 2 active; 1 incident for operator 1, 0 for operator 2; schema 3. No plaintext token in the DB files; 0 secrets in server logs or CLI output. Temp data, tokens and logs deleted. |
+
+**Not proven:** an abrupt crash, in-flight turn behaviour at revocation (a request that already passed authentication completes), long-lived stream revalidation (I08), and anything to do with site scoping, consent or client integration. The Windows ACL of token files is inherited, not restricted.
+
+**Hard-kill observation from I02a:** still unresolved and documented in `docs/MIGRATIONS.md` → "Recovery notes". It was not reproduced during I02b, which used orderly stops only.
+
+### Next increment
+
+**I02c: consent records and enforcement.**
+- Operator-owned, purpose-specific consent grants and revocations (`vitals_processing`, `risk_sharing_supervisor`, `camera_drowsiness`) with notice version and expected version.
+- `GET`/`POST /v1/operators/{operator_id}/consents`: the operator token only for writes, and a supervisor gets 403.
+- An enforcement hook that later wellbeing and risk projections must call. Missing or revoked consent means unavailable, never low risk.
+
+The command/action ledger and recovery (I02d) stays separate. Supervisor site grants wait for DG-01 or a documented trusted site source.
+
 ## I02a: versioned storage and catalog-bound sessions
 
 - **Recorded:** 2026-09-24. Branch `backend`, base `6bcbf88` (I01). Chain verified: `f8afb4d` ← `6bcbf88` = HEAD before this commit, and no later commits existed.

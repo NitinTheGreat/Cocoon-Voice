@@ -62,8 +62,10 @@ ProposedErrorCode = Literal[
     "llm_unavailable", "turn_failed", "internal_error",
     # implemented in I02a (runtime): new-session catalog admission
     "unknown_machine", "unknown_operator", "catalog_unavailable",
-    # proposed additions (additive per API_CONTRACT.md)
+    # implemented in I02b (runtime): actor authentication
     "forbidden",               # 403: authenticated principal lacks scope for this resource
+    "auth_unavailable",        # 503: token store unreadable; never treated as success
+    # proposed additions (additive per API_CONTRACT.md)
     "invalid_cursor",          # 422: negative, future, foreign or inconsistent after/Last-Event-ID
     "replay_expired",          # 410: required stream history is past retention; use recovery.status_url
     "version_conflict",        # 409: expected_version is stale

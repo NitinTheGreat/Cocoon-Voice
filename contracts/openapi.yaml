@@ -38,6 +38,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadyResponse'
+  /v1/me:
+    get:
+      tags:
+      - identity
+      summary: Me
+      operationId: me_v1_me_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - HTTPBearer: []
   /v1/sessions:
     post:
       tags:
@@ -58,13 +110,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/Session'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -83,6 +142,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'catalog_unavailable: no verified catalog loaded; new sessions refused; or auth_unavailable:
+            the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '200':
           description: Existing session for this client_session_key
           content:
@@ -91,12 +157,6 @@ paths:
                 $ref: '#/components/schemas/Session'
         '409':
           description: Key already bound to a different room/participant/operator/machine/site/shift
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          description: 'catalog_unavailable: no verified catalog loaded; new sessions refused'
           content:
             application/json:
               schema:
@@ -132,13 +192,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/TurnResult'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -155,6 +222,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'LLM unavailable or turn timed out (retryable, same turn_id); or auth_unavailable: the token
+            store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '202':
           description: Same turn_id is still processing. Wait retry_after_ms (also the Retry-After header, seconds)
             then GET poll_url (also the Location header). Do not resubmit with a new turn_id.
@@ -164,12 +238,6 @@ paths:
                 $ref: '#/components/schemas/TurnResult'
         '409':
           description: turn_id reused with a different text or source
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          description: LLM unavailable or turn timed out (retryable, same turn_id)
           content:
             application/json:
               schema:
@@ -203,13 +271,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/TurnResult'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -222,6 +297,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
           content:
             application/json:
               schema:
@@ -249,13 +330,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionState'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -268,6 +356,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
           content:
             application/json:
               schema:
@@ -301,13 +395,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/TelemetryResult'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -320,6 +421,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
           content:
             application/json:
               schema:
@@ -372,13 +479,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventsPage'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -391,6 +505,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
           content:
             application/json:
               schema:
@@ -430,13 +550,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeliveryRecord'
         '401':
-          description: Missing or invalid service bearer token
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Unknown session or resource
+          description: Unknown session or resource; also returned for a session an operator does not own
           content:
             application/json:
               schema:
@@ -449,6 +576,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
           content:
             application/json:
               schema:
@@ -663,6 +796,8 @@ components:
           - unknown_machine
           - unknown_operator
           - catalog_unavailable
+          - forbidden
+          - auth_unavailable
           title: Code
         message:
           type: string
@@ -848,6 +983,71 @@ components:
       - summary
       - duration_minutes
       title: Lesson
+    MeResponse:
+      properties:
+        subject_id:
+          type: string
+          title: Subject Id
+          description: '`service` for the service credential; otherwise the principal_id.'
+        principal_kind:
+          type: string
+          enum:
+          - service
+          - operator
+          - supervisor
+          title: Principal Kind
+        operator_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operator Id
+          description: Catalog operator ID of an operator principal.
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        site_ids:
+          items:
+            type: string
+          type: array
+          title: Site Ids
+          description: 'Granted sites. Always empty in I02b: no site grants exist yet.'
+        allowed_associations:
+          items:
+            $ref: '#/components/schemas/SessionAssociation'
+          type: array
+          title: Allowed Associations
+          description: 'Operator: own catalog_verified sessions. Service and supervisor: empty (the service is trusted
+            for all sessions it manages; supervisors have no session access in I02b).'
+        scopes:
+          items:
+            type: string
+          type: array
+          title: Scopes
+          description: Actor token scopes; empty for the service.
+        token_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Id
+          description: Non-secret record ID of the presented actor token.
+        token_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Token Expires At
+          description: Null for the service credential.
+      additionalProperties: false
+      type: object
+      required:
+      - subject_id
+      - principal_kind
+      - site_ids
+      - allowed_associations
+      title: MeResponse
+      description: GET /v1/me. Never contains a bearer token, its digest or service configuration.
     NextTaskAction:
       properties:
         type:
@@ -1039,6 +1239,40 @@ components:
       - state_version
       - created_at
       title: Session
+    SessionAssociation:
+      properties:
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        shift_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Shift Id
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+          description: The owned session this association comes from.
+      additionalProperties: false
+      type: object
+      required:
+      - operator_id
+      - machine_id
+      title: SessionAssociation
+      description: 'An association the caller actually holds. For an operator: one of their own catalog_verified
+        sessions,
+
+        created by the trusted service. Catalog membership alone is never listed as an association.'
     SessionCreateRequest:
       properties:
         client_session_key:
@@ -1480,5 +1714,7 @@ components:
   securitySchemes:
     HTTPBearer:
       type: http
-      description: Service token from COCOON_SERVICE_TOKEN
+      description: 'Exactly ONE of: the trusted service credential (COCOON_SERVICE_TOKEN; server-side callers only,
+        never embedded in Android or React), or an actor token (`cct_...`) issued locally by scripts/actor_tokens.py
+        for an operator or supervisor principal. Access per route is listed in API_CONTRACT.md.'
       scheme: bearer

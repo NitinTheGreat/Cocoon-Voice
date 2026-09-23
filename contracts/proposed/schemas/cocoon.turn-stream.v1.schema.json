@@ -373,6 +373,7 @@
             "unknown_operator",
             "catalog_unavailable",
             "forbidden",
+            "auth_unavailable",
             "invalid_cursor",
             "replay_expired",
             "version_conflict",

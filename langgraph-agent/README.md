@@ -15,10 +15,12 @@ cocoon_agent/
   migrations.py    versioned cocoon.db migrations (schema_migrations ledger); see docs/MIGRATIONS.md
   catalog.py       verified read-only machine/operator catalog + trusted site/shift bindings
   backup.py        consistent SQLite backups (Online Backup API)
+  auth.py          actor principals, opaque token generation/digests, lifetimes
+  token_admin.py   issue/list/show/revoke logic behind scripts/actor_tokens.py
   rules.py         PROTOTYPE seatbelt rule on simulated telemetry
   contract/        PROPOSED target contract models (I01); exported to ../contracts/proposed, never imported by the app
-scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, backup_db.py, export_openapi.py,
-                   export_proposed_contract.py
+scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, backup_db.py, actor_tokens.py,
+                   export_openapi.py, export_proposed_contract.py
 tests/             contract drift, API behaviour, resilience/restart, mock brain, offline live-brain, proposed-contract,
                    migrations, catalog and session admission (fixtures/: tiny synthetic catalog, NOT the dataset)
 data/              cocoon.db + checkpoints.db (git-ignored, created on first start)
@@ -106,10 +108,45 @@ The simulator resolves the session with the same `client_session_key` the worker
 - Business records go to `data/cocoon.db`: sessions, turns, tasks, lessons, incidents, training assignments, alerts, telemetry, announcements and deliveries. Migrations and seeding are idempotent and run on every start. Verified catalog snapshots are recorded in `catalog_versions*`, and each new session stores the snapshot it was admitted under.
 - The pending question and the latest alert are explicit graph state. Telemetry transitions write the latest alert into the checkpoint as well as the database, so a later "Why?" resolves against it.
 
+## Actor tokens (local prototype auth, I02b)
+
+The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.
+
+The CLI works on `COCOON_DATA_DIR/cocoon.db` (from `.env` or the environment), and its first output line names the database. The token is written once to a **new** file given with `--out`; it is never printed, logged or stored (only its SHA-256 is). Put the file under `data/tokens/`, which is git-ignored. On Windows, `os.open` mode bits do not restrict readers, so the file inherits the folder's ACL; keep it inside your own user profile.
+
+Bash (from `langgraph-agent/`):
+
+```bash
+python scripts/actor_tokens.py issue --role operator --operator-id OP_DEMO_1_1 --out data/tokens/op-demo-1-1.token
+python scripts/actor_tokens.py issue --role supervisor --principal-id sup-demo-1 --out data/tokens/sup-demo-1.token --ttl-hours 4
+python scripts/actor_tokens.py list                      # metadata only: token_id, principal, expiry, status
+python scripts/actor_tokens.py revoke tok_0123456789abcdef --reason "demo finished"   # idempotent
+curl -s -H "Authorization: Bearer $(cat data/tokens/op-demo-1-1.token)" http://127.0.0.1:8000/v1/me
+```
+
+PowerShell (from `langgraph-agent\`):
+
+```powershell
+python scripts\actor_tokens.py issue --role operator --operator-id OP_DEMO_1_1 --out data\tokens\op-demo-1-1.token
+$H = @{ Authorization = "Bearer $((Get-Content data\tokens\op-demo-1-1.token -Raw).Trim())" }
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/me -Headers $H
+python scripts\actor_tokens.py revoke tok_0123456789abcdef
+```
+
+- **Local tester workflow.**
+  1. Issue an operator token with a catalog operator ID.
+  2. The trusted service creates that operator's session with `POST /v1/sessions`, for example the voice worker or `scripts/smoke.py --operator OP_DEMO_1_1`.
+  3. `GET /v1/me` with the operator token lists the operator's own `catalog_verified` sessions (`allowed_associations[].session_id`).
+  4. Use that session's turns/state/events routes with the operator token.
+
+  Always send the token in the `Authorization` header, never in a URL.
+- **Operator tokens** reach only their own `catalog_verified` sessions. Any other session is 404. They cannot create sessions or post telemetry or delivery reports (403). **Supervisor tokens** can only call `GET /v1/me` for now (no site grants exist). The full matrix is in `../API_CONTRACT.md` → "Actor access (I02b)".
+- **Lifetime** is 5 minutes to 30 days, 12 h by default, on the wall clock. Expiry and revocation are checked on every request. A principal's role or operator can never be changed by issuing another token. Operator issuance needs the verified catalog; supervisor issuance does not.
+
 ## Tests
 
 ```
-pytest                                  # 248 tests + 1 skipped on Windows without symlink rights; no credentials, no network
+pytest                                  # 270 tests + 1 skipped on Windows without symlink rights; no credentials, no network
 python scripts/export_openapi.py --check           # runtime contract (what is served)
 python scripts/export_proposed_contract.py --check  # proposed target contract (not served)
 ```
@@ -139,6 +176,14 @@ The tests cover:
   - catalog unavailability;
   - version pinning across catalog changes.
 - The local dataset check runs only when `../Cocoon_Dataset_v1` exists.
+- Actor auth (`tests/test_auth.py`):
+  - upgrade of a populated v2 database, and no plaintext tokens stored;
+  - CLI issue/list/show/revoke and every refusal case;
+  - missing, malformed, wrong, expired (injected wall clock) and revoked credentials, duplicate headers, and a failing token store (503);
+  - the full route matrix per role and `/v1/me` for each principal;
+  - two-operator isolation (URL tampering, body overrides, utterance text, nested state, the training tool);
+  - legacy sessions stay service-only;
+  - catalog loss after issuance.
 
 ## Environment variables
 
