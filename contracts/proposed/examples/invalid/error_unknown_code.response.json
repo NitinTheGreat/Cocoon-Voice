@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "machine_missing",
+    "message": "x",
+    "retryable": false,
+    "request_id": "r"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "session_id": "ses_fixture_0001",
+  "turn_id": "turn_fixture_001",
+  "status": "cancelled",
+  "speech": null,
+  "actions": [],
+  "state_version": 5,
+  "llm_mode": "mock",
+  "error": null,
+  "retry_after_ms": null,
+  "poll_url": null,
+  "created_at": "2026-08-24T06:40:00Z",
+  "completed_at": null,
+  "response_id": "resp_fixture_001",
+  "action_results": [
+    {
+      "action_id": "act_fixture_001",
+      "action_name": "log_incident",
+      "status": "completed",
+      "record_id": "INC-FIXTURE-0001",
+      "summary": "Incident saved: hydraulic hose leak on the boom.",
+      "details": {
+        "kind": "incident",
+        "incident_id": "INC-FIXTURE-0001",
+        "state": "confirmed",
+        "created": true
+      }
+    }
+  ],
+  "generated_speech": "I've logged ",
+  "last_sequence": 5,
+  "replay_available_until": "2026-08-24T06:55:05Z"
+}

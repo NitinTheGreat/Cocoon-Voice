@@ -421,7 +421,7 @@ In the future integrated voice policy, trusted critical announcements may bypass
 
 ### Additive operator, supervisor and sync contract
 
-The existing twelve session/turn/event routes above remain available. Add the following capabilities without a shared runtime package or direct database access. Preserve any already compatible canonical route names; otherwise adopt these paths and commit their schemas before clients implement them. These are specifications to implement, not a claim that these routes exist today.
+Of the twelve session/turn/event routes above, the seven JSON routes are implemented and must remain available; the five streaming/control routes are specified in the I01 proposed contract (`contracts/proposed/`) and implemented in I08. Add the following capabilities without a shared runtime package or direct database access. Preserve any already compatible canonical route names; otherwise adopt these paths and commit their schemas before clients implement them. These are specifications to implement, not a claim that these routes exist today.
 
 | Method/path | Caller and behavior |
 | --- | --- |

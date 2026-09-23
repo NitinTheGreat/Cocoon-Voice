@@ -1,0 +1,26 @@
+{
+  "operator_id": "OP_DEMO_1_1",
+  "version": 3,
+  "consents": [
+    {
+      "purpose": "vitals_processing",
+      "status": "granted",
+      "notice_version": "notice-fixture-1",
+      "effective_at": "2026-08-24T05:55:00Z",
+      "is_synthetic_demo_record": true
+    },
+    {
+      "purpose": "risk_sharing_supervisor",
+      "status": "revoked",
+      "notice_version": "notice-fixture-1",
+      "effective_at": "2026-08-24T05:55:00Z",
+      "revoked_at": "2026-08-24T06:46:30Z",
+      "is_synthetic_demo_record": true
+    },
+    {
+      "purpose": "camera_drowsiness",
+      "status": "not_set",
+      "is_synthetic_demo_record": true
+    }
+  ]
+}

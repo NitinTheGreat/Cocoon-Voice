@@ -1,0 +1,13 @@
+{
+  "action_id": "act_fixture_002",
+  "action_name": "apply_schedule",
+  "status": "completed",
+  "record_id": "APR-FIXTURE-0001",
+  "summary": "Schedule applied.",
+  "details": {
+    "kind": "approval_request",
+    "approval_id": "APR-FIXTURE-0001",
+    "approval_status": "pending",
+    "requested_action": "notify_supervisor"
+  }
+}

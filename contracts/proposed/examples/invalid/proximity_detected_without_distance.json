@@ -1,0 +1,24 @@
+{
+  "schema_version": "cocoon.telemetry.v2",
+  "batch_id": "b2",
+  "observations": [
+    {
+      "kind": "proximity",
+      "observation_id": "obs_fixture_003",
+      "observed_at": "2026-08-24T06:44:01Z",
+      "machine_id": "EXC_DEMO_001",
+      "quality": "degraded",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "detector_id": "det_fixture_rear",
+      "entity_id": "ent_fixture_person_1",
+      "entity_type": "person",
+      "detection_state": "detected",
+      "distance_m": null,
+      "distance_uncertainty_m": 0.8,
+      "bearing_deg": 175.0
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "cocoon.turn-stream.v1",
+  "session_id": "ses_fixture_0001",
+  "turn_id": "turn_fixture_001",
+  "response_id": "resp_fixture_001",
+  "event_id": "turn_fixture_001:3",
+  "sequence": 3,
+  "created_at": "2026-08-24T06:40:03Z",
+  "type": "speech.delta",
+  "data": {
+    "text": ""
+  }
+}

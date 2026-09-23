@@ -1,7 +1,7 @@
 # Cocoon backend feature matrix
 
 Authority: `BACKEND_IMPLEMENTATION_PLAN.md` revision 2.1, section 2 (filled Review 1 form, fields F10–F16).
-Baseline audited in I00 on 2026-09-24 against branch `backend`, base commit `ee83254`.
+Baseline audited in I00 on 2026-09-24 against branch `backend`, base commit `ee83254`. Contract readiness added in I01 on 2026-09-24 (base `f8afb4d`).
 
 ## How to read this file
 
@@ -12,6 +12,8 @@ Baseline audited in I00 on 2026-09-24 against branch `backend`, base commit `ee8
 - Other owners: **Voice** = `livekit-voice/` owner; **Android** = Cocoon-App (separate repo); **Supervisor UI** = React/Tailwind client; **Data** = dataset/rules stream.
 
 No row below is `verified` at I00. The existing backend is a working v1 voice-contract prototype (7 JSON routes, mock/live router, SQLite, one prototype seatbelt rule). It predates the filled form, so it does not satisfy any form requirement in full.
+
+I01 froze a **proposed** target contract for these requirements (see [Contract readiness after I01](#contract-readiness-after-i01)). Contract readiness is tracked separately: a schema, fixture or passing contract check never changes a row's implementation status.
 
 ## Five required outcomes
 
@@ -86,10 +88,62 @@ These are recorded, not fixed, in I00. The stage that resolves each one is named
 
 | Plan expectation | Actual checkout | Resolve in |
 | --- | --- | --- |
-| Live model is Vertex AI via ADC (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `VERTEX_MODEL`); no other provider key (plan section 7). | Live mode uses the Anthropic SDK (`AnthropicBrain`, `ANTHROPIC_API_KEY`, `COCOON_LLM_MODEL=claude-opus-5`). No Vertex dependency is in `requirements.txt`. | I04 (with the provider choice recorded before implementation) |
+| Live model is Vertex AI via ADC (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `VERTEX_MODEL`); no other provider key (plan section 7). | Live mode uses the Anthropic SDK (`AnthropicBrain`, `ANTHROPIC_API_KEY`, `COCOON_LLM_MODEL=claude-opus-5`). No Vertex dependency is in `requirements.txt`. | **Decided (I01): Vertex is the selected provider.** The Anthropic code is an implementation mismatch. It is replaced in I04, including model/version/access verification. The HTTP contract is provider-independent. |
 | Setting names `AGENT_MODE`, `DATABASE_PATH`, `DATASET_ROOT`, `SSE_*`, `TURN_DEADLINE_SECONDS`. | Existing names are `COCOON_LLM_MODE`, `COCOON_DATA_DIR`, `COCOON_TURN_TIMEOUT_SECONDS` etc. There is no dataset root setting. | I02 (keep compatible names, document the mapping) |
-| Unknown assets fail; session bound to a dataset machine/operator/shift/site. | Any non-empty `machine_id`/`operator_id` is accepted. Tasks are not bound to operator or machine. | I02, I03A |
+| Unknown assets fail; session bound to a dataset machine/operator/shift/site. | Any non-empty `machine_id`/`operator_id` is accepted (201). Tasks are not bound to operator or machine. | **Contract decided (I01):** 422 `unknown_machine` / `unknown_operator` as a documented, intentional tightening (API_CONTRACT.md). Enforced in I02 with the I03 catalog. Runtime still returns 201. |
 | Versioned SQLite migrations. | `CREATE TABLE IF NOT EXISTS` on every start; no migration versioning. | I02 |
-| Twelve session/turn/event routes (plan section 6). | Seven JSON `/v1` routes exist. The five streaming/cancel/delivery routes do not. | I01 (contract), I08 (implementation) |
+| Twelve session/turn/event routes (plan section 6). | Seven JSON `/v1` routes exist. The five streaming/cancel/delivery routes do not. | **Contract done (I01):** the five routes are specified in `contracts/proposed/openapi.json` as `proposed`, and the plan wording is corrected. Implemented in I08. |
 | `docs/FEATURE_MATRIX.md`, `HANDOFF.md`, `RECOVERY.md`, `MIGRATIONS.md`, `DEMO_RUNBOOK.md`. | Before I00 none existed. I00 adds this file, `DATA_GAPS.md` and `HANDOFF.md` under `langgraph-agent/docs/`. | I00 (this), later stages for the rest |
-| Root README describes the current phase as branch `voice`. | The `backend` branch contains the merged voice work (`ee83254`). The root README is shared and was left unchanged. | Coordinate with the voice owner |
+| Root README describes the current phase as branch `voice`. | The `backend` branch contains the merged voice work (`ee83254`). | **Fixed (I01):** narrow README edit. Voice setup text is unchanged. |
+
+## Contract readiness after I01
+
+`contract_proposed` means typed models, generated schemas and fixtures exist in `contracts/proposed/` and pass `tests/test_proposed_contract.py`. `partial_contract` means only some inputs are specified. `not_in_I01` means the contract belongs to the row's follow-on stage. **None of this is implementation.** Every row keeps its implementation status above.
+
+| ID | Contract | Main contract models (in `cocoon_agent/contract/`) |
+| --- | --- | --- |
+| REQ-01a | contract_proposed | `DailyTaskDashboard`, `TaskAssignment`, `ConditionsSnapshot`, `SessionStateTarget.dashboard` |
+| REQ-01b | contract_proposed | `AnnouncementEnvelope` type `shift_briefing` with `correlation.briefing_id` |
+| REQ-01c | contract_proposed | `Command` kinds `task.start`/`task.complete`, `CommandResult`, `PublicActionResult` `start_task`/`complete_task` |
+| REQ-02a | contract_proposed | `MachineStateObservation`, `MotionObservation`, `RulePolicyRef` family `seatbelt_engine_on`, `OperatorAlertView` |
+| REQ-02b | contract_proposed | `ApprovalRecord` + `EscalationPayload` (distinct episodes, window, rule version) |
+| REQ-02c | contract_proposed | `ProximityObservation` (distance, bearing, frame, detection state), family `proximity` |
+| REQ-02d | contract_proposed | `IncidentReport` (what/where/when/severity with reported/inferred basis), `incident.*` commands |
+| REQ-02e | contract_proposed | `IncidentReport` origin `auto_draft_from_episode`, `OperatorAlertView.linked_incident_draft_id` |
+| REQ-02f | contract_proposed | `ConditionsSnapshot`, `ConditionCheck`, `EnvironmentObservation` |
+| REQ-03a | contract_proposed | `ContentAsset`, `LessonVersion`, `GuidedStep`, `QuizAttempt`, `LessonProgress`, `GET /v1/content/{asset_id}` |
+| REQ-03b | contract_proposed | `LearnerProfile`, `LevelEvidence` (separate from `dataset_operator_skill`) |
+| REQ-03c | contract_proposed | `LessonAssignment` origin `behaviour_policy` with policy and episode |
+| REQ-04a | contract_proposed | idle fields of `MachineStateObservation`, `IdleReasonPayload`, families `prolonged_idle`/`idle_unbelted` |
+| REQ-04b | contract_proposed | `fuel_used_l_interval`, `load_cycles_interval`, family `fuel_per_load_cycle` |
+| REQ-04c | contract_proposed | `MotionObservation` acceleration with derivation interval, family `motion_change` |
+| REQ-04d | contract_proposed | `pitch_deg`/`roll_deg`/`grade_pct`, family `slope` |
+| REQ-04e | contract_proposed | family `repeat_violation`, `EscalationPayload`, behaviour-policy `LessonAssignment` |
+| REQ-05a | contract_proposed | `DurationEstimate` (method, input cutoff, factors, missing inputs), `DurationFactor` |
+| REQ-05b | contract_proposed | `DurationEstimate` `reduced_inputs_fallback` for rows without quantity/ground/model |
+| ADD-01 | partial_contract | `camera_drowsiness` consent purpose and `SleepSummary` only. Detector events are R01. |
+| ADD-02 | contract_proposed | `TurnRequestTarget`, `TurnStreamEvent`, `CancelRequest`, `TurnDeliveryReport`, `AnnouncementEnvelope`, chunked SSE fixture |
+| ADD-03 | contract_proposed | `OperatorAlertView` (immutable `trigger_evidence`, rule version), `AlertExplanationDetails` |
+| ADD-04 | contract_proposed | `VitalsObservation`, `OperatorWellbeingView`, `SupervisorRiskView`, `ConsentRecord`/`ConsentChangeRequest` |
+| ADD-05 | contract_proposed | `ScheduleProposalPayload`, `ApprovalRecord`, `DecisionRequest`/`DecisionResult` |
+| ADD-06 | contract_proposed | `HumanImpactObservation`, `SosEpisode`, `ChannelOffer`, `SupervisorNotification`, `sos.respond` |
+| ADD-07 | contract_proposed | `MeResponse`, `SupervisorOverview`, `SupervisorFeedEvent`, approval routes |
+| ADD-08 | contract_proposed | `Command`/`CommandResult` (original binding, duplicate, conflict), `PresenceReport`, `PresentationReport` |
+| ADD-09 | not_in_I01 | S01; only the `engine_hours_meter` observation field exists |
+| ADD-10 | partial_contract | `VitalsObservation` with device provenance; the wearable adapter is R02 |
+| ADD-11 | partial_contract | optional `language` only; not multilingual support (R03) |
+| ADD-12..ADD-17 | not_in_I01 | R04–R09 |
+| ADD-18 | partial_contract | `GuidedStep` kind `practice_scenario`; booking is R10 |
+| SYS-01 | contract_proposed | internal `ClassifierDecision` (four branches, allowlisted intents, dependencies) |
+| SYS-02 | partial_contract | announcement `correlation.episode_id`; the semantic system-event entry is internal to I04 |
+| SYS-03 | contract_proposed | internal `ActionPlan`, public `PublicActionResult` |
+| SYS-04 | contract_proposed | principals, `ApprovalRecord`, `DecisionRequest`, emergency in-app policy ID |
+| SYS-05 | contract_proposed | `RulePolicyRef` with `evidence_status` and citation rule |
+| SYS-06 | partial_contract | `Provenance` origins incl. `assumption_based`; the WESAD artefact format is I03B |
+| SYS-07 | contract_proposed | `ConditionsSnapshot` source `open_meteo`/`fixture` with issue/valid/retrieval/available times |
+| SYS-08 | contract_proposed | `Provenance`, `clock_mode`, `data_time`, `dataset_manifest_sha256` |
+| SYS-09 | contract_proposed | idempotency rule per route (`x-idempotency`), `CommandResult`, exchange fixtures |
+| SYS-10 | contract_proposed | all of `contracts/proposed/` (runtime vs proposed separation) |
+| SYS-11, SYS-12 | contract_proposed | checkpoint flows as sequence/exchange fixtures only; no audio or app evidence |
+| SYS-13 | contract_proposed | catalog `MachineId` + 422 `unknown_machine` decision |
+| SYS-14, SYS-15 | n/a | process requirements |

@@ -1,0 +1,1377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:cocoon.command.v1",
+  "x-implementation-status": "proposed",
+  "x-visibility": "public",
+  "$defs": {
+    "AlertAcknowledgeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "alert.acknowledge",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/AlertAcknowledgePayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "AlertAcknowledgeCommand",
+      "type": "object"
+    },
+    "AlertAcknowledgePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "alert_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Alert Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alert_id"
+      ],
+      "title": "AlertAcknowledgePayload",
+      "type": "object"
+    },
+    "CommandBinding": {
+      "additionalProperties": false,
+      "description": "The association captured on the device when the command was created. It must match server-authorised\ncontext; it grants no authority. A delayed upload keeps this original binding even if a newer session exists.",
+      "properties": {
+        "operator_id": {
+          "examples": [
+            "OP_DEMO_1_1"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "machine_id": {
+          "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+          "examples": [
+            "EXC_DEMO_001",
+            "DOZ_DEMO_001",
+            "LDR_DEMO_001",
+            "TRK_DEMO_001",
+            "BHL_DEMO_001"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Machine Id",
+          "type": "string"
+        },
+        "shift_id": {
+          "examples": [
+            "EXC_DEMO_001_2026-08-25"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Shift Id",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "device_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Device Id",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Session the command was captured in (may no longer be active).",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operator_id",
+        "machine_id",
+        "shift_id",
+        "site_id",
+        "device_id",
+        "session_id"
+      ],
+      "title": "CommandBinding",
+      "type": "object"
+    },
+    "DeferAssignmentCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "lms.defer_assignment",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/DeferAssignmentPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "DeferAssignmentCommand",
+      "type": "object"
+    },
+    "DeferAssignmentPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assignment_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Assignment Id",
+          "type": "string"
+        },
+        "defer_until": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Defer Until",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assignment_id",
+        "defer_until"
+      ],
+      "title": "DeferAssignmentPayload",
+      "type": "object"
+    },
+    "IdleReasonCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "idle.record_reason",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/IdleReasonPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "IdleReasonCommand",
+      "type": "object"
+    },
+    "IdleReasonPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "alert_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alert Id"
+        },
+        "reason": {
+          "enum": [
+            "waiting_for_truck",
+            "waiting_for_instruction",
+            "other"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "IdleReasonPayload",
+      "type": "object"
+    },
+    "IncidentConfirmCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "incident.confirm",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/IncidentConfirmPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "IncidentConfirmCommand",
+      "type": "object"
+    },
+    "IncidentConfirmPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "incident_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "edits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IncidentDraftPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator edits applied before confirming."
+        }
+      },
+      "required": [
+        "incident_id"
+      ],
+      "title": "IncidentConfirmPayload",
+      "type": "object"
+    },
+    "IncidentDismissCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "incident.dismiss",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/IncidentDismissPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "IncidentDismissCommand",
+      "type": "object"
+    },
+    "IncidentDismissPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "incident_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "incident_id"
+      ],
+      "title": "IncidentDismissPayload",
+      "type": "object"
+    },
+    "IncidentDraftPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "what": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportedText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "where": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IncidentLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportedTime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportedSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        }
+      },
+      "title": "IncidentDraftPayload",
+      "type": "object"
+    },
+    "IncidentLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "site_zone_id": {
+          "anyOf": [
+            {
+              "examples": [
+                "ZONE_FIXTURE_A_PIT"
+              ],
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Site Zone Id"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "basis": {
+          "enum": [
+            "reported",
+            "inferred",
+            "system_observed"
+          ],
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "site_id",
+        "basis"
+      ],
+      "title": "IncidentLocation",
+      "type": "object"
+    },
+    "IncidentSubmitDraftCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "incident.submit_draft",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/IncidentDraftPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "IncidentSubmitDraftCommand",
+      "type": "object"
+    },
+    "QuizAnswerCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "lms.answer_quiz",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/QuizAnswerPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "QuizAnswerCommand",
+      "type": "object"
+    },
+    "QuizAnswerPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assignment_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Assignment Id",
+          "type": "string"
+        },
+        "quiz_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Quiz Id",
+          "type": "string"
+        },
+        "question_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Question Id",
+          "type": "string"
+        },
+        "answer_text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Answer Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assignment_id",
+        "quiz_id",
+        "question_id",
+        "answer_text"
+      ],
+      "title": "QuizAnswerPayload",
+      "type": "object"
+    },
+    "ReportedSeverity": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Value",
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "reported",
+            "inferred",
+            "system_observed"
+          ],
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "basis"
+      ],
+      "title": "ReportedSeverity",
+      "type": "object"
+    },
+    "ReportedText": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "reported",
+            "inferred",
+            "system_observed"
+          ],
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "basis"
+      ],
+      "title": "ReportedText",
+      "type": "object"
+    },
+    "ReportedTime": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Value",
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "reported",
+            "inferred",
+            "system_observed"
+          ],
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "basis"
+      ],
+      "title": "ReportedTime",
+      "type": "object"
+    },
+    "SosRespondCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "sos.respond",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SosResponsePayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "SosRespondCommand",
+      "type": "object"
+    },
+    "SosResponsePayload": {
+      "additionalProperties": false,
+      "description": "Payload of the `sos.respond` command. Resolves only the named episode/check-in, never a newer one.",
+      "properties": {
+        "episode_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "check_in_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Check In Id",
+          "type": "string"
+        },
+        "response": {
+          "enum": [
+            "ok",
+            "need_help"
+          ],
+          "title": "Response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "episode_id",
+        "check_in_id",
+        "response"
+      ],
+      "title": "SosResponsePayload",
+      "type": "object"
+    },
+    "StepProgressCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "lms.record_step",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/StepProgressPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "StepProgressCommand",
+      "type": "object"
+    },
+    "StepProgressPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assignment_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Assignment Id",
+          "type": "string"
+        },
+        "step_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "playback": {
+          "description": "Records playback only; never completes a lesson.",
+          "enum": [
+            "played",
+            "skipped"
+          ],
+          "title": "Playback",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assignment_id",
+        "step_id",
+        "playback"
+      ],
+      "title": "StepProgressPayload",
+      "type": "object"
+    },
+    "TaskCommandPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "TaskCommandPayload",
+      "type": "object"
+    },
+    "TaskCompleteCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "task.complete",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TaskCommandPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "TaskCompleteCommand",
+      "type": "object"
+    },
+    "TaskStartCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.command.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "command_id": {
+          "description": "Dedup key, unique per issuing subject across sessions/reconnects.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "captured_at": {
+          "description": "Device time when the operator acted.",
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "client_draft_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Draft Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/CommandBinding"
+        },
+        "expected_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version of the target record the device last saw.",
+          "title": "Expected Version"
+        },
+        "kind": {
+          "const": "task.start",
+          "title": "Kind",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TaskCommandPayload"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "captured_at",
+        "binding",
+        "kind",
+        "payload"
+      ],
+      "title": "TaskStartCommand",
+      "type": "object"
+    }
+  },
+  "description": "One `cocoon.command.v1` envelope, discriminated by `kind`.",
+  "discriminator": {
+    "mapping": {
+      "alert.acknowledge": "#/$defs/AlertAcknowledgeCommand",
+      "idle.record_reason": "#/$defs/IdleReasonCommand",
+      "incident.confirm": "#/$defs/IncidentConfirmCommand",
+      "incident.dismiss": "#/$defs/IncidentDismissCommand",
+      "incident.submit_draft": "#/$defs/IncidentSubmitDraftCommand",
+      "lms.answer_quiz": "#/$defs/QuizAnswerCommand",
+      "lms.defer_assignment": "#/$defs/DeferAssignmentCommand",
+      "lms.record_step": "#/$defs/StepProgressCommand",
+      "sos.respond": "#/$defs/SosRespondCommand",
+      "task.complete": "#/$defs/TaskCompleteCommand",
+      "task.start": "#/$defs/TaskStartCommand"
+    },
+    "propertyName": "kind"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/TaskStartCommand"
+    },
+    {
+      "$ref": "#/$defs/TaskCompleteCommand"
+    },
+    {
+      "$ref": "#/$defs/IncidentSubmitDraftCommand"
+    },
+    {
+      "$ref": "#/$defs/IncidentConfirmCommand"
+    },
+    {
+      "$ref": "#/$defs/IncidentDismissCommand"
+    },
+    {
+      "$ref": "#/$defs/AlertAcknowledgeCommand"
+    },
+    {
+      "$ref": "#/$defs/IdleReasonCommand"
+    },
+    {
+      "$ref": "#/$defs/SosRespondCommand"
+    },
+    {
+      "$ref": "#/$defs/QuizAnswerCommand"
+    },
+    {
+      "$ref": "#/$defs/StepProgressCommand"
+    },
+    {
+      "$ref": "#/$defs/DeferAssignmentCommand"
+    }
+  ],
+  "title": "Command"
+}

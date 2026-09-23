@@ -1,0 +1,71 @@
+{
+  "task_id": "TSK-FIXTURE-001",
+  "version": 3,
+  "shift_id": "EXC_DEMO_001_2026-08-24",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
+  "machine_model": "Cat 320",
+  "machine_age_years": 2,
+  "site_id": "SITE_FIXTURE_A",
+  "site_zone_id": "ZONE_FIXTURE_A_PIT",
+  "scheduled_order": 1,
+  "scheduled_start_at": "2026-08-24T06:10:00Z",
+  "outdoor_exposure": "outdoor",
+  "task_type": "earth_excavation",
+  "work_quantity": 120.0,
+  "work_unit": "m3",
+  "ground_condition": "dry",
+  "material": "soil",
+  "attachment": "bucket",
+  "operator_skill": "beginner",
+  "depends_on_task_ids": [],
+  "lifecycle": "in_progress",
+  "progress_fraction": 0.4,
+  "started_at": "2026-08-24T06:12:00Z",
+  "estimate": {
+    "estimate_id": "est_fixture_001",
+    "estimator_version": "fixture-0",
+    "method": "full_inputs",
+    "predicted_minutes": 64.0,
+    "interval_low_minutes": 55.0,
+    "interval_high_minutes": 75.0,
+    "input_cutoff_at": "2026-08-24T06:10:00Z",
+    "inputs_used": [
+      "task_type",
+      "work_quantity",
+      "ground_condition",
+      "operator_skill",
+      "machine_age",
+      "weather"
+    ],
+    "missing_inputs": [],
+    "factors": [
+      {
+        "factor": "operator_skill",
+        "effect_minutes": 6.0,
+        "evidence": "beginner"
+      },
+      {
+        "factor": "ground_condition",
+        "effect_minutes": -2.0,
+        "evidence": "dry"
+      }
+    ],
+    "calibration_sample_count": null,
+    "uncertainty_note": "Contract fixture; no estimator exists yet (I07B)."
+  },
+  "condition_check": {
+    "task_id": "TSK-FIXTURE-001",
+    "conditions_id": "cond_fixture_obs_001",
+    "outcome": "advisory",
+    "rule_ids": [
+      "demo.working_condition.heat"
+    ],
+    "explanation": "High temperature forecast later in the shift (demo assumption).",
+    "recommended_action": "Plan a shaded break before 09:00."
+  },
+  "provenance": {
+    "origin": "synthetic_contract_fixture",
+    "is_simulated": true
+  }
+}

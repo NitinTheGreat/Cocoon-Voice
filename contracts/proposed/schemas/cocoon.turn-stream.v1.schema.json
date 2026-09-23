@@ -1,0 +1,1404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:cocoon.turn-stream.v1",
+  "x-implementation-status": "proposed",
+  "x-visibility": "public",
+  "$defs": {
+    "AcknowledgementDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "acknowledgement",
+          "title": "Kind",
+          "type": "string"
+        },
+        "acknowledgement_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Acknowledgement Id",
+          "type": "string"
+        },
+        "alert_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Alert Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "acknowledgement_id",
+        "alert_id"
+      ],
+      "title": "AcknowledgementDetails",
+      "type": "object"
+    },
+    "AlertExplanationDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "alert_explanation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "alert_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Alert Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "maxLength": 128,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "rule_version": {
+          "maxLength": 32,
+          "title": "Rule Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "alert_id",
+        "episode_id",
+        "rule_id",
+        "rule_version"
+      ],
+      "title": "AlertExplanationDetails",
+      "type": "object"
+    },
+    "ApprovalRequestDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "approval_request",
+          "title": "Kind",
+          "type": "string"
+        },
+        "approval_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "approval_status": {
+          "const": "pending",
+          "description": "A turn can only create a request. Approval, rejection and application are later workflow states read from GET /v1/approvals/{approval_id}.",
+          "title": "Approval Status",
+          "type": "string"
+        },
+        "requested_action": {
+          "enum": [
+            "apply_schedule_change",
+            "escalate_repeat_violation",
+            "notify_supervisor"
+          ],
+          "title": "Requested Action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "approval_id",
+        "approval_status",
+        "requested_action"
+      ],
+      "title": "ApprovalRequestDetails",
+      "type": "object"
+    },
+    "CheckInResponseDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "check_in_response",
+          "title": "Kind",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "check_in_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Check In Id",
+          "type": "string"
+        },
+        "response": {
+          "enum": [
+            "ok",
+            "need_help"
+          ],
+          "title": "Response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "episode_id",
+        "check_in_id",
+        "response"
+      ],
+      "title": "CheckInResponseDetails",
+      "type": "object"
+    },
+    "ClarificationDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "clarification",
+          "title": "Kind",
+          "type": "string"
+        },
+        "for_action": {
+          "enum": [
+            "get_next_task",
+            "get_daily_tasks",
+            "start_task",
+            "complete_task",
+            "explain_task_estimate",
+            "log_incident",
+            "create_incident_draft",
+            "confirm_incident",
+            "request_clarification",
+            "assign_lesson",
+            "get_training_status",
+            "submit_quiz_answer",
+            "explain_alert",
+            "acknowledge_alert",
+            "record_idle_reason",
+            "request_supervisor_approval",
+            "respond_to_check_in",
+            "cancel_pending",
+            "answer_general_question"
+          ],
+          "title": "For Action",
+          "type": "string"
+        },
+        "missing_fields": {
+          "items": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Missing Fields",
+          "type": "array"
+        },
+        "context_ref_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Ref Id"
+        }
+      },
+      "required": [
+        "kind",
+        "for_action",
+        "missing_fields"
+      ],
+      "title": "ClarificationDetails",
+      "type": "object"
+    },
+    "IdleReasonDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "idle_reason",
+          "title": "Kind",
+          "type": "string"
+        },
+        "idle_reason_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Idle Reason Id",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "waiting_for_truck",
+            "waiting_for_instruction",
+            "other"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "alert_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Linked alert. Recording a reason never clears the alert or its condition.",
+          "title": "Alert Id"
+        }
+      },
+      "required": [
+        "kind",
+        "idle_reason_id",
+        "reason"
+      ],
+      "title": "IdleReasonDetails",
+      "type": "object"
+    },
+    "IncidentActionDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "incident",
+          "title": "Kind",
+          "type": "string"
+        },
+        "incident_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "draft",
+            "confirmed",
+            "dismissed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "created": {
+          "description": "False when an earlier attempt of the same identity already saved it.",
+          "title": "Created",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "incident_id",
+        "state",
+        "created"
+      ],
+      "title": "IncidentActionDetails",
+      "type": "object"
+    },
+    "LessonAssignmentDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "lesson_assignment",
+          "title": "Kind",
+          "type": "string"
+        },
+        "assignment_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Assignment Id",
+          "type": "string"
+        },
+        "lesson_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Lesson Id",
+          "type": "string"
+        },
+        "lesson_version": {
+          "minimum": 1,
+          "title": "Lesson Version",
+          "type": "integer"
+        },
+        "created": {
+          "title": "Created",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "assignment_id",
+        "lesson_id",
+        "lesson_version",
+        "created"
+      ],
+      "title": "LessonAssignmentDetails",
+      "type": "object"
+    },
+    "NoDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "none",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "NoDetails",
+      "type": "object"
+    },
+    "ProposedErrorBody": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "unauthorized",
+            "not_found",
+            "validation_error",
+            "idempotency_conflict",
+            "session_conflict",
+            "llm_unavailable",
+            "turn_failed",
+            "internal_error",
+            "forbidden",
+            "unknown_machine",
+            "unknown_operator",
+            "invalid_cursor",
+            "replay_expired",
+            "version_conflict",
+            "decision_conflict",
+            "approval_expired",
+            "consent_required",
+            "rate_limited",
+            "payload_too_large",
+            "capability_unavailable"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "description": "Sanitized. Never a stack trace or raw provider payload.",
+          "maxLength": 500,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ProposedErrorDetail"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoveryInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "request_id"
+      ],
+      "title": "ProposedErrorBody",
+      "type": "object"
+    },
+    "ProposedErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "maxLength": 256,
+          "title": "Field",
+          "type": "string"
+        },
+        "issue": {
+          "maxLength": 500,
+          "title": "Issue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "issue"
+      ],
+      "title": "ProposedErrorDetail",
+      "type": "object"
+    },
+    "PublicActionResult": {
+      "additionalProperties": false,
+      "description": "Public outcome of one action. `completed` means the record committed; `unknown` means the outcome could not\nbe confirmed (the client must say so, not claim success or failure). Internal states such as planned or\nwaiting_approval never appear here.",
+      "properties": {
+        "action_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Action Id",
+          "type": "string"
+        },
+        "action_name": {
+          "enum": [
+            "get_next_task",
+            "get_daily_tasks",
+            "start_task",
+            "complete_task",
+            "explain_task_estimate",
+            "log_incident",
+            "create_incident_draft",
+            "confirm_incident",
+            "request_clarification",
+            "assign_lesson",
+            "get_training_status",
+            "submit_quiz_answer",
+            "explain_alert",
+            "acknowledge_alert",
+            "record_idle_reason",
+            "request_supervisor_approval",
+            "respond_to_check_in",
+            "cancel_pending",
+            "answer_general_question"
+          ],
+          "title": "Action Name",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The real stored record ID, when one exists.",
+          "title": "Record Id"
+        },
+        "summary": {
+          "description": "Safe, speakable-grade summary. No private evidence.",
+          "maxLength": 300,
+          "title": "Summary",
+          "type": "string"
+        },
+        "details": {
+          "discriminator": {
+            "mapping": {
+              "acknowledgement": "#/$defs/AcknowledgementDetails",
+              "alert_explanation": "#/$defs/AlertExplanationDetails",
+              "approval_request": "#/$defs/ApprovalRequestDetails",
+              "check_in_response": "#/$defs/CheckInResponseDetails",
+              "clarification": "#/$defs/ClarificationDetails",
+              "idle_reason": "#/$defs/IdleReasonDetails",
+              "incident": "#/$defs/IncidentActionDetails",
+              "lesson_assignment": "#/$defs/LessonAssignmentDetails",
+              "none": "#/$defs/NoDetails",
+              "quiz_answer": "#/$defs/QuizAnswerDetails",
+              "task": "#/$defs/TaskActionDetails",
+              "training_status": "#/$defs/TrainingStatusDetails"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TaskActionDetails"
+            },
+            {
+              "$ref": "#/$defs/IncidentActionDetails"
+            },
+            {
+              "$ref": "#/$defs/ClarificationDetails"
+            },
+            {
+              "$ref": "#/$defs/LessonAssignmentDetails"
+            },
+            {
+              "$ref": "#/$defs/TrainingStatusDetails"
+            },
+            {
+              "$ref": "#/$defs/QuizAnswerDetails"
+            },
+            {
+              "$ref": "#/$defs/AlertExplanationDetails"
+            },
+            {
+              "$ref": "#/$defs/AcknowledgementDetails"
+            },
+            {
+              "$ref": "#/$defs/IdleReasonDetails"
+            },
+            {
+              "$ref": "#/$defs/ApprovalRequestDetails"
+            },
+            {
+              "$ref": "#/$defs/CheckInResponseDetails"
+            },
+            {
+              "$ref": "#/$defs/NoDetails"
+            }
+          ],
+          "title": "Details"
+        }
+      },
+      "required": [
+        "action_id",
+        "action_name",
+        "status",
+        "summary",
+        "details"
+      ],
+      "title": "PublicActionResult",
+      "type": "object"
+    },
+    "QuizAnswerDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "quiz_answer",
+          "title": "Kind",
+          "type": "string"
+        },
+        "attempt_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "interpretation": {
+          "enum": [
+            "correct",
+            "incorrect",
+            "ambiguous"
+          ],
+          "title": "Interpretation",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "attempt_id",
+        "interpretation",
+        "passed"
+      ],
+      "title": "QuizAnswerDetails",
+      "type": "object"
+    },
+    "RecoveryInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "status_url": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Authoritative status to read instead of retrying blindly.",
+          "title": "Status Url"
+        },
+        "resume_after": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cursor to resume from when replay is possible.",
+          "title": "Resume After"
+        },
+        "retry_after_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry After Ms"
+        }
+      },
+      "title": "RecoveryInfo",
+      "type": "object"
+    },
+    "SpeechDeltaData": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "description": "Append-only approved speech. Whitespace and punctuation preserved exactly.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "SpeechDeltaData",
+      "type": "object"
+    },
+    "SpeechDeltaEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "speech.delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/SpeechDeltaData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "SpeechDeltaEvent",
+      "type": "object"
+    },
+    "TaskActionDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "task",
+          "title": "Kind",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "task_version": {
+          "minimum": 1,
+          "title": "Task Version",
+          "type": "integer"
+        },
+        "lifecycle": {
+          "enum": [
+            "scheduled",
+            "in_progress",
+            "paused",
+            "completed",
+            "cancelled",
+            "blocked"
+          ],
+          "title": "Lifecycle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "task_id",
+        "task_version",
+        "lifecycle"
+      ],
+      "title": "TaskActionDetails",
+      "type": "object"
+    },
+    "TrainingStatusDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "training_status",
+          "title": "Kind",
+          "type": "string"
+        },
+        "active_assignment_ids": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Active Assignment Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "active_assignment_ids"
+      ],
+      "title": "TrainingStatusDetails",
+      "type": "object"
+    },
+    "TurnAcceptedData": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "processing",
+          "title": "Status",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Durable execution identity; identical retries attach to this run.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "run_id"
+      ],
+      "title": "TurnAcceptedData",
+      "type": "object"
+    },
+    "TurnAcceptedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.accepted",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TurnAcceptedData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "TurnAcceptedEvent",
+      "type": "object"
+    },
+    "TurnCancelledData": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "cancelled",
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "barge_in",
+            "stop",
+            "session_closed",
+            "timeout"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "generated_speech": {
+          "description": "Speech generated before cancellation (concatenated deltas). Not evidence it was heard.",
+          "title": "Generated Speech",
+          "type": "string"
+        },
+        "actions": {
+          "description": "Known outcomes, including actions committed before cancellation. Cancellation never rolls them back.",
+          "items": {
+            "$ref": "#/$defs/PublicActionResult"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "generated_speech",
+        "actions",
+        "state_version"
+      ],
+      "title": "TurnCancelledData",
+      "type": "object"
+    },
+    "TurnCancelledEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.cancelled",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TurnCancelledData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "TurnCancelledEvent",
+      "type": "object"
+    },
+    "TurnCompletedData": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "completed",
+          "title": "Status",
+          "type": "string"
+        },
+        "speech": {
+          "description": "Full saved speech; equals the concatenation of this turn's deltas.",
+          "title": "Speech",
+          "type": "string"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/PublicActionResult"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "state_version": {
+          "minimum": 0,
+          "title": "State Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "speech",
+        "actions",
+        "state_version"
+      ],
+      "title": "TurnCompletedData",
+      "type": "object"
+    },
+    "TurnCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TurnCompletedData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "TurnCompletedEvent",
+      "type": "object"
+    },
+    "TurnFailedData": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "failed",
+          "title": "Status",
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/ProposedErrorBody"
+        },
+        "actions": {
+          "description": "Known and unknown action outcomes.",
+          "items": {
+            "$ref": "#/$defs/PublicActionResult"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "state_version": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Version"
+        }
+      },
+      "required": [
+        "status",
+        "error",
+        "actions"
+      ],
+      "title": "TurnFailedData",
+      "type": "object"
+    },
+    "TurnFailedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.failed",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TurnFailedData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "TurnFailedEvent",
+      "type": "object"
+    },
+    "TurnProgressData": {
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "enum": [
+            "queued",
+            "routing",
+            "tool_running",
+            "responding"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "enum": [
+                "get_next_task",
+                "get_daily_tasks",
+                "start_task",
+                "complete_task",
+                "explain_task_estimate",
+                "log_incident",
+                "create_incident_draft",
+                "confirm_incident",
+                "request_clarification",
+                "assign_lesson",
+                "get_training_status",
+                "submit_quiz_answer",
+                "explain_alert",
+                "acknowledge_alert",
+                "record_idle_reason",
+                "request_supervisor_approval",
+                "respond_to_check_in",
+                "cancel_pending",
+                "answer_general_question"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Allowlisted public name only; no arguments.",
+          "title": "Tool Name"
+        }
+      },
+      "required": [
+        "stage"
+      ],
+      "title": "TurnProgressData",
+      "type": "object"
+    },
+    "TurnProgressEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "cocoon.turn-stream.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "response_id": {
+          "description": "Fixed for the run across retries and replay.",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Response Id",
+          "type": "string"
+        },
+        "event_id": {
+          "description": "Equals '<turn_id>:<sequence>' and the SSE id field.",
+          "maxLength": 160,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Strictly increasing per turn. Heartbeats have no sequence.",
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn.progress",
+          "title": "Type",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/TurnProgressData"
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id",
+        "turn_id",
+        "response_id",
+        "event_id",
+        "sequence",
+        "created_at",
+        "type",
+        "data"
+      ],
+      "title": "TurnProgressEvent",
+      "type": "object"
+    }
+  },
+  "description": "One `cocoon.turn-stream.v1` envelope. SSE `event` equals `type`; SSE `id` equals `event_id`.",
+  "discriminator": {
+    "mapping": {
+      "speech.delta": "#/$defs/SpeechDeltaEvent",
+      "turn.accepted": "#/$defs/TurnAcceptedEvent",
+      "turn.cancelled": "#/$defs/TurnCancelledEvent",
+      "turn.completed": "#/$defs/TurnCompletedEvent",
+      "turn.failed": "#/$defs/TurnFailedEvent",
+      "turn.progress": "#/$defs/TurnProgressEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/TurnAcceptedEvent"
+    },
+    {
+      "$ref": "#/$defs/TurnProgressEvent"
+    },
+    {
+      "$ref": "#/$defs/SpeechDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/TurnCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/TurnCancelledEvent"
+    },
+    {
+      "$ref": "#/$defs/TurnFailedEvent"
+    }
+  ],
+  "title": "TurnStreamEvent"
+}

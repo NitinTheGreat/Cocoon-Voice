@@ -1,0 +1,11 @@
+{
+  "turn_id": "turn_fixture_001",
+  "text": "Log an incident: the hydraulic hose on the boom is leaking — tell my supervisor",
+  "source": "voice",
+  "language": "en-IN",
+  "client_context": {
+    "wake_phrase_removed": true,
+    "push_to_talk": false,
+    "stt_final_confidence": 0.93
+  }
+}

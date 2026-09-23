@@ -1,0 +1,8 @@
+{
+  "delivery_id": "dlv_fixture_001",
+  "consumer_id": "voice_consumer_001",
+  "response_id": "resp_fixture_001",
+  "status": "interrupted",
+  "played_text": null,
+  "position_confidence": "unknown"
+}

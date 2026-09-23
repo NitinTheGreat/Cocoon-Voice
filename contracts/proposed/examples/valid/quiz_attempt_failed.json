@@ -1,0 +1,12 @@
+{
+  "attempt_id": "att_fixture_1",
+  "assignment_id": "ASG-FIXTURE-0001",
+  "quiz_id": "QZ-FIXTURE-SEATBELT",
+  "question_id": "q1",
+  "answer_text": "only on the highway",
+  "interpretation": "incorrect",
+  "score": 0.0,
+  "passed": false,
+  "remediation_step_id": "stp_1",
+  "answered_at": "2026-08-24T12:01:00Z"
+}

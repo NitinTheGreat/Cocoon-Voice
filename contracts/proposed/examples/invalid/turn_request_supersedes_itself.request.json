@@ -1,0 +1,6 @@
+{
+  "turn_id": "turn_fixture_001",
+  "text": "stop",
+  "source": "voice",
+  "supersedes_turn_id": "turn_fixture_001"
+}

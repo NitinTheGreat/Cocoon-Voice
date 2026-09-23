@@ -1,0 +1,7 @@
+{
+  "change_id": "chg_fixture_002",
+  "purpose": "risk_sharing_supervisor",
+  "action": "revoke",
+  "notice_version": "notice-fixture-1",
+  "expected_version": 2
+}

@@ -1,0 +1,12 @@
+{
+  "asset_id": "AST-FIXTURE-SEATBELT-VIDEO",
+  "version": 1,
+  "kind": "video",
+  "mime_type": "video/mp4",
+  "title": "Seatbelt in 60 seconds (planned)",
+  "availability": "not_yet_supplied",
+  "provenance": {
+    "origin": "synthetic_contract_fixture",
+    "is_simulated": true
+  }
+}

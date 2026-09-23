@@ -1,0 +1,18 @@
+{
+  "command_id": "c",
+  "kind": "task.start",
+  "status": "queued",
+  "duplicate": false,
+  "record_ids": [
+    "TSK-FIXTURE-001"
+  ],
+  "original_binding": {
+    "operator_id": "OP_DEMO_1_1",
+    "machine_id": "EXC_DEMO_001",
+    "shift_id": "EXC_DEMO_001_2026-08-24",
+    "site_id": "SITE_FIXTURE_A",
+    "device_id": "dev_fixture_phone",
+    "session_id": "ses_fixture_0001"
+  },
+  "received_at": "2026-08-24T09:31:00Z"
+}

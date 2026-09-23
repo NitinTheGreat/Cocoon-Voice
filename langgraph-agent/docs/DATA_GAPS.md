@@ -61,6 +61,42 @@ Owner key: **Data** = dataset/rules stream; **Backend** = `langgraph-agent`; **C
 | DG-15 | WESAD: no WESAD file, metadata, checksum or derived profile exists anywhere in the dataset. | SYS-06, ADD-04 | Data | external | Real source version/checksum/terms, or visible `unmet` status | I03B |
 | DG-16 | Session ↔ dataset binding: the backend never reads the dataset (no dataset-root setting) and accepts any `machine_id`/`operator_id` (I00 probe: `NO_SUCH_MACHINE` → 201). | REQ-01a, SYS-08, SYS-13 | Backend | runtime/config | Manifest version + hash recorded per session | I02, I03A |
 
+## Contract status after I01
+
+I01 defines the **shape** of each missing input in the proposed contract (`contracts/proposed/`). It supplies no data: every value in those fixtures is a synthetic contract example. Each gap stays open until its stage produces real, provenance-labelled data.
+
+| ID | Contract defined in I01 | Data still missing (owner, stage unchanged) |
+| --- | --- | --- |
+| DG-01 | `site_id`, `site_zone_id`, `site_timezone`, `outdoor_exposure` fields in `TaskAssignment` / `DailyTaskDashboard` / `SessionTarget` | Real or labelled synthetic site/zone/shift tables (I03A) |
+| DG-02 | `TaskAssignment` (order, start, exposure, dependencies, lifecycle, version, progress) | Scheduled assignments in the dataset/runtime seed (I03A, I07A) |
+| DG-03 | `ProximityObservation` (entity, `distance_m`, `bearing_deg`, reference frame, detection state, uncertainty) | Simulated detector stream (I03A, I05A) |
+| DG-04 | `MotionObservation` (`speed_mps`, `accel_mps2` + derivation interval, `pitch_deg`, `roll_deg`, `grade_pct`) | High-rate event stream (I03A, I05A) |
+| DG-05 | `HumanImpactObservation` (distinct from `control_impacts_count_interval`; force only with a model) | Impact scenarios (I03A, I14) |
+| DG-06 | `EnvironmentObservation`, `ConditionsSnapshot` (issue/valid/retrieval/available times, precipitation interval) | Open-Meteo client and replay fixtures (I09) |
+| DG-07 | `SleepSummary` (null = unknown); `LearnerProfile.dataset_operator_skill` kept separate | Age/sleep/experience fields (I03A, R01) |
+| DG-08 | `VitalsObservation`, `ConsentRecord`/`ConsentChangeRequest`, `OperatorWellbeingView`, `SupervisorRiskView` | Vitals metadata; consent runtime (I02); WESAD shaping (I03B) |
+| DG-09 | `RulePolicyRef` (units, applicability, persistence/reset/cooldown, `evidence_status`, citation required for published guidance) | Actual policies and any real citations (I09, I10) |
+| DG-10 | `ContentAsset` (availability, checksum, licence), `LessonVersion`, `GuidedStep`, `QuizAttempt`, `LessonProgress` | Approved lesson text and at least one real playable video (I12A) |
+| DG-11 | Incidents, approvals, action results, SOS, commands, presence, presentation, delivery records | Runtime persistence (I02 onward) |
+| DG-12 | Only `engine_hours_meter` | Service records (S01) |
+| DG-13 | Not defined (follow-on) | R01–R10 |
+| DG-14 | `DurationEstimate` method `reduced_inputs_fallback` with `missing_inputs` | Frozen benchmark and estimator (I03B, I07B) |
+| DG-15 | `Provenance.origin` includes `assumption_based`; no WESAD artefact format yet | WESAD source, checksum and processing (I03B) |
+| DG-16 | Catalog `MachineId`; target 422 `unknown_machine`/`unknown_operator`; `SessionTarget.dataset_manifest_sha256` | Catalog loading and enforcement (I02, I03A) |
+
+## Local dataset snapshot recorded in I01
+
+Observed on 2026-09-24 in the working tree, read-only. `Cocoon_Dataset_v1/` is still **untracked** on `backend`, and I01 left it unstaged and unchanged.
+
+| Item | Value |
+| --- | --- |
+| Manifest | `schema_version 1.0`, `generator_seed 20260923`, `dataset_origin synthetic` |
+| `data/generated/manifest.json` SHA-256 | `5d7de31c1856daf4179110a653d175891a102a53263356843792dd383f40e42d` |
+| Snapshot fingerprint (SHA-256 of `CHECKSUMS.sha256`) | `bdd55830094dcb413daa1ee8858f4240d8a57b225d63cc27b6288d311bd2b3d1` |
+| Checksum verification | `sha256sum -c CHECKSUMS.sha256`: 33/33 OK |
+
+This fingerprint identifies a **local, checksum-validated snapshot**. It is not a reviewed Git revision and not confirmation from the data owner. Before I03 extends the dataset, the data owner still needs to review and version it (commit it or publish a reviewed hash).
+
 ## Source limitations that must stay visible
 
 - All v1 generated values are synthetic (`is_simulated=true`). Machine ages, rates, productivity and temperatures are simulation assumptions, not Caterpillar specifications or thresholds.

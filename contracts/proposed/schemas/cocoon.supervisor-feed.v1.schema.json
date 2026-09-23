@@ -1,0 +1,1078 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:cocoon.supervisor-feed.v1",
+  "x-implementation-status": "proposed",
+  "x-visibility": "public",
+  "$defs": {
+    "ApplicationOutcome": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "not_started",
+            "applied",
+            "failed_stale_inputs",
+            "failed",
+            "not_applicable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "attempted_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempted At"
+        },
+        "applied_schedule_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Applied Schedule Version"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "ApplicationOutcome",
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "decision_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "reject"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "decided_by": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Decided By",
+          "type": "string"
+        },
+        "decided_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "decision_id",
+        "decision",
+        "decided_by",
+        "decided_at"
+      ],
+      "title": "ApprovalDecision",
+      "type": "object"
+    },
+    "ApprovalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "action_type": {
+          "enum": [
+            "apply_schedule_change",
+            "escalate_repeat_violation",
+            "notify_supervisor"
+          ],
+          "title": "Action Type",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "expired",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "proposed_by": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Proposed By",
+          "type": "string"
+        },
+        "approver_role": {
+          "const": "supervisor",
+          "default": "supervisor",
+          "title": "Approver Role",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "repeat_violation_escalation": "#/$defs/EscalationPayload",
+              "schedule_change": "#/$defs/ScheduleProposalPayload"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ScheduleProposalPayload"
+            },
+            {
+              "$ref": "#/$defs/EscalationPayload"
+            }
+          ],
+          "title": "Payload"
+        },
+        "payload_sha256": {
+          "description": "Hash of the canonical payload; a decision must quote it.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "application": {
+          "$ref": "#/$defs/ApplicationOutcome"
+        }
+      },
+      "required": [
+        "approval_id",
+        "version",
+        "action_type",
+        "status",
+        "site_id",
+        "proposed_by",
+        "created_at",
+        "expires_at",
+        "payload",
+        "payload_sha256",
+        "application"
+      ],
+      "title": "ApprovalRecord",
+      "type": "object"
+    },
+    "EscalationPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "repeat_violation_escalation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "operator_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "maxLength": 128,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "rule_version": {
+          "maxLength": 32,
+          "title": "Rule Version",
+          "type": "string"
+        },
+        "window_start": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Window Start",
+          "type": "string"
+        },
+        "window_end": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Window End",
+          "type": "string"
+        },
+        "episode_ids": {
+          "description": "Distinct episodes, not repeated samples.",
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Episode Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "operator_id",
+        "rule_id",
+        "rule_version",
+        "window_start",
+        "window_end",
+        "episode_ids"
+      ],
+      "title": "EscalationPayload",
+      "type": "object"
+    },
+    "ScheduleChange": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "before_order": {
+          "minimum": 1,
+          "title": "Before Order",
+          "type": "integer"
+        },
+        "after_order": {
+          "minimum": 1,
+          "title": "After Order",
+          "type": "integer"
+        },
+        "before_start_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Start At"
+        },
+        "after_start_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Start At"
+        },
+        "reason": {
+          "description": "Which forecast value or constraint motivated this change.",
+          "maxLength": 300,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "before_order",
+        "after_order",
+        "reason"
+      ],
+      "title": "ScheduleChange",
+      "type": "object"
+    },
+    "ScheduleProposalPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "schedule_change",
+          "title": "Kind",
+          "type": "string"
+        },
+        "shift_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Shift Id",
+          "type": "string"
+        },
+        "base_schedule_version": {
+          "minimum": 1,
+          "title": "Base Schedule Version",
+          "type": "integer"
+        },
+        "forecast_conditions_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Forecast Conditions Id",
+          "type": "string"
+        },
+        "forecast_issued_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Forecast Issued At",
+          "type": "string"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/ScheduleChange"
+          },
+          "minItems": 1,
+          "title": "Changes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "shift_id",
+        "base_schedule_version",
+        "forecast_conditions_id",
+        "forecast_issued_at",
+        "changes"
+      ],
+      "title": "ScheduleProposalPayload",
+      "type": "object"
+    },
+    "SupervisorAlertView": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "alert",
+          "title": "View",
+          "type": "string"
+        },
+        "alert_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Alert Id",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "maxLength": 128,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "rule_version": {
+          "maxLength": 32,
+          "title": "Rule Version",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "safety",
+            "efficiency",
+            "conditions",
+            "wellbeing"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "active",
+            "cleared"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "machine_id": {
+          "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+          "examples": [
+            "EXC_DEMO_001",
+            "DOZ_DEMO_001",
+            "LDR_DEMO_001",
+            "TRK_DEMO_001",
+            "BHL_DEMO_001"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Machine Id",
+          "type": "string"
+        },
+        "operator_id": {
+          "examples": [
+            "OP_DEMO_1_1"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "cleared_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cleared At"
+        },
+        "acknowledged": {
+          "title": "Acknowledged",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "view",
+        "alert_id",
+        "episode_id",
+        "rule_id",
+        "rule_version",
+        "category",
+        "severity",
+        "state",
+        "site_id",
+        "machine_id",
+        "operator_id",
+        "started_at",
+        "acknowledged"
+      ],
+      "title": "SupervisorAlertView",
+      "type": "object"
+    },
+    "SupervisorApprovalView": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "approval",
+          "title": "View",
+          "type": "string"
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalRecord"
+        }
+      },
+      "required": [
+        "view",
+        "approval"
+      ],
+      "title": "SupervisorApprovalView",
+      "type": "object"
+    },
+    "SupervisorIncidentView": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "incident",
+          "title": "View",
+          "type": "string"
+        },
+        "incident_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "draft",
+            "confirmed",
+            "dismissed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "site_zone_id": {
+          "anyOf": [
+            {
+              "examples": [
+                "ZONE_FIXTURE_A_PIT"
+              ],
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Site Zone Id"
+        },
+        "machine_id": {
+          "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+          "examples": [
+            "EXC_DEMO_001",
+            "DOZ_DEMO_001",
+            "LDR_DEMO_001",
+            "TRK_DEMO_001",
+            "BHL_DEMO_001"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Machine Id",
+          "type": "string"
+        },
+        "operator_id": {
+          "examples": [
+            "OP_DEMO_1_1"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Severity"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator-confirmed description only; null for drafts.",
+          "title": "Summary"
+        },
+        "occurred_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occurred At"
+        },
+        "confirmed_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmed At"
+        }
+      },
+      "required": [
+        "view",
+        "incident_id",
+        "state",
+        "site_id",
+        "machine_id",
+        "operator_id"
+      ],
+      "title": "SupervisorIncidentView",
+      "type": "object"
+    },
+    "SupervisorRiskView": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "risk",
+          "title": "View",
+          "type": "string"
+        },
+        "operator_id": {
+          "examples": [
+            "OP_DEMO_1_1"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "risk_level": {
+          "enum": [
+            "no_advisory",
+            "advisory",
+            "high",
+            "unavailable"
+          ],
+          "title": "Risk Level",
+          "type": "string"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "consent_not_granted",
+                "consent_revoked",
+                "stale_data",
+                "no_data"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed At"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "response_context": {
+          "enum": [
+            "none",
+            "break_recommended",
+            "check_on_operator"
+          ],
+          "title": "Response Context",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view",
+        "operator_id",
+        "site_id",
+        "risk_level",
+        "freshness",
+        "response_context"
+      ],
+      "title": "SupervisorRiskView",
+      "type": "object"
+    },
+    "SupervisorSosView": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "sos",
+          "title": "View",
+          "type": "string"
+        },
+        "episode_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "operator_id": {
+          "examples": [
+            "OP_DEMO_1_1"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "machine_id": {
+          "anyOf": [
+            {
+              "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+              "examples": [
+                "EXC_DEMO_001",
+                "DOZ_DEMO_001",
+                "LDR_DEMO_001",
+                "TRK_DEMO_001",
+                "BHL_DEMO_001"
+              ],
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Machine Id"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "unresolved_no_response",
+            "operator_unreachable",
+            "help_requested",
+            "supervisor_notified",
+            "responded_ok",
+            "resolved"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "notification_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notification Id"
+        },
+        "created_at": {
+          "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view",
+        "episode_id",
+        "operator_id",
+        "site_id",
+        "state",
+        "created_at"
+      ],
+      "title": "SupervisorSosView",
+      "type": "object"
+    },
+    "SupervisorTaskSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "task_summary",
+          "title": "View",
+          "type": "string"
+        },
+        "site_id": {
+          "examples": [
+            "SITE_FIXTURE_A"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Site Id",
+          "type": "string"
+        },
+        "shift_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Shift Id",
+          "type": "string"
+        },
+        "machine_id": {
+          "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+          "examples": [
+            "EXC_DEMO_001",
+            "DOZ_DEMO_001",
+            "LDR_DEMO_001",
+            "TRK_DEMO_001",
+            "BHL_DEMO_001"
+          ],
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Machine Id",
+          "type": "string"
+        },
+        "scheduled": {
+          "minimum": 0,
+          "title": "Scheduled",
+          "type": "integer"
+        },
+        "in_progress": {
+          "minimum": 0,
+          "title": "In Progress",
+          "type": "integer"
+        },
+        "completed": {
+          "minimum": 0,
+          "title": "Completed",
+          "type": "integer"
+        },
+        "blocked": {
+          "minimum": 0,
+          "title": "Blocked",
+          "type": "integer"
+        },
+        "schedule_version": {
+          "minimum": 1,
+          "title": "Schedule Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "view",
+        "site_id",
+        "shift_id",
+        "machine_id",
+        "scheduled",
+        "in_progress",
+        "completed",
+        "blocked",
+        "schedule_version"
+      ],
+      "title": "SupervisorTaskSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One `cocoon.supervisor-feed.v1` change. Role-filtered; never reuses operator speech or evidence.",
+  "properties": {
+    "schema_version": {
+      "const": "cocoon.supervisor-feed.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "site_id": {
+      "examples": [
+        "SITE_FIXTURE_A"
+      ],
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Site Id",
+      "type": "string"
+    },
+    "event_id": {
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "sequence": {
+      "description": "Monotonic per site feed; exclusive cursor for ?after=.",
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "type": {
+      "enum": [
+        "alert.changed",
+        "incident.changed",
+        "risk.changed",
+        "approval.changed",
+        "sos.changed",
+        "tasks.changed"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data": {
+      "discriminator": {
+        "mapping": {
+          "alert": "#/$defs/SupervisorAlertView",
+          "approval": "#/$defs/SupervisorApprovalView",
+          "incident": "#/$defs/SupervisorIncidentView",
+          "risk": "#/$defs/SupervisorRiskView",
+          "sos": "#/$defs/SupervisorSosView",
+          "task_summary": "#/$defs/SupervisorTaskSummary"
+        },
+        "propertyName": "view"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SupervisorAlertView"
+        },
+        {
+          "$ref": "#/$defs/SupervisorIncidentView"
+        },
+        {
+          "$ref": "#/$defs/SupervisorRiskView"
+        },
+        {
+          "$ref": "#/$defs/SupervisorApprovalView"
+        },
+        {
+          "$ref": "#/$defs/SupervisorSosView"
+        },
+        {
+          "$ref": "#/$defs/SupervisorTaskSummary"
+        }
+      ],
+      "title": "Data"
+    }
+  },
+  "required": [
+    "schema_version",
+    "site_id",
+    "event_id",
+    "sequence",
+    "type",
+    "created_at",
+    "data"
+  ],
+  "title": "SupervisorFeedEvent",
+  "type": "object"
+}

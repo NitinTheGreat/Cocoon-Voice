@@ -82,7 +82,8 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 - Provide a text CLI or HTTP smoke script that runs the real backend without LiveKit dependencies or credentials. Keep the simulator similarly independent.
 - README must state exact installation, configuration, database initialization, startup, shutdown, and test commands, plus PowerShell/Bash differences. Record the working directory for each command.
 - Document selected environment variable names in `.env.example`: service token, database location, mock/live mode, provider key/model, and network settings. Never store values in this file.
-- **Commands currently verified** (I00, 2026-09-24, base `ee83254`, Python 3.11.15, mock mode, run from `langgraph-agent/`): `python -m pytest -q` (57 passed), `python scripts/export_openapi.py --check` (up to date), `python -m cocoon_agent` + `python scripts/smoke.py --base-url ...` (SMOKE OK). Environment and exact results are in `docs/HANDOFF.md`.
+- **Commands currently verified** (I01, 2026-09-24, base `f8afb4d`, Python 3.11.15, mock mode, run from `langgraph-agent/`): `python -m pytest -q` (203 passed: 57 existing + 146 proposed-contract checks), `python scripts/export_openapi.py --check` (runtime contract up to date), `python scripts/export_proposed_contract.py --check` (proposed contract up to date), `python -m cocoon_agent` + `python scripts/smoke.py --base-url ...` (SMOKE OK). Environment and exact results are in `docs/HANDOFF.md`.
+- Two contracts: `../contracts/openapi.yaml` is what runs (generated from `api/schemas.py`); `../contracts/proposed/` is the frozen target (generated from `cocoon_agent/contract/`, never imported by the app). Implement a proposed route by moving it into the app in its stage, then regenerate both.
 - Focus checks on contract conformance; persisted incident retrieval; duplicate/conflicting turns; pending follow-ups and session isolation; repeated/reset alerts; event delivery/cursors; restart persistence; and uncertain outcomes after timeouts.
 - Run only checks relevant to the change and required integration gates. Add tests for consequential behavior, not for documentation edits or trivial implementation details.
 - Distinguish deterministic mock checks, real HTTP integration with the voice adapter, and actual LiveKit speech tests. Report exactly what ran; live speech remains unverified unless observed.
@@ -113,9 +114,9 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | --- | --- | --- |
 | Architecture | DESIGN AGREED | Independent HTTP services; FastAPI + LangGraph backend; LiveKit voice client. |
 | Existing code and dependencies | DONE (v1 prototype) | I00 installed pinned deps on Python 3.11.15; 57 tests pass. Versions are in `docs/HANDOFF.md`. |
-| Canonical contract and consumer compatibility | DONE (7 v1 routes) | `export_openapi.py --check` and `test_contract.py` pass. Streaming, supervisor and command contracts do not exist yet (I01). |
+| Canonical contract and consumer compatibility | DONE (7 v1 routes); target contract PROPOSED (I01) | Runtime: `export_openapi.py --check` passes. Target: `contracts/proposed/` with 18 proposed operations and 100 fixtures; `export_proposed_contract.py --check` and `test_proposed_contract.py` pass. Proposed routes are **not implemented**. |
 | Graph, persistence, actions, and proactive flow | DONE (v1 prototype, mock) | Seven-intent router, SQLite idempotency, prototype seatbelt rule and "Why?". No form requirement is fully met; see `docs/FEATURE_MATRIX.md`. |
-| Live LLM provider | BLOCKED | Code uses Anthropic (`ANTHROPIC_API_KEY`). The plan specifies Vertex AI via ADC. Decide before I04. |
+| Live LLM provider | DECIDED: Vertex (migration TODO in I04) | Vertex AI via ADC is selected (`GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, configurable `VERTEX_MODEL`). The code still uses Anthropic; replacement and model/access verification happen in I04. Never read credential files. |
 | Commands, real HTTP integration, and live audio | PARTIAL | Mock-mode real HTTP smoke passed. The voice worker is not connected. Live audio is UNVERIFIED. |
 
 ### Active work
@@ -123,11 +124,12 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Task | Owner / branch | Status | Files / contract impact | Next checkpoint |
 | --- | --- | --- | --- | --- |
 | I00 scope audit | Naif Naqeeb / `backend` | DONE | `docs/FEATURE_MATRIX.md`, `docs/DATA_GAPS.md`, `docs/HANDOFF.md`, root plan; no contract change. | Assign I01. |
-| I01 contract freeze | Unassigned / `backend` | TODO | `API_CONTRACT.md`, `contracts/**`, `api/schemas.py` (additive only). | Proposed schemas and fixtures validate; legacy fixtures still pass. |
+| I01 contract freeze | Naif Naqeeb / `backend` | DONE (contract only) | `API_CONTRACT.md`, `contracts/proposed/**`, `cocoon_agent/contract/**`; runtime schemas unchanged. | Assign I02a. |
+| I02a catalog-bound sessions + migrations | Unassigned / `backend` | TODO | `store.py` migrations, settings, `POST /v1/sessions` 422 `unknown_machine`/`unknown_operator`; both contracts regenerated. | Data-owner snapshot confirmation; voice owner told about catalog IDs. |
 
 ### Latest handoff
 
-- **Recorded:** 2026-09-24, I00 on `backend` from base `ee83254`. Full record, checks and blockers are in `docs/HANDOFF.md`.
-- **Next action:** I01, freezing the compatible contracts and fixtures.
-- **Blocking information:** LLM provider decision (Vertex vs Anthropic); the dataset is untracked on `backend`; core data inputs are listed as DG-01..DG-16 in `docs/DATA_GAPS.md`.
+- **Recorded:** 2026-09-24, I01 on `backend` from base `f8afb4d`. Full record, checks and migration notes are in `docs/HANDOFF.md`.
+- **Next action:** I02a, catalog-bound sessions on a versioned schema.
+- **Blocking information:** dataset snapshot not yet reviewed or versioned by its owner (local fingerprint in `docs/DATA_GAPS.md`); Vertex migration pending (I04); DG-01..DG-16 data, content and published guidance still missing; no client integration.
 - **For every subsequent handoff record:** UTC time; owner/branch and base commit if known; task; changed paths; behavior now working; exact checks and results; contract changes; remaining risks/blockers; next actionable step. Never invent an identity, commit, command result, or completion claim.

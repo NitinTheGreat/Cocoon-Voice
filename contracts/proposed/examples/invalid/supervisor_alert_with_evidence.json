@@ -1,0 +1,31 @@
+{
+  "view": "alert",
+  "alert_id": "ALR-FIXTURE-0001",
+  "episode_id": "EPI-FIXTURE-0001",
+  "rule_id": "demo.seatbelt_engine_on",
+  "rule_version": "0.1.0",
+  "category": "safety",
+  "severity": "warning",
+  "state": "active",
+  "site_id": "SITE_FIXTURE_A",
+  "machine_id": "EXC_DEMO_001",
+  "operator_id": "OP_DEMO_1_1",
+  "started_at": "2026-08-24T06:44:01Z",
+  "acknowledged": false,
+  "trigger_evidence": [
+    {
+      "field": "engine_on",
+      "value": true,
+      "unit": null,
+      "observation_id": "obs_fixture_001",
+      "observed_at": "2026-08-24T06:44:00Z"
+    },
+    {
+      "field": "seatbelt_fastened",
+      "value": false,
+      "unit": null,
+      "observation_id": "obs_fixture_001",
+      "observed_at": "2026-08-24T06:44:00Z"
+    }
+  ]
+}

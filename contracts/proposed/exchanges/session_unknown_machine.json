@@ -1,0 +1,32 @@
+{
+  "route": "POST /v1/sessions",
+  "note": "Known gap. v1 runtime today returns 201 (observed in I00). Target (I02) returns 422 unknown_machine.",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions",
+        "body": {
+          "client_session_key": "lk:room-fixture:op2",
+          "room_name": "room-fixture",
+          "participant_identity": "op2",
+          "operator_id": "OP_DEMO_1_1",
+          "machine_id": "NO_SUCH_MACHINE"
+        }
+      },
+      "response": {
+        "status": 422,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "unknown_machine",
+            "message": "machine_id is not in the machine catalog",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      },
+      "observed_v1_runtime_status": 201
+    }
+  ]
+}

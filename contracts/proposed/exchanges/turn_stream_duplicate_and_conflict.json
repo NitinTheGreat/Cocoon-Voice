@@ -1,0 +1,129 @@
+{
+  "route": "POST /v1/sessions/{session_id}/turns/stream",
+  "note": "Identical retry attaches to the same run; a different text under the same turn_id is 409 before SSE opens.",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/stream",
+        "body": {
+          "turn_id": "turn_fixture_001",
+          "text": "Log an incident: the hydraulic hose on the boom is leaking",
+          "source": "voice"
+        },
+        "headers": {
+          "Accept": "text/event-stream",
+          "X-Request-ID": "turn_fixture_001.1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "media": "text/event-stream",
+        "events": [
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:1",
+            "sequence": 1,
+            "created_at": "2026-08-24T06:40:01Z",
+            "type": "turn.accepted",
+            "data": {
+              "status": "processing",
+              "run_id": "run_fixture_001"
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:2",
+            "sequence": 2,
+            "created_at": "2026-08-24T06:40:02Z",
+            "type": "turn.progress",
+            "data": {
+              "stage": "routing"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/stream",
+        "body": {
+          "turn_id": "turn_fixture_001",
+          "text": "Log an incident: the hydraulic hose on the boom is leaking",
+          "source": "voice"
+        },
+        "headers": {
+          "Accept": "text/event-stream",
+          "X-Request-ID": "turn_fixture_001.2"
+        }
+      },
+      "response": {
+        "status": 200,
+        "media": "text/event-stream",
+        "events": [
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:1",
+            "sequence": 1,
+            "created_at": "2026-08-24T06:40:01Z",
+            "type": "turn.accepted",
+            "data": {
+              "status": "processing",
+              "run_id": "run_fixture_001"
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:2",
+            "sequence": 2,
+            "created_at": "2026-08-24T06:40:02Z",
+            "type": "turn.progress",
+            "data": {
+              "stage": "routing"
+            }
+          }
+        ],
+        "note": "Same response_id/run_id; replayed from sequence 1. No second execution."
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/stream",
+        "body": {
+          "turn_id": "turn_fixture_001",
+          "text": "What is my next task?",
+          "source": "voice"
+        },
+        "headers": {
+          "Accept": "text/event-stream"
+        }
+      },
+      "response": {
+        "status": 409,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "idempotency_conflict",
+            "message": "turn_id was already used with a different payload",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:cocoon.announcements.v1",
+  "x-implementation-status": "proposed",
+  "x-visibility": "public",
+  "$defs": {
+    "AnnouncementCorrelation": {
+      "additionalProperties": false,
+      "description": "Links the spoken text to the persisted record that justified it. At least one reference is required.",
+      "properties": {
+        "alert_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alert Id"
+        },
+        "episode_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode Id"
+        },
+        "rule_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule Id"
+        },
+        "rule_version": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule Version"
+        },
+        "briefing_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Briefing Id"
+        },
+        "check_in_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Check In Id"
+        },
+        "assignment_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assignment Id"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "title": "AnnouncementCorrelation",
+      "type": "object"
+    },
+    "AnnouncementProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "origin": {
+          "enum": [
+            "synthetic",
+            "synthetic_contract_fixture",
+            "simulator",
+            "provided_unverified",
+            "device",
+            "provider",
+            "runtime",
+            "assumption_based"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "is_simulated": {
+          "title": "Is Simulated",
+          "type": "boolean"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original observation time of the trigger.",
+          "title": "Observed At"
+        }
+      },
+      "required": [
+        "origin",
+        "is_simulated"
+      ],
+      "title": "AnnouncementProvenance",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One `cocoon.announcements.v1` event, identical over polling and SSE. SSE `id` equals `event_id`.",
+  "properties": {
+    "schema_version": {
+      "const": "cocoon.announcements.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "event_id": {
+      "description": "Stable; the delivery key across polling and streaming.",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "sequence": {
+      "description": "Monotonic per session; the exclusive cursor for ?after=.",
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "type": {
+      "enum": [
+        "alert_started",
+        "alert_cleared",
+        "shift_briefing",
+        "condition_advisory",
+        "sos_check_in",
+        "lesson_assigned",
+        "schedule_updated"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "priority": {
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "critical"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "speech": {
+      "description": "Approved template or persisted explanation.",
+      "maxLength": 600,
+      "minLength": 1,
+      "title": "Speech",
+      "type": "string"
+    },
+    "speakable": {
+      "description": "False once expired. Clients never announce an unspeakable event as current.",
+      "title": "Speakable",
+      "type": "boolean"
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "correlation": {
+      "$ref": "#/$defs/AnnouncementCorrelation"
+    },
+    "provenance": {
+      "$ref": "#/$defs/AnnouncementProvenance"
+    }
+  },
+  "required": [
+    "schema_version",
+    "session_id",
+    "event_id",
+    "sequence",
+    "type",
+    "priority",
+    "speech",
+    "speakable",
+    "created_at",
+    "expires_at",
+    "correlation",
+    "provenance"
+  ],
+  "title": "AnnouncementEnvelope",
+  "type": "object"
+}

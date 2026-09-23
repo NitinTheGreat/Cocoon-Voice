@@ -1,0 +1,9 @@
+{
+  "client_session_key": "lk:room-fixture:op",
+  "room_name": "room-fixture",
+  "participant_identity": "op",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
+  "site_id": "SITE_FIXTURE_A",
+  "shift_id": "EXC_DEMO_001_2026-08-24"
+}

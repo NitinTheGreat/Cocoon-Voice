@@ -1,0 +1,22 @@
+{
+  "branch": "safety_incidents",
+  "intents": [
+    {
+      "intent": "log_incident",
+      "entities": {
+        "incident_what": "hydraulic hose leaking on the boom"
+      },
+      "depends_on": []
+    },
+    {
+      "intent": "request_supervisor_escalation",
+      "entities": {},
+      "depends_on": [
+        0
+      ]
+    }
+  ],
+  "missing_fields": [],
+  "routing_certainty": "high",
+  "needs_clarification": false
+}

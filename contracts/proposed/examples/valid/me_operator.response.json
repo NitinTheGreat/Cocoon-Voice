@@ -1,0 +1,17 @@
+{
+  "subject_id": "subj_fixture_op",
+  "principal_kind": "operator",
+  "display_name": "Demo operator (fixture)",
+  "site_ids": [
+    "SITE_FIXTURE_A"
+  ],
+  "allowed_associations": [
+    {
+      "operator_id": "OP_DEMO_1_1",
+      "machine_id": "EXC_DEMO_001",
+      "site_id": "SITE_FIXTURE_A",
+      "shift_id": "EXC_DEMO_001_2026-08-24"
+    }
+  ],
+  "token_expires_at": "2026-08-24T14:30:00Z"
+}

@@ -1,0 +1,156 @@
+{
+  "route": "POST /v1/approvals/{approval_id}/decision",
+  "note": "Approve once; identical retry is safe; contradictory decision conflicts.",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/approvals/APR-FIXTURE-0002/decision",
+        "body": {
+          "decision_id": "dec_fixture_001",
+          "decision": "approve",
+          "expected_version": 1,
+          "payload_sha256": "3f1d0c9a4a1f0e3b5c7d9e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
+        }
+      },
+      "response": {
+        "status": 200,
+        "schema": "DecisionResult",
+        "body": {
+          "approval": {
+            "approval_id": "APR-FIXTURE-0002",
+            "version": 2,
+            "action_type": "apply_schedule_change",
+            "status": "approved",
+            "site_id": "SITE_FIXTURE_A",
+            "proposed_by": "system.replanner",
+            "created_at": "2026-08-24T05:15:00Z",
+            "expires_at": "2026-08-24T06:15:00Z",
+            "payload": {
+              "kind": "schedule_change",
+              "shift_id": "EXC_DEMO_001_2026-08-24",
+              "base_schedule_version": 3,
+              "forecast_conditions_id": "cond_fixture_fc_001",
+              "forecast_issued_at": "2026-08-24T05:00:00Z",
+              "changes": [
+                {
+                  "task_id": "TSK-FIXTURE-002",
+                  "before_order": 3,
+                  "after_order": 2,
+                  "reason": "Outdoor grading moved earlier: fixture forecast shows rain and gusts after 09:00."
+                },
+                {
+                  "task_id": "TSK-FIXTURE-003",
+                  "before_order": 2,
+                  "after_order": 3,
+                  "reason": "Covered loading moved later; unaffected by the forecast."
+                }
+              ]
+            },
+            "payload_sha256": "3f1d0c9a4a1f0e3b5c7d9e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "decision": {
+              "decision_id": "dec_fixture_001",
+              "decision": "approve",
+              "decided_by": "subj_fixture_sup",
+              "decided_at": "2026-08-24T05:30:00Z"
+            },
+            "application": {
+              "status": "applied",
+              "attempted_at": "2026-08-24T05:30:01Z",
+              "applied_schedule_version": 4
+            }
+          },
+          "decision_recorded": true,
+          "execution_status": "applied"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/approvals/APR-FIXTURE-0002/decision",
+        "body": {
+          "decision_id": "dec_fixture_001",
+          "decision": "approve",
+          "expected_version": 1,
+          "payload_sha256": "3f1d0c9a4a1f0e3b5c7d9e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
+        }
+      },
+      "response": {
+        "status": 200,
+        "schema": "DecisionResult",
+        "body": {
+          "approval": {
+            "approval_id": "APR-FIXTURE-0002",
+            "version": 2,
+            "action_type": "apply_schedule_change",
+            "status": "approved",
+            "site_id": "SITE_FIXTURE_A",
+            "proposed_by": "system.replanner",
+            "created_at": "2026-08-24T05:15:00Z",
+            "expires_at": "2026-08-24T06:15:00Z",
+            "payload": {
+              "kind": "schedule_change",
+              "shift_id": "EXC_DEMO_001_2026-08-24",
+              "base_schedule_version": 3,
+              "forecast_conditions_id": "cond_fixture_fc_001",
+              "forecast_issued_at": "2026-08-24T05:00:00Z",
+              "changes": [
+                {
+                  "task_id": "TSK-FIXTURE-002",
+                  "before_order": 3,
+                  "after_order": 2,
+                  "reason": "Outdoor grading moved earlier: fixture forecast shows rain and gusts after 09:00."
+                },
+                {
+                  "task_id": "TSK-FIXTURE-003",
+                  "before_order": 2,
+                  "after_order": 3,
+                  "reason": "Covered loading moved later; unaffected by the forecast."
+                }
+              ]
+            },
+            "payload_sha256": "3f1d0c9a4a1f0e3b5c7d9e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
+            "decision": {
+              "decision_id": "dec_fixture_001",
+              "decision": "approve",
+              "decided_by": "subj_fixture_sup",
+              "decided_at": "2026-08-24T05:30:00Z"
+            },
+            "application": {
+              "status": "applied",
+              "attempted_at": "2026-08-24T05:30:01Z",
+              "applied_schedule_version": 4
+            }
+          },
+          "decision_recorded": false,
+          "execution_status": "applied"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/approvals/APR-FIXTURE-0002/decision",
+        "body": {
+          "decision_id": "dec_fixture_003",
+          "decision": "reject",
+          "expected_version": 1,
+          "payload_sha256": "3f1d0c9a4a1f0e3b5c7d9e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
+        }
+      },
+      "response": {
+        "status": 409,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "decision_conflict",
+            "message": "approval already decided",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    }
+  ]
+}

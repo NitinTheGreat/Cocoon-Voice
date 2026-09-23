@@ -1,0 +1,15 @@
+{
+  "assignment_id": "ASG-FIXTURE-0001",
+  "lesson_id": "LSN-FIXTURE-SEATBELT",
+  "lesson_version": 1,
+  "current_step_id": "stp_3",
+  "completed_step_ids": [
+    "stp_1",
+    "stp_2"
+  ],
+  "playback_completed": true,
+  "assessment_passed": false,
+  "completion_status": "awaiting_assessment",
+  "version": 4,
+  "updated_at": "2026-08-24T12:00:30Z"
+}

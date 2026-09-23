@@ -1,0 +1,749 @@
+{
+  "description": "Proposed-contract fixtures (I01). All IDs and values are synthetic contract examples, not persisted records or measurements.",
+  "fixtures": [
+    {
+      "file": "valid/session_create_target.request.json",
+      "schema": "SessionCreateRequestTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Canonical dataset asset/operator IDs; site is a synthetic contract fixture."
+    },
+    {
+      "file": "valid/error_unknown_machine.response.json",
+      "schema": "ProposedErrorResponse",
+      "layer": "public",
+      "expect": "valid",
+      "note": "TARGET (I02) response for an unknown machine. The v1 runtime currently returns 201."
+    },
+    {
+      "file": "valid/me_operator.response.json",
+      "schema": "MeResponse",
+      "layer": "public",
+      "expect": "valid",
+      "note": "No token or token hash is ever echoed."
+    },
+    {
+      "file": "valid/me_supervisor.response.json",
+      "schema": "MeResponse",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Supervisors never bind to an operator session."
+    },
+    {
+      "file": "invalid/me_with_token.response.json",
+      "schema": "MeResponse",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Strict model: a token field cannot appear."
+    },
+    {
+      "file": "invalid/error_unknown_code.response.json",
+      "schema": "ProposedErrorResponse",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Error codes are a closed enum."
+    },
+    {
+      "file": "valid/turn_stream.request.json",
+      "schema": "TurnRequestTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Finalized utterance only; identity comes from the session binding."
+    },
+    {
+      "file": "invalid/turn_request_with_audio.request.json",
+      "schema": "TurnRequestTarget",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "No raw audio (or any unlisted field)."
+    },
+    {
+      "file": "invalid/turn_request_identity_override.request.json",
+      "schema": "TurnRequestTarget",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "client_context is allowlisted; it cannot override the bound operator."
+    },
+    {
+      "file": "invalid/turn_request_supersedes_itself.request.json",
+      "schema": "TurnRequestTarget",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "supersedes_turn_id must be an earlier turn (runtime also checks it exists in the same session)."
+    },
+    {
+      "file": "valid/action_result_approval_pending.json",
+      "schema": "PublicActionResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "A completed request action with a pending approval. It does not mean notify_supervisor happened."
+    },
+    {
+      "file": "invalid/action_result_apply_schedule.json",
+      "schema": "PublicActionResult",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "apply_schedule is not a turn action; it only executes from an approved workflow record."
+    },
+    {
+      "file": "invalid/action_result_completed_without_record.json",
+      "schema": "PublicActionResult",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "A completed record-producing action needs its real ID."
+    },
+    {
+      "file": "invalid/action_result_approval_marked_approved.json",
+      "schema": "PublicActionResult",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "A turn can only create a pending request."
+    },
+    {
+      "file": "valid/turn_event.speech_delta.json",
+      "schema": "TurnStreamEvent",
+      "layer": "public",
+      "expect": "valid",
+      "note": "SSE id = event_id = '<turn_id>:<sequence>'."
+    },
+    {
+      "file": "invalid/turn_event.bad_event_id.json",
+      "schema": "TurnStreamEvent",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "event_id must equal '<turn_id>:<sequence>'."
+    },
+    {
+      "file": "invalid/turn_event.empty_delta.json",
+      "schema": "TurnStreamEvent",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "speech.delta text is nonempty."
+    },
+    {
+      "file": "invalid/turn_event.classifier_leak.json",
+      "schema": "TurnStreamEvent",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Progress carries an allowlisted stage only; classifier/debug data is private."
+    },
+    {
+      "file": "invalid/turn_event.unknown_type.json",
+      "schema": "TurnStreamEvent",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Only the six event types exist; thinking/reasoning never streams."
+    },
+    {
+      "file": "valid/turn_result_target.cancelled.json",
+      "schema": "TurnResultTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Recovery view of a run cancelled after the incident committed; the incident stays saved."
+    },
+    {
+      "file": "valid/cancel.request.json",
+      "schema": "CancelRequest",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/cancel_bad_reason.request.json",
+      "schema": "CancelRequest",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Reason is one of barge_in/stop/session_closed/timeout."
+    },
+    {
+      "file": "valid/cancel_pending.response.json",
+      "schema": "CancelResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "HTTP 202."
+    },
+    {
+      "file": "valid/cancel_already_completed.response.json",
+      "schema": "CancelResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "HTTP 200: completion won the race."
+    },
+    {
+      "file": "invalid/cancel_inconsistent.response.json",
+      "schema": "CancelResult",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Outcome and turn status must agree."
+    },
+    {
+      "file": "valid/turn_delivery_interrupted_unknown.request.json",
+      "schema": "TurnDeliveryReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": "No SDK position evidence: no text is asserted."
+    },
+    {
+      "file": "valid/turn_delivery_played_exact.request.json",
+      "schema": "TurnDeliveryReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/turn_delivery_unknown_with_text.request.json",
+      "schema": "TurnDeliveryReport",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Unknown position cannot claim played text."
+    },
+    {
+      "file": "valid/announcement.alert_started.json",
+      "schema": "AnnouncementEnvelope",
+      "layer": "public",
+      "expect": "valid",
+      "note": "No turn_id; correlated to the persisted alert."
+    },
+    {
+      "file": "invalid/announcement_with_turn_id.json",
+      "schema": "AnnouncementEnvelope",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Announcements are independent of turns."
+    },
+    {
+      "file": "invalid/announcement_uncorrelated.json",
+      "schema": "AnnouncementEnvelope",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Every announcement references the record that justified it."
+    },
+    {
+      "file": "valid/events_page_target.response.json",
+      "schema": "EventsPageTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Polling item = v1 announcement fields + additive envelope fields; same event_id/sequence as SSE."
+    },
+    {
+      "file": "valid/announcement_delivery_legacy.request.json",
+      "schema": "AnnouncementDeliveryReportTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "v1 body without delivery_id stays valid (last write per consumer)."
+    },
+    {
+      "file": "valid/announcement_delivery_with_id.request.json",
+      "schema": "AnnouncementDeliveryReportTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "valid/telemetry_v2_batch.request.json",
+      "schema": "TelemetryRequestTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "All six observation kinds. Values are synthetic contract examples, not measurements or thresholds."
+    },
+    {
+      "file": "valid/telemetry_v1_body_still_accepted.request.json",
+      "schema": "TelemetryRequestTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "The unchanged v1 body remains a valid target request."
+    },
+    {
+      "file": "valid/telemetry_ingest.response.json",
+      "schema": "TelemetryIngestResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Receipt time is server-assigned; observed_at is preserved."
+    },
+    {
+      "file": "invalid/proximity_detected_without_distance.json",
+      "schema": "TelemetryBatchRequest",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "A detected entity needs a distance."
+    },
+    {
+      "file": "invalid/human_impact_force_without_model.json",
+      "schema": "TelemetryBatchRequest",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Acceleration is not force without a documented model."
+    },
+    {
+      "file": "invalid/precipitation_without_interval.json",
+      "schema": "TelemetryBatchRequest",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Precipitation needs its accumulation interval."
+    },
+    {
+      "file": "valid/conditions_forecast.json",
+      "schema": "ConditionsSnapshot",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Fixture-mode forecast (not Open-Meteo output). Times align to the replay data clock."
+    },
+    {
+      "file": "invalid/conditions_forecast_without_issue_time.json",
+      "schema": "ConditionsSnapshot",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "A forecast needs its issue time."
+    },
+    {
+      "file": "valid/task_assignment.json",
+      "schema": "TaskAssignment",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Synthetic site/zone; canonical asset and operator IDs."
+    },
+    {
+      "file": "invalid/estimate_fallback_without_missing_inputs.json",
+      "schema": "DurationEstimate",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "A reduced-input fallback must name what is missing (e.g. the five provided benchmark rows)."
+    },
+    {
+      "file": "valid/estimate_benchmark_reduced.json",
+      "schema": "DurationEstimate",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Reduced-input path for rows T001-T005, which lack quantity/ground/model."
+    },
+    {
+      "file": "invalid/rule_published_without_citation.json",
+      "schema": "RulePolicyRef",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Published-guidance status needs a citation; no citation is invented."
+    },
+    {
+      "file": "valid/incident_auto_draft.json",
+      "schema": "IncidentReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Linked draft; never silently a confirmed incident."
+    },
+    {
+      "file": "valid/incident_confirmed.json",
+      "schema": "IncidentReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/incident_confirmed_with_inferred_fact.json",
+      "schema": "IncidentReport",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Confirmation cannot keep an inferred, unconfirmed fact."
+    },
+    {
+      "file": "invalid/incident_auto_draft_without_episode.json",
+      "schema": "IncidentReport",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "An automatic draft links its episode."
+    },
+    {
+      "file": "invalid/wellbeing_vitals_without_consent.json",
+      "schema": "OperatorWellbeingView",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Revoked consent suppresses vitals processing; values are unavailable, not fabricated as low risk."
+    },
+    {
+      "file": "valid/state_target_operator_private.response.json",
+      "schema": "SessionStateTarget",
+      "layer": "public",
+      "expect": "valid",
+      "note": "PRIVATE operator projection (includes the operator's own vitals). Never served to a supervisor."
+    },
+    {
+      "file": "valid/supervisor_overview_safe.response.json",
+      "schema": "SupervisorOverview",
+      "layer": "public",
+      "expect": "valid",
+      "note": "SAFE supervisor projection of the same moment as the private state: risk level only, draft text hidden."
+    },
+    {
+      "file": "invalid/supervisor_risk_with_raw_vitals.json",
+      "schema": "SupervisorRiskView",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Raw vitals cannot enter a supervisor view."
+    },
+    {
+      "file": "invalid/supervisor_overview_nested_vitals.json",
+      "schema": "SupervisorOverview",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Nested private fields are rejected too."
+    },
+    {
+      "file": "invalid/supervisor_alert_with_evidence.json",
+      "schema": "SupervisorAlertView",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Operator alert evidence is not a supervisor response model."
+    },
+    {
+      "file": "invalid/supervisor_alert_wellbeing.json",
+      "schema": "SupervisorAlertView",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Wellbeing reaches supervisors only as SupervisorRiskView."
+    },
+    {
+      "file": "invalid/supervisor_incident_draft_text.json",
+      "schema": "SupervisorIncidentView",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Draft text stays private until the operator confirms."
+    },
+    {
+      "file": "valid/supervisor_feed.risk_changed.json",
+      "schema": "SupervisorFeedEvent",
+      "layer": "public",
+      "expect": "valid",
+      "note": "After the operator revokes risk sharing, the feed shows unavailable, not low risk."
+    },
+    {
+      "file": "valid/consent_grant.request.json",
+      "schema": "ConsentChangeRequest",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Operator principal only."
+    },
+    {
+      "file": "valid/consent_revoke.request.json",
+      "schema": "ConsentChangeRequest",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "valid/consent_state_after_revoke.response.json",
+      "schema": "ConsentState",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Purposes are separate; synthetic demo consents are labelled."
+    },
+    {
+      "file": "invalid/consent_grant_without_notice.json",
+      "schema": "ConsentRecord",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "A grant needs its notice version and effective time."
+    },
+    {
+      "file": "valid/approval_pending.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Before/after order with the forecast that motivated it; nothing applied yet. Hash is a fixture value."
+    },
+    {
+      "file": "valid/approval_approved_applied.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Applied exactly once after approval."
+    },
+    {
+      "file": "valid/approval_approved_not_applied.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Approved but NOT applied: approval is not execution."
+    },
+    {
+      "file": "valid/approval_rejected.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/approval_pending_but_applied.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "No schedule mutation before a decision."
+    },
+    {
+      "file": "invalid/approval_rejected_but_applied.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": ""
+    },
+    {
+      "file": "valid/approval_decision.request.json",
+      "schema": "DecisionRequest",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Quotes the version and payload hash it reviewed."
+    },
+    {
+      "file": "valid/approval_escalation_pending.json",
+      "schema": "ApprovalRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Repeat-violation escalation counts distinct episodes, not samples."
+    },
+    {
+      "file": "valid/content_video_not_yet_supplied.response.json",
+      "schema": "ContentAsset",
+      "layer": "public",
+      "expect": "valid",
+      "note": "No real video exists yet (DG-10). The contract marks it unplayable instead of inventing a URL."
+    },
+    {
+      "file": "invalid/content_video_available_without_checksum.json",
+      "schema": "ContentAsset",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "An available asset needs checksum and licence."
+    },
+    {
+      "file": "valid/lesson_seatbelt_60s.json",
+      "schema": "LessonVersion",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Structure only; lesson text/video are not approved content."
+    },
+    {
+      "file": "valid/lesson_assignment_behaviour.json",
+      "schema": "LessonAssignment",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Behaviour-triggered assignment linked to its episode and policy."
+    },
+    {
+      "file": "invalid/lesson_assignment_behaviour_unlinked.json",
+      "schema": "LessonAssignment",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": ""
+    },
+    {
+      "file": "valid/quiz_attempt_failed.json",
+      "schema": "QuizAttempt",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "valid/quiz_attempt_passed.json",
+      "schema": "QuizAttempt",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/quiz_ambiguous_marked_pass.json",
+      "schema": "QuizAttempt",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Ambiguous is never a pass."
+    },
+    {
+      "file": "valid/lesson_progress_awaiting_assessment.json",
+      "schema": "LessonProgress",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Playback finished; not complete until the quiz is passed."
+    },
+    {
+      "file": "invalid/lesson_completed_by_playback_only.json",
+      "schema": "LessonProgress",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Playback alone never completes a lesson."
+    },
+    {
+      "file": "valid/sos_responded_ok.json",
+      "schema": "SosEpisode",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Deadline starts from the presented offer."
+    },
+    {
+      "file": "valid/sos_unreachable_notified.json",
+      "schema": "SosEpisode",
+      "layer": "public",
+      "expect": "valid",
+      "note": "No channel could present the check-in: unreachable, not 'ignored'. One in-app notification."
+    },
+    {
+      "file": "invalid/sos_no_response_without_presentation.json",
+      "schema": "SosEpisode",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "No-response needs a presented check-in; otherwise it is operator_unreachable."
+    },
+    {
+      "file": "valid/command_task_start.request.json",
+      "schema": "Command",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Tap path; voice reaches the same service."
+    },
+    {
+      "file": "valid/command_offline_incident_draft.request.json",
+      "schema": "Command",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Captured offline; binding (incl. the original session) travels with it."
+    },
+    {
+      "file": "valid/command_result_offline_after_reconnect.response.json",
+      "schema": "CommandResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Synced later through a NEW session; stored under the original operator/machine/shift."
+    },
+    {
+      "file": "valid/command_result_duplicate_upload.response.json",
+      "schema": "CommandResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Second upload returns the same record."
+    },
+    {
+      "file": "valid/command_result_stale_version.response.json",
+      "schema": "CommandResult",
+      "layer": "public",
+      "expect": "valid",
+      "note": "HTTP 409; nothing overwritten."
+    },
+    {
+      "file": "invalid/command_unknown_kind.request.json",
+      "schema": "Command",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Finite command allowlist; no arbitrary executor."
+    },
+    {
+      "file": "invalid/command_result_queued_with_records.json",
+      "schema": "CommandResult",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Queued is not completed."
+    },
+    {
+      "file": "valid/command_sos_respond.request.json",
+      "schema": "Command",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Resolves only the named episode/check-in."
+    },
+    {
+      "file": "valid/presence.request.json",
+      "schema": "PresenceReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Last-known connectivity only."
+    },
+    {
+      "file": "valid/presentation_screen.request.json",
+      "schema": "PresentationReport",
+      "layer": "public",
+      "expect": "valid",
+      "note": "Screen presentation. Not audio playback, not acknowledgement."
+    },
+    {
+      "file": "valid/presentation.response.json",
+      "schema": "PresentationRecord",
+      "layer": "public",
+      "expect": "valid",
+      "note": ""
+    },
+    {
+      "file": "invalid/presentation_as_audio.request.json",
+      "schema": "PresentationReport",
+      "layer": "public",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Presentation channels are screen/vibration only."
+    },
+    {
+      "file": "valid/classifier_multi_action.json",
+      "schema": "ClassifierDecision",
+      "layer": "internal",
+      "expect": "valid",
+      "note": "INTERNAL. 'Log an incident and tell my supervisor' = incident, then a pending approval request."
+    },
+    {
+      "file": "valid/action_plan_waiting_approval.json",
+      "schema": "ActionPlan",
+      "layer": "internal",
+      "expect": "valid",
+      "note": "INTERNAL. notify_supervisor waits for approval; it is never reported as completed."
+    },
+    {
+      "file": "invalid/classifier_low_certainty_acting.json",
+      "schema": "ClassifierDecision",
+      "layer": "internal",
+      "expect": "invalid",
+      "rejected_by": "model",
+      "note": "Low certainty clarifies instead of acting."
+    },
+    {
+      "file": "invalid/classifier_arbitrary_tool.json",
+      "schema": "ClassifierDecision",
+      "layer": "internal",
+      "expect": "invalid",
+      "rejected_by": "both",
+      "note": "Intents are an allowlist; no arbitrary tool names."
+    }
+  ]
+}

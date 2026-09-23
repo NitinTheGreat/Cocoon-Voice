@@ -1,0 +1,8 @@
+{
+  "turn_id": "turn_fixture_001",
+  "text": "hello",
+  "source": "voice",
+  "client_context": {
+    "operator_id": "OP_OTHER"
+  }
+}

@@ -13,8 +13,9 @@ cocoon_agent/
   graph/brain.py   live router/wording (Claude via the Anthropic SDK) and the explicit MockBrain
   store.py         SQLite schema, demo seed, idempotent writes (unique keys on turn_id / event_id)
   rules.py         PROTOTYPE seatbelt rule on simulated telemetry
-scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, export_openapi.py
-tests/             contract drift, API behaviour, resilience/restart, mock brain, offline live-brain
+  contract/        PROPOSED target contract models (I01); exported to ../contracts/proposed, never imported by the app
+scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, export_openapi.py, export_proposed_contract.py
+tests/             contract drift, API behaviour, resilience/restart, mock brain, offline live-brain, proposed-contract checks
 data/              cocoon.db + checkpoints.db (git-ignored, created on first start)
 ```
 
@@ -99,8 +100,9 @@ The simulator resolves the session with the same `client_session_key` the worker
 ## Tests
 
 ```
-pytest                                  # 57 tests, no credentials, no network
-python scripts/export_openapi.py --check
+pytest                                  # 203 tests, no credentials, no network
+python scripts/export_openapi.py --check           # runtime contract (what is served)
+python scripts/export_proposed_contract.py --check  # proposed target contract (not served)
 ```
 
 The tests cover:
@@ -117,6 +119,7 @@ The tests cover:
 - An orphaned turn after a restart.
 - Records, pending question and completed turns surviving a restart.
 - Offline request-shape checks of the live Claude path, which cover the beta header, `fallbacks`, the JSON schema and refusal mapping. These do **not** call the provider.
+- Proposed-contract checks (`tests/test_proposed_contract.py`, 146 cases). They cover the generated target spec, 100 valid/invalid fixtures, event-sequence invariants, exchange examples and the chunked SSE fixture. They also confirm that v1 examples stay valid under the target models and that no proposed route is registered. These are schema/fixture checks only: no proposed route is implemented.
 
 ## Environment variables
 

@@ -1,0 +1,219 @@
+{
+  "route": "POST /v1/sessions/{session_id}/commands",
+  "note": "Offline draft uploaded twice through a newer session, then a stale mutation and an ID reuse.",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0002/commands",
+        "body": {
+          "schema_version": "cocoon.command.v1",
+          "command_id": "cmd_fixture_offline_007",
+          "kind": "incident.submit_draft",
+          "captured_at": "2026-08-24T08:05:00Z",
+          "client_draft_id": "draft_fixture_007",
+          "binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "payload": {
+            "what": {
+              "value": "Loose track guard bolt",
+              "basis": "reported"
+            },
+            "where": {
+              "site_id": "SITE_FIXTURE_A",
+              "site_zone_id": "ZONE_FIXTURE_A_PIT",
+              "basis": "reported"
+            },
+            "when": {
+              "value": "2026-08-24T08:03:00Z",
+              "basis": "reported"
+            },
+            "severity": {
+              "value": "low",
+              "basis": "reported"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "schema": "CommandResult",
+        "body": {
+          "command_id": "cmd_fixture_offline_007",
+          "kind": "incident.submit_draft",
+          "status": "completed",
+          "duplicate": false,
+          "record_ids": [
+            "INC-FIXTURE-0007"
+          ],
+          "original_binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "received_at": "2026-08-24T09:30:00Z",
+          "completed_at": "2026-08-24T09:30:00Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0002/commands",
+        "body": {
+          "schema_version": "cocoon.command.v1",
+          "command_id": "cmd_fixture_offline_007",
+          "kind": "incident.submit_draft",
+          "captured_at": "2026-08-24T08:05:00Z",
+          "client_draft_id": "draft_fixture_007",
+          "binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "payload": {
+            "what": {
+              "value": "Loose track guard bolt",
+              "basis": "reported"
+            },
+            "where": {
+              "site_id": "SITE_FIXTURE_A",
+              "site_zone_id": "ZONE_FIXTURE_A_PIT",
+              "basis": "reported"
+            },
+            "when": {
+              "value": "2026-08-24T08:03:00Z",
+              "basis": "reported"
+            },
+            "severity": {
+              "value": "low",
+              "basis": "reported"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "schema": "CommandResult",
+        "body": {
+          "command_id": "cmd_fixture_offline_007",
+          "kind": "incident.submit_draft",
+          "status": "completed",
+          "duplicate": true,
+          "record_ids": [
+            "INC-FIXTURE-0007"
+          ],
+          "original_binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "received_at": "2026-08-24T09:30:00Z",
+          "completed_at": "2026-08-24T09:30:00Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0002/commands",
+        "body": {
+          "schema_version": "cocoon.command.v1",
+          "command_id": "cmd_fixture_009",
+          "kind": "task.complete",
+          "captured_at": "2026-08-24T08:10:00Z",
+          "binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "expected_version": 2,
+          "payload": {
+            "task_id": "TSK-FIXTURE-001"
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "schema": "CommandResult",
+        "body": {
+          "command_id": "cmd_fixture_009",
+          "kind": "task.complete",
+          "status": "conflict",
+          "duplicate": false,
+          "conflict": {
+            "expected_version": 2,
+            "current_version": 4,
+            "reason": "stale_version"
+          },
+          "original_binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "received_at": "2026-08-24T09:31:00Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0002/commands",
+        "body": {
+          "schema_version": "cocoon.command.v1",
+          "command_id": "cmd_fixture_offline_007",
+          "kind": "incident.submit_draft",
+          "captured_at": "2026-08-24T08:05:00Z",
+          "client_draft_id": "draft_fixture_007",
+          "binding": {
+            "operator_id": "OP_DEMO_1_1",
+            "machine_id": "EXC_DEMO_001",
+            "shift_id": "EXC_DEMO_001_2026-08-24",
+            "site_id": "SITE_FIXTURE_A",
+            "device_id": "dev_fixture_phone",
+            "session_id": "ses_fixture_0001"
+          },
+          "payload": {
+            "what": {
+              "value": "Different",
+              "basis": "reported"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "idempotency_conflict",
+            "message": "command_id was already used with a different payload",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "branch": "tasks",
+  "intents": [
+    {
+      "intent": "complete_task",
+      "entities": {},
+      "depends_on": []
+    }
+  ],
+  "routing_certainty": "low",
+  "needs_clarification": false
+}

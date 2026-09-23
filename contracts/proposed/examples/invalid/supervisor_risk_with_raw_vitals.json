@@ -1,0 +1,11 @@
+{
+  "view": "risk",
+  "operator_id": "OP_DEMO_1_1",
+  "site_id": "SITE_FIXTURE_A",
+  "risk_level": "advisory",
+  "observed_at": "2026-08-24T06:45:00Z",
+  "freshness": "fresh",
+  "response_context": "break_recommended",
+  "heart_rate_bpm": 96.0,
+  "skin_temp_c": 35.1
+}
