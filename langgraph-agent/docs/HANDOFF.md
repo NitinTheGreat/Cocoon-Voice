@@ -2,6 +2,80 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## B4: explanations, idle reasons, shift briefing, training link and the HTTP demo
+
+- **Schema v7:** `idle_reasons`, `shift_briefings`, lesson `version`/`content_text`/`content_status`,
+  `training_assignments.source_episode_id`, `alerts.training_assignment_id`.
+- **Behaviour:** "Why?" explains the referenced warning from its saved evidence and returns its announcement's
+  delivery reports (not acknowledgement); competing warnings get a question. "I'm waiting for a truck" records an idle
+  reason and keeps the belt warning. One shift briefing per seeded shift. The belt policy assigns L1 once per
+  outstanding assignment, in the alert's transaction; "read my seatbelt lesson" reads the versioned demo text without
+  completing it. Safety policy is now `demo-safety-2026-09-24.2` (adds the lesson link).
+- **Demo:** `scripts/demo_operator.py` seeds `data/demo_run`, starts a mock backend, runs the nine-step sequence over
+  HTTP, writes a transcript and stops. Re-running the same run ID was observed to replay every saved result.
+- **Checks:** `tests/test_operator_context.py` (5): evidence-based "why" after readings change, delivery ≠
+  acknowledgement, competing warnings; idle reason kept once and belt warning retained; one briefing across sessions
+  and restart; one episode-linked L1 assignment across two episodes, operator isolation, reading ≠ completion; legacy
+  record never linked. Full suite (310 passed, 1 skipped) and contract drift checks pass. Not observed: audio,
+  Android, live-model classification of the B2–B4 intents.
+
+## B3: machine replay, belt/idle episodes and automatic drafts
+
+- **Schema v6:** alert episode columns (policy version, source status, reason, recommended action, evidence,
+  correlated episode, linked draft, announced), `machine_state` (latest applied observation with idle streak start)
+  and `telemetry_events.provenance_json`. **v5 was revised before release** (never applied outside test databases):
+  drafts now live in `incident_drafts` (`DRF-…`, own numbering) and confirming one allocates the real `INC-…` once,
+  so drafts never consume report numbers.
+- **Rules:** `policies/safety_policy_v1.json` (belt+engine, prolonged idle 300 s, idle+unbelted 60 s; demo
+  assumptions). One short transaction per sample applies every rule and writes alert + draft + announcement
+  together. Idle time uses observation timestamps; a sample without `operating_state` leaves idle state unknown.
+  Late and same-time conflicting samples are recorded and ignored. Telemetry now has its own per-session lock, so it
+  never waits for a turn's model call (the graph reads alerts from the DB at turn start).
+- **Simulator:** `scripts/simulate_machine.py` (any of the 5 machines; `belt_idle`, `belt_retrigger`,
+  `selection_check`, `dataset`).
+- **Checks:** `tests/test_safety.py` (5): warning before motion, no spam, one draft, correlation, restart keeps
+  episodes and duplicate replay; observation-clock idle timing and unknown state; clear/retrigger/late/conflicting;
+  all five assets isolated plus stale freshness; dataset replay (runs only where the ignored dataset exists). Full
+  suite and both contract drift checks pass. Not observed: real sensors, live voice playback of these announcements.
+
+## B2: operator workflows, structured incidents and truthful action outcomes
+
+- **Schema v5:** structured incident columns (status draft/confirmed/dismissed, origin, severity + basis, site/zone +
+  basis, location text, occurred_at + basis, episode link, version), `approval_requests` (pending supervisor review)
+  and `turns.route_json` (the turn's saved classification). Legacy incidents become confirmed operator reports.
+- **Routing:** one structured decision per turn adds `branch` and parameters; the graph gains draft review /
+  confirm / dismiss / "yes" handling and an honest `capability_unavailable` reply. A bare "yes" acts only when
+  exactly one workflow is waiting. A retried turn reuses the saved decision (no second model call).
+- **Writes:** incident report, escalation request and draft transitions go through the B1 command log with
+  turn-scoped IDs, so each mutation and its action record commit together. Turn results carry `branch` and
+  `action_records`; a failed turn lists what was saved (error `details` and `GET .../turns/{id}`), and a retry runs
+  only what is missing. Taps: `incident.edit/confirm/dismiss` with `expected_version`.
+- **Checks:** `tests/test_incidents.py` (5): structured fields and one report per turn, pending escalation, asked
+  description carrying the escalation, a forced crash after the incident commit (kept, not repeated on retry),
+  draft isolation/confirm/dismiss/version/ownership by voice and tap, unsupported capability. Migration upgrade
+  tests extended for the new columns. Full suite and both contract drift checks pass. Live Vertex classification of
+  the new fields is not observed.
+
+## B1: assigned tasks and the shared command path
+
+- **Schema v4:** `sites`, `site_zones`, `shifts`, `task_assignments` (versioned lifecycle) and `command_log`
+  (scope + command ID, fingerprint, outcome, record reference, summary, state version, saved result). The three
+  shared seed tasks are untouched; legacy and unbound sessions still use them for "next task".
+- **Seeding:** `scripts/seed_demo.py` loads the tracked synthetic fixture into the database and writes the trusted
+  bindings file for one service date. It is idempotent and never overwrites differing rows.
+- **Binding:** a bound session gets its shift and tasks. Binding is explicit (`site_id` + `shift_id` matching a
+  trusted binding) or automatic on the server (exactly one trusted binding for that operator/machine for today at
+  the site).
+- **One command path:** voice ("start the next task", "I finished the task") and `POST .../commands` (`task.start` /
+  `task.complete`). Identity is scoped per principal or per turn; an identical retry returns the saved result, a
+  reused ID with a different payload is 409 `idempotency_conflict`, and a stale version or illegal step is 409
+  `version_conflict` / `invalid_transition`. An operator only reaches their own shift's tasks; supervisors get 403.
+- **Checks:** `tests/test_tasks.py` (7): idempotent seeding and refusal to overwrite, auto and explicit binding, the
+  voice lifecycle and same-turn retry, tap rules shared with voice, isolation across all 5 assets and operators,
+  unbound legacy behaviour, and a populated v3 → v4 upgrade. Existing migration, session, auth, API, resilience and
+  contract tests pass (version assertions now derive from the migration list). Both contract checks were
+  regenerated and are clean.
+
 ## Batch A (fast track): connect voice through the existing JSON APIs
 
 - **Recorded:** 2026-09-24. Branch `backend`. Order per `BACKEND_FAST_TRACK_PLAN.md`: voice integration comes before I02c/I02d. The user's commit `c779e26` ("check apis") holds the Gemini-on-Vertex integration and git-ignores `Cocoon_Dataset_v1/`. Batch A adds `4d324fc` (bounded Vertex calls, one model call per turn) and the commit containing this entry (499 mapping, voice handoff, docs).

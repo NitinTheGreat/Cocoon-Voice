@@ -137,8 +137,10 @@ ROUTES: tuple[Route, ...] = (
                                                          "time. Operator projection only; supervisors use "
                                                          "/v1/supervisor/overview.", "schema": "SessionStateTarget"},)),
     Route("post", "/v1/sessions/{session_id}/telemetry", "implemented", "v1", ("simulator", "voice_service"),
-          "Post one simulated sample",
-          idempotency="(session_id, event_id); same payload → duplicate:true, different payload → 409",
+          "Post one simulated sample. B3 (additive): optional operating_state/speed_kph/provenance; three versioned "
+          "demo rules (belt, prolonged idle, idle+belt) with episodes, a linked automatic draft and announcements",
+          idempotency="(session_id, event_id); same payload → duplicate:true, different payload → 409; a late or "
+                      "same-time conflicting sample is recorded but ignored (stale:true, ignored_reason)",
           target_changes=({"stage": "I05A", "change": "Also accept the typed cocoon.telemetry.v2 batch; per-"
                                                       "observation accepted/duplicate/ignored/rejected outcomes.",
                            "schema": "TelemetryRequestTarget"},
@@ -203,21 +205,22 @@ ROUTES: tuple[Route, ...] = (
           "Resolve the authenticated principal",
           target_changes=({"stage": "I13", "change": "site_ids from trusted supervisor site grants (none exist "
                                                      "yet; always empty in I02b)."},)),
-    Route("post", "/v1/sessions/{session_id}/commands", "proposed", "I02/I15", ("operator", "voice_service"),
-          "Submit a typed command (tap, voice-confirmed or offline sync)",
-          idempotency="command_id unique per issuing subject across sessions and reconnects. Identical retry "
-                      "returns the stored CommandResult (duplicate:true); a different payload under the same id "
-                      "→ 409 idempotency_conflict; a stale expected_version → 409 with status conflict.",
-          request=cm.Command, params=(REQUEST_ID,),
-          responses={200: Resp("Completed (or identical duplicate)", cm.CommandResult),
-                     202: Resp("Durably queued; not completed", cm.CommandResult),
-                     409: Resp("Version conflict (CommandResult) or reused command_id (error)",
-                               (cm.CommandResult, ERR)),
-                     **_errs(401, 403, 404, 422, 429)}),
-    Route("get", "/v1/sessions/{session_id}/commands/{command_id}", "proposed", "I02/I15", ("operator",
+    Route("post", "/v1/sessions/{session_id}/commands", "implemented", "B1", ("operator", "voice_service"),
+          "Submit a task (task.start/complete, B1) or incident-draft command (incident.edit/confirm/dismiss, B2); "
+          "the same domain service as the voice tools",
+          idempotency="command_id unique per calling principal; identical retry returns the stored result "
+                      "(duplicate: true); a different payload → 409 idempotency_conflict; stale expected_version → "
+                      "409 version_conflict; illegal lifecycle step (e.g. confirming a confirmed incident) → 409 "
+                      "invalid_transition.",
+          target_changes=(
+              {"stage": "I15", "change": "Full cocoon.command.v1 envelope with device binding, offline queueing "
+                                         "(202) and the remaining kinds.", "schema": "Command"},
+          )),
+    Route("get", "/v1/sessions/{session_id}/commands/{command_id}", "implemented", "B1", ("operator",
                                                                                           "voice_service"),
           "Authoritative command result after a lost response", idempotency="Read-only; never re-executes.",
-          responses={200: Resp("Command result", cm.CommandResult), **_errs(401, 403, 404)}),
+          target_changes=({"stage": "I15", "change": "Queued/failed/conflict states for offline commands.",
+                           "schema": "CommandResult"},)),
     Route("post", "/v1/sessions/{session_id}/presence", "proposed", "I15", ("operator", "voice_service"),
           "Report consumer connectivity and voice availability",
           idempotency="report_id; older per-consumer sequence ignored", request=cm.PresenceReport,
@@ -277,7 +280,7 @@ EXTRA_MODELS: tuple[type[BaseModel], ...] = (
     idn.SessionCreateRequestTarget, idn.SessionTarget, tr.TurnResultTarget, cm.SessionStateTarget,
     tm.TelemetryRequestTarget, tm.TelemetryIngestResult, an.EventsPageTarget, an.AnnouncementDeliveryReportTarget,
     tm.ConditionsSnapshot, lms.LessonVersion, lms.Course, lms.QuizAttempt,
-    ap.ApprovalRecord,
+    ap.ApprovalRecord, cm.Command, cm.CommandResult,
 )
 INTERNAL_MODELS: tuple[type[BaseModel], ...] = (inn.ClassifierDecision, inn.ActionPlan)
 STANDALONE: dict[str, type[BaseModel]] = {

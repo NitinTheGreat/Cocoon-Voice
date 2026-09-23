@@ -307,6 +307,144 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/commands:
+    post:
+      tags:
+      - commands
+      summary: Submit Command
+      operationId: submit_command_v1_sessions__session_id__commands_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCommand'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCommandResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: idempotency_conflict (command_id reused with a different payload), version_conflict (expected_version
+            is stale; details give the current version) or invalid_transition (the task is not in a state this command
+            accepts)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/commands/{command_id}:
+    get:
+      tags:
+      - commands
+      summary: Get Command
+      operationId: get_command_v1_sessions__session_id__commands__command_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCommandResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/sessions/{session_id}/state:
     get:
       tags:
@@ -588,6 +726,53 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
+    ActionRecord:
+      properties:
+        action_id:
+          type: string
+          title: Action Id
+        kind:
+          type: string
+          title: Kind
+        outcome:
+          type: string
+          enum:
+          - completed
+          - failed
+          - unknown
+          title: Outcome
+        record_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Type
+        record_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Id
+        summary:
+          type: string
+          title: Summary
+        state_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: State Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - action_id
+      - kind
+      - outcome
+      - summary
+      - created_at
+      title: ActionRecord
+      description: Durable outcome of one write in this turn (committed together with the write).
     Alert:
       properties:
         alert_id:
@@ -598,7 +783,10 @@ components:
           title: Rule Id
         alert_type:
           type: string
-          const: seatbelt_unfastened
+          enum:
+          - seatbelt_unfastened
+          - prolonged_idle
+          - idle_unbelted
           title: Alert Type
         severity:
           type: string
@@ -633,6 +821,58 @@ components:
             format: date-time
           - type: 'null'
           title: Cleared At
+        policy_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Policy Version
+          description: Safety policy that produced this episode.
+        source_status:
+          anyOf:
+          - type: string
+            enum:
+            - demo_assumption
+            - published_limit
+          - type: 'null'
+          title: Source Status
+          description: 'demo_assumption: thresholds are demo values, not published CAT limits.'
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        recommended_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Action
+        evidence:
+          anyOf:
+          - $ref: '#/components/schemas/AlertEvidence'
+          - type: 'null'
+        correlated_alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlated Alert Id
+          description: Episode this one overlaps (same physical situation); it is not announced again.
+        draft_incident_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Draft Incident Id
+          description: Automatic incident draft linked to this episode.
+        training_assignment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Training Assignment Id
+          description: Lesson assignment linked to this episode.
+        announced:
+          type: boolean
+          title: Announced
+          description: 'An alert_started announcement was created (not: heard).'
+          default: true
       additionalProperties: false
       type: object
       required:
@@ -647,6 +887,51 @@ components:
       - trigger_readings
       - started_at
       title: Alert
+    AlertEvidence:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+          description: Observation (data) time of the triggering sample.
+        readings:
+          $ref: '#/components/schemas/TelemetryReadings'
+        idle_since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Idle Since
+          description: Start of the observed idle streak, if any.
+        idle_seconds_observed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Idle Seconds Observed
+          description: observed_at - idle_since (data clock).
+        machine_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Machine Category
+        applicability:
+          type: string
+          enum:
+          - all_categories
+          - category_listed
+          title: Applicability
+          default: all_categories
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - observed_at
+      - readings
+      title: AlertEvidence
+      description: What the rule saw when the episode opened. Saved once; later readings never change it.
     AlertExplainedAction:
       properties:
         type:
@@ -657,12 +942,25 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Alert'
           - type: 'null'
+        announcement_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Announcement Event Id
+          description: The announcement that raised this alert.
+        deliveries:
+          items:
+            $ref: '#/components/schemas/DeliveryRecord'
+          type: array
+          title: Deliveries
+          description: Playback reports for that announcement. Played is not acknowledgement.
       additionalProperties: false
       type: object
       required:
       - type
       - alert
       title: AlertExplainedAction
+      description: The explanation comes from the episode's saved evidence, never from the latest readings.
     Announcement:
       properties:
         event_id:
@@ -676,6 +974,7 @@ components:
           enum:
           - alert_started
           - alert_cleared
+          - shift_briefing
           title: Type
         priority:
           type: string
@@ -719,6 +1018,262 @@ components:
       - speech
       - created_at
       title: Announcement
+    ApprovalRequest:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        kind:
+          type: string
+          const: incident_escalation
+          title: Kind
+        incident_id:
+          type: string
+          title: Incident Id
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - expired
+          title: Status
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - kind
+      - incident_id
+      - status
+      - created_at
+      title: ApprovalRequest
+      description: 'A request for supervisor review. `pending` until a supervisor decision route exists (Batch D);
+        creating it
+
+        is not a notification and not an approval.'
+    AssignedTask:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        shift_id:
+          type: string
+          title: Shift Id
+        machine_id:
+          type: string
+          title: Machine Id
+        site_zone_id:
+          type: string
+          title: Site Zone Id
+        zone_name:
+          type: string
+          title: Zone Name
+        scheduled_order:
+          type: integer
+          title: Scheduled Order
+        scheduled_start_at:
+          type: string
+          format: date-time
+          title: Scheduled Start At
+        scheduled_start_local:
+          type: string
+          title: Scheduled Start Local
+          description: HH:MM at the site (site UTC offset).
+        task_type:
+          type: string
+          title: Task Type
+        title:
+          type: string
+          title: Title
+        details:
+          type: string
+          title: Details
+        work_quantity:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Work Quantity
+        work_unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Work Unit
+        status:
+          type: string
+          enum:
+          - scheduled
+          - in_progress
+          - completed
+          title: Status
+        version:
+          type: integer
+          title: Version
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+        weather:
+          $ref: '#/components/schemas/TaskConditions'
+        duration:
+          $ref: '#/components/schemas/TaskDuration'
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - shift_id
+      - machine_id
+      - site_zone_id
+      - zone_name
+      - scheduled_order
+      - scheduled_start_at
+      - scheduled_start_local
+      - task_type
+      - title
+      - details
+      - status
+      - version
+      - weather
+      - duration
+      title: AssignedTask
+      description: A task assigned to the session's operator/machine for its trusted shift. Versioned for command
+        concurrency.
+    AssignedTasksAction:
+      properties:
+        type:
+          type: string
+          const: assigned_tasks
+          title: Type
+        scope:
+          type: string
+          enum:
+          - next
+          - all
+          title: Scope
+        tasks:
+          items:
+            $ref: '#/components/schemas/AssignedTask'
+          type: array
+          title: Tasks
+        shift_bound:
+          type: boolean
+          title: Shift Bound
+          description: False when the session has no trusted shift; tasks is then empty.
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - scope
+      - tasks
+      - shift_bound
+      title: AssignedTasksAction
+      description: Read of the shift's assigned tasks (next task or full list).
+    CapabilityUnavailableAction:
+      properties:
+        type:
+          type: string
+          const: capability_unavailable
+          title: Type
+        capability:
+          type: string
+          maxLength: 60
+          title: Capability
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - capability
+      title: CapabilityUnavailableAction
+    ClarificationAction:
+      properties:
+        type:
+          type: string
+          const: clarification_needed
+          title: Type
+        for_action:
+          type: string
+          enum:
+          - confirm_draft
+          - dismiss_draft
+          - explain_alert
+          - affirm
+          - read_lesson
+          title: For Action
+        reason:
+          type: string
+          enum:
+          - several_candidates
+          - nothing_pending
+          title: Reason
+        options:
+          items:
+            type: string
+          type: array
+          title: Options
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - for_action
+      - reason
+      title: ClarificationAction
+      description: 'Nothing was changed: several workflows could match, or there is nothing to act on.'
+    CommandPayload:
+      properties:
+        task_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Task Id
+        incident_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Incident Id
+          description: 'incident.* commands: the draft ID (DRF-…).'
+        description:
+          anyOf:
+          - type: string
+            maxLength: 1000
+            minLength: 1
+          - type: 'null'
+          title: Description
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        location_text:
+          anyOf:
+          - type: string
+            maxLength: 300
+          - type: 'null'
+          title: Location Text
+      additionalProperties: false
+      type: object
+      title: CommandPayload
     DeliveryRecord:
       properties:
         event_id:
@@ -798,6 +1353,8 @@ components:
           - catalog_unavailable
           - forbidden
           - auth_unavailable
+          - version_conflict
+          - invalid_transition
           title: Code
         message:
           type: string
@@ -846,6 +1403,24 @@ components:
       required:
       - error
       title: ErrorResponse
+    EscalationRequestedAction:
+      properties:
+        type:
+          type: string
+          const: escalation_requested
+          title: Type
+        approval:
+          $ref: '#/components/schemas/ApprovalRequest'
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - approval
+      - created
+      title: EscalationRequestedAction
     EventsPage:
       properties:
         session_id:
@@ -882,6 +1457,64 @@ components:
       required:
       - status
       title: HealthResponse
+    IdleReason:
+      properties:
+        reason_id:
+          type: string
+          title: Reason Id
+        reason_text:
+          type: string
+          title: Reason Text
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - reason_id
+      - reason_text
+      - created_at
+      title: IdleReason
+    IdleReasonRecordedAction:
+      properties:
+        type:
+          type: string
+          const: idle_reason_recorded
+          title: Type
+        reason_id:
+          type: string
+          title: Reason Id
+        reason_text:
+          type: string
+          title: Reason Text
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+          description: Idle episode the reason is linked to, if one is active.
+        belt_warning_active:
+          type: boolean
+          title: Belt Warning Active
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - reason_id
+      - reason_text
+      - belt_warning_active
+      - created
+      title: IdleReasonRecordedAction
+      description: The operator's stated reason for idling. Recording it does not clear any warning.
     Incident:
       properties:
         incident_id:
@@ -909,6 +1542,93 @@ components:
           type: string
           format: date-time
           title: Created At
+        status:
+          type: string
+          const: confirmed
+          title: Status
+          description: Unconfirmed drafts are IncidentDraft.
+          default: confirmed
+        origin:
+          type: string
+          enum:
+          - operator_reported
+          - auto_draft
+          title: Origin
+          default: operator_reported
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+          description: Null = not stated (never guessed).
+        severity_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - rule_default
+          - type: 'null'
+          title: Severity Basis
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        site_zone_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Zone Id
+        zone_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - active_task
+          - type: 'null'
+          title: Zone Basis
+        location_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Text
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+        occurred_basis:
+          anyOf:
+          - type: string
+            enum:
+            - time_of_report
+            - observation_time
+          - type: 'null'
+          title: Occurred Basis
+        episode_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Episode Id
+          description: Alert episode behind a confirmed automatic draft.
+        draft_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Draft Id
+          description: The draft this incident was confirmed from.
+        confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Confirmed At
       additionalProperties: false
       type: object
       required:
@@ -921,6 +1641,188 @@ components:
       - source_turn_id
       - created_at
       title: Incident
+      description: 'A confirmed report. `description` is the "what". Structured fields are additive; each `*_basis`
+        says where a
+
+        value came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks
+
+        invented.'
+    IncidentDraft:
+      properties:
+        draft_id:
+          type: string
+          title: Draft Id
+        draft_number:
+          type: integer
+          title: Draft Number
+        session_id:
+          type: string
+          title: Session Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        origin:
+          type: string
+          const: auto_draft
+          title: Origin
+        status:
+          type: string
+          enum:
+          - draft
+          - confirmed
+          - dismissed
+          title: Status
+        description:
+          type: string
+          title: Description
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        severity_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - rule_default
+          - type: 'null'
+          title: Severity Basis
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        site_zone_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Zone Id
+        zone_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - active_task
+          - type: 'null'
+          title: Zone Basis
+        location_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Text
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+        occurred_basis:
+          anyOf:
+          - type: string
+            enum:
+            - time_of_report
+            - observation_time
+          - type: 'null'
+          title: Occurred Basis
+        episode_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Episode Id
+        version:
+          type: integer
+          title: Version
+        incident_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Incident Id
+          description: Set once, when the draft is confirmed.
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Confirmed At
+        dismissed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Dismissed At
+      additionalProperties: false
+      type: object
+      required:
+      - draft_id
+      - draft_number
+      - session_id
+      - operator_id
+      - machine_id
+      - origin
+      - status
+      - description
+      - version
+      - created_at
+      title: IncidentDraft
+      description: 'An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates
+        the real
+
+        incident ID once (`incident_id`).'
+    IncidentDraftAction:
+      properties:
+        type:
+          type: string
+          enum:
+          - incident_confirmed
+          - incident_dismissed
+          title: Type
+        draft:
+          $ref: '#/components/schemas/IncidentDraft'
+        incident:
+          anyOf:
+          - $ref: '#/components/schemas/Incident'
+          - type: 'null'
+          description: The incident created by confirming (confirm only).
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - draft
+      - created
+      title: IncidentDraftAction
+    IncidentDraftsAction:
+      properties:
+        type:
+          type: string
+          const: incident_drafts
+          title: Type
+        drafts:
+          items:
+            $ref: '#/components/schemas/IncidentDraft'
+          type: array
+          title: Drafts
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - drafts
+      title: IncidentDraftsAction
     IncidentLoggedAction:
       properties:
         type:
@@ -975,6 +1877,25 @@ components:
         duration_minutes:
           type: integer
           title: Duration Minutes
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+          description: Content version, when lesson text exists.
+        content_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Text
+          description: Readable lesson text (demo lessons only so far).
+        content_status:
+          anyOf:
+          - type: string
+            const: demo_authored_unreviewed
+          - type: 'null'
+          title: Content Status
+          description: 'demo_authored_unreviewed: written for the demo, not reviewed by a trainer.'
       additionalProperties: false
       type: object
       required:
@@ -983,6 +1904,94 @@ components:
       - summary
       - duration_minutes
       title: Lesson
+    LessonContentAction:
+      properties:
+        type:
+          type: string
+          const: lesson_content
+          title: Type
+        lesson:
+          $ref: '#/components/schemas/Lesson'
+        assignment:
+          anyOf:
+          - $ref: '#/components/schemas/TrainingAssignment'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - lesson
+      title: LessonContentAction
+    MachineStateView:
+      properties:
+        status:
+          type: string
+          enum:
+          - unavailable
+          - fresh
+          - stale
+          title: Status
+        observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Observed At
+        received_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Received At
+        engine_on:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Engine On
+        seatbelt_fastened:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Seatbelt Fastened
+        operating_state:
+          anyOf:
+          - type: string
+            enum:
+            - 'off'
+            - idle
+            - working
+            - travel
+          - type: 'null'
+          title: Operating State
+        speed_kph:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Speed Kph
+        idle_since:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Idle Since
+        idle_seconds_observed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Idle Seconds Observed
+        stale_after_seconds:
+          type: integer
+          title: Stale After Seconds
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - stale_after_seconds
+      title: MachineStateView
+      description: 'Latest accepted observation. Two clocks: durations use observation time (`observed_at`); freshness
+        uses the
+
+        server''s receipt time. Missing or stale data is reported as such, never as healthy.'
     MeResponse:
       properties:
         subject_id:
@@ -1095,6 +2104,26 @@ components:
         asked_in_turn_id:
           type: string
           title: Asked In Turn Id
+        notify_supervisor:
+          type: boolean
+          title: Notify Supervisor
+          description: The report was asked to go to a supervisor too.
+          default: false
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        location_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Text
       additionalProperties: false
       type: object
       required:
@@ -1273,6 +2302,114 @@ components:
         sessions,
 
         created by the trusted service. Catalog membership alone is never listed as an association.'
+    SessionCommand:
+      properties:
+        schema_version:
+          type: string
+          const: cocoon.command.v1
+          title: Schema Version
+          default: cocoon.command.v1
+        command_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Command Id
+          description: Unique per caller; an identical retry returns the saved result.
+          examples:
+          - lk-item_4f2c9a
+        kind:
+          type: string
+          enum:
+          - task.start
+          - task.complete
+          - incident.edit
+          - incident.confirm
+          - incident.dismiss
+          title: Kind
+        captured_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Captured At
+          description: Device time of the tap (informational).
+        expected_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Expected Version
+        payload:
+          $ref: '#/components/schemas/CommandPayload'
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - kind
+      - payload
+      title: SessionCommand
+      description: 'POST /v1/sessions/{session_id}/commands. A subset of the proposed cocoon.command.v1 envelope:
+        the binding is
+
+        taken from the authenticated session (never from the body); `expected_version` guards against stale taps.'
+    SessionCommandResult:
+      properties:
+        command_id:
+          type: string
+          title: Command Id
+        kind:
+          type: string
+          title: Kind
+        status:
+          type: string
+          const: completed
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+          description: True when this identical command was already committed.
+        record_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Type
+        record_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Id
+        summary:
+          type: string
+          title: Summary
+        state_version:
+          type: integer
+          title: State Version
+        task:
+          anyOf:
+          - $ref: '#/components/schemas/AssignedTask'
+          - type: 'null'
+        draft:
+          anyOf:
+          - $ref: '#/components/schemas/IncidentDraft'
+          - type: 'null'
+        incident:
+          anyOf:
+          - $ref: '#/components/schemas/Incident'
+          - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - command_id
+      - kind
+      - status
+      - duplicate
+      - summary
+      - state_version
+      - created_at
+      title: SessionCommandResult
     SessionCreateRequest:
       properties:
         client_session_key:
@@ -1373,6 +2510,42 @@ components:
           anyOf:
           - $ref: '#/components/schemas/PendingQuestion'
           - type: 'null'
+        shift:
+          anyOf:
+          - $ref: '#/components/schemas/ShiftInfo'
+          - type: 'null'
+          description: The session's trusted shift (synthetic demo fixture), or null when unbound.
+        assigned_tasks:
+          items:
+            $ref: '#/components/schemas/AssignedTask'
+          type: array
+          title: Assigned Tasks
+          description: Tasks of the trusted shift. `tasks` stays the legacy shared demo list.
+        incident_drafts:
+          items:
+            $ref: '#/components/schemas/IncidentDraft'
+          type: array
+          title: Incident Drafts
+          description: Open automatic drafts. `incidents` lists confirmed reports only.
+        pending_approvals:
+          items:
+            $ref: '#/components/schemas/ApprovalRequest'
+          type: array
+          title: Pending Approvals
+        machine_state:
+          anyOf:
+          - $ref: '#/components/schemas/MachineStateView'
+          - type: 'null'
+          description: Freshness of machine observations.
+        idle_reasons:
+          items:
+            $ref: '#/components/schemas/IdleReason'
+          type: array
+          title: Idle Reasons
+        shift_briefing:
+          anyOf:
+          - $ref: '#/components/schemas/ShiftBriefing'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -1387,6 +2560,77 @@ components:
       - latest_alert
       - pending_question
       title: SessionState
+    ShiftBriefing:
+      properties:
+        shift_id:
+          type: string
+          title: Shift Id
+        event_id:
+          type: string
+          title: Event Id
+        speech:
+          type: string
+          title: Speech
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - shift_id
+      - event_id
+      - speech
+      - created_at
+      title: ShiftBriefing
+      description: Created once per shift and published as a `shift_briefing` announcement.
+    ShiftInfo:
+      properties:
+        shift_id:
+          type: string
+          title: Shift Id
+        site_id:
+          type: string
+          title: Site Id
+        site_name:
+          type: string
+          title: Site Name
+        timezone:
+          type: string
+          title: Timezone
+        service_date:
+          type: string
+          title: Service Date
+        start_at:
+          type: string
+          format: date-time
+          title: Start At
+        end_at:
+          type: string
+          format: date-time
+          title: End At
+        utc_offset:
+          type: string
+          pattern: ^[+-]\d{2}:\d{2}$
+          title: Utc Offset
+          description: Site offset used for the service date.
+        source:
+          type: string
+          const: synthetic_demo_fixture
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - shift_id
+      - site_id
+      - site_name
+      - timezone
+      - service_date
+      - start_at
+      - end_at
+      - utc_offset
+      - source
+      title: ShiftInfo
     Task:
       properties:
         task_id:
@@ -1421,6 +2665,128 @@ components:
       - priority
       - status
       title: Task
+    TaskConditions:
+      properties:
+        source:
+          type: string
+          const: synthetic_demo_fixture
+          title: Source
+          description: Where the conditions come from. Only a synthetic fixture exists until live weather (Batch
+            C).
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+        temperature_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Temperature C
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      title: TaskConditions
+    TaskDuration:
+      properties:
+        minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Minutes
+        source:
+          type: string
+          const: demo_supplied_estimate
+          title: Source
+          description: A supplied demo figure, not a calibrated prediction (the estimator is Batch C).
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      title: TaskDuration
+    TaskRejectedAction:
+      properties:
+        type:
+          type: string
+          const: task_rejected
+          title: Type
+        for_action:
+          type: string
+          enum:
+          - task.start
+          - task.complete
+          title: For Action
+        reason:
+          type: string
+          enum:
+          - no_shift
+          - no_eligible_task
+          - invalid_transition
+          title: Reason
+        current_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Status
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - for_action
+      - reason
+      title: TaskRejectedAction
+      description: A task command that changed nothing, with the reason (no shift, no eligible task, illegal transition).
+    TaskTransitionAction:
+      properties:
+        type:
+          type: string
+          enum:
+          - task_started
+          - task_completed
+          title: Type
+        task:
+          $ref: '#/components/schemas/AssignedTask'
+        command_id:
+          type: string
+          title: Command Id
+        created:
+          type: boolean
+          title: Created
+          description: False when this exact command was already committed (retry).
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - task
+      - command_id
+      - created
+      title: TaskTransitionAction
+    TelemetryProvenance:
+      properties:
+        origin:
+          type: string
+          enum:
+          - synthetic_scenario
+          - dataset_replay
+          title: Origin
+        generator:
+          type: string
+          maxLength: 80
+          title: Generator
+        record_ref:
+          anyOf:
+          - type: string
+            maxLength: 120
+          - type: 'null'
+          title: Record Ref
+          description: Dataset record ID for a replay.
+      additionalProperties: false
+      type: object
+      required:
+      - origin
+      - generator
+      title: TelemetryProvenance
     TelemetryReadings:
       properties:
         engine_on:
@@ -1434,6 +2800,27 @@ components:
           maximum: 86400.0
           minimum: 0.0
           title: Idle Seconds
+          description: Client-reported counter; informational. Idle rules time idling from observation timestamps
+            instead.
+        operating_state:
+          anyOf:
+          - type: string
+            enum:
+            - 'off'
+            - idle
+            - working
+            - travel
+          - type: 'null'
+          title: Operating State
+          description: 'Observed machine state. Omitted = unknown: idle rules neither open nor clear.'
+        speed_kph:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Speed Kph
+          description: Observed ground speed (motion).
       additionalProperties: false
       type: object
       required:
@@ -1461,6 +2848,11 @@ components:
           description: 'Must be true: v1 accepts prototype simulator data only.'
         readings:
           $ref: '#/components/schemas/TelemetryReadings'
+        provenance:
+          anyOf:
+          - $ref: '#/components/schemas/TelemetryProvenance'
+          - type: 'null'
+          description: Where a simulated sample came from. Stored, never used by the rules.
       additionalProperties: false
       type: object
       required:
@@ -1483,7 +2875,17 @@ components:
         stale:
           type: boolean
           title: Stale
-          description: True when observed_at is older than the newest processed sample.
+          description: True when the sample was not applied (late or conflicting).
+        ignored_reason:
+          anyOf:
+          - type: string
+            enum:
+            - late
+            - conflicting
+          - type: 'null'
+          title: Ignored Reason
+          description: 'late: older than the newest applied sample; conflicting: same observation time as the newest
+            applied sample but different readings.'
         alerts_opened:
           items:
             type: string
@@ -1499,6 +2901,12 @@ components:
             type: string
           type: array
           title: Announcements Created
+        drafts_created:
+          items:
+            type: string
+          type: array
+          title: Drafts Created
+          description: Automatic incident drafts opened.
         active_alerts:
           items:
             $ref: '#/components/schemas/Alert'
@@ -1559,10 +2967,17 @@ components:
           - assigned
           - completed
           title: Status
+          description: Reading or playback never sets completed.
         assigned_at:
           type: string
           format: date-time
           title: Assigned At
+        source_episode_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Episode Id
+          description: Safety episode that triggered the assignment.
       additionalProperties: false
       type: object
       required:
@@ -1653,14 +3068,36 @@ components:
             - $ref: '#/components/schemas/TrainingStatusAction'
             - $ref: '#/components/schemas/AlertExplainedAction'
             - $ref: '#/components/schemas/PendingCancelledAction'
+            - $ref: '#/components/schemas/AssignedTasksAction'
+            - $ref: '#/components/schemas/TaskTransitionAction'
+            - $ref: '#/components/schemas/TaskRejectedAction'
+            - $ref: '#/components/schemas/IncidentDraftAction'
+            - $ref: '#/components/schemas/IncidentDraftsAction'
+            - $ref: '#/components/schemas/IdleReasonRecordedAction'
+            - $ref: '#/components/schemas/LessonContentAction'
+            - $ref: '#/components/schemas/EscalationRequestedAction'
+            - $ref: '#/components/schemas/ClarificationAction'
+            - $ref: '#/components/schemas/CapabilityUnavailableAction'
             discriminator:
               propertyName: type
               mapping:
                 alert_explained: '#/components/schemas/AlertExplainedAction'
+                assigned_tasks: '#/components/schemas/AssignedTasksAction'
+                capability_unavailable: '#/components/schemas/CapabilityUnavailableAction'
+                clarification_needed: '#/components/schemas/ClarificationAction'
+                escalation_requested: '#/components/schemas/EscalationRequestedAction'
+                idle_reason_recorded: '#/components/schemas/IdleReasonRecordedAction'
+                incident_confirmed: '#/components/schemas/IncidentDraftAction'
+                incident_dismissed: '#/components/schemas/IncidentDraftAction'
+                incident_drafts: '#/components/schemas/IncidentDraftsAction'
                 incident_logged: '#/components/schemas/IncidentLoggedAction'
                 information_requested: '#/components/schemas/InformationRequestedAction'
+                lesson_content: '#/components/schemas/LessonContentAction'
                 next_task: '#/components/schemas/NextTaskAction'
                 pending_cancelled: '#/components/schemas/PendingCancelledAction'
+                task_completed: '#/components/schemas/TaskTransitionAction'
+                task_rejected: '#/components/schemas/TaskRejectedAction'
+                task_started: '#/components/schemas/TaskTransitionAction'
                 training_assigned: '#/components/schemas/TrainingAssignedAction'
                 training_status: '#/components/schemas/TrainingStatusAction'
           type: array
@@ -1703,6 +3140,24 @@ components:
             format: date-time
           - type: 'null'
           title: Completed At
+        branch:
+          anyOf:
+          - type: string
+            enum:
+            - tasks
+            - safety_incidents
+            - training
+            - general_assistance
+          - type: 'null'
+          title: Branch
+          description: Workflow branch the turn was classified into.
+        action_records:
+          items:
+            $ref: '#/components/schemas/ActionRecord'
+          type: array
+          title: Action Records
+          description: 'Writes committed by this turn, also on a failed turn: a failure after a committed write
+            never means nothing was saved.'
       additionalProperties: false
       type: object
       required:

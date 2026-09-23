@@ -65,14 +65,28 @@ def make_populated_baseline(path: Path) -> None:
     conn.close()
 
 
+# Columns later migrations add to legacy tables (compared separately, never part of the legacy row check).
+ADDED_COLUMNS = {
+    "sessions": ("dataset_manifest_sha256", "site_id", "shift_id", "binding_status", "context_status",
+                 "context_source"),
+    "incidents": ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
+                  "occurred_at", "occurred_basis", "episode_id", "draft_id", "confirmed_at"),
+    "turns": ("route_json",),
+    "alerts": ("policy_version", "source_status", "reason", "recommended_action", "evidence_json",
+               "correlated_alert_id", "draft_incident_id", "announced", "training_assignment_id"),
+    "telemetry_events": ("provenance_json",),
+    "lessons": ("version", "content_text", "content_status"),
+    "training_assignments": ("source_episode_id",),
+}
+
+
 def dump(path: Path) -> dict[str, list[tuple]]:
     conn = sqlite3.connect(path)
     try:
         out = {}
         for table in LEGACY_TABLES:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
-            legacy_cols = [c for c in cols if c not in ("dataset_manifest_sha256", "site_id", "shift_id",
-                                                        "binding_status", "context_status", "context_source")]
+            legacy_cols = [c for c in cols if c not in ADDED_COLUMNS.get(table, ())]
             out[table] = conn.execute(f"SELECT {', '.join(legacy_cols)} FROM {table} ORDER BY 1").fetchall()
         out["sqlite_sequence"] = conn.execute("SELECT * FROM sqlite_sequence").fetchall()
         return out
@@ -93,12 +107,13 @@ def ledger(path: Path) -> list[tuple]:
 
 def test_fresh_database_gets_every_migration_once(tmp_path):
     store = Store(tmp_path / "cocoon.db")
-    assert store.init_schema() == ["applied:1", "applied:2", "applied:3"]
+    assert store.init_schema() == [f"applied:{m.version}" for m in MIGRATIONS]
     assert store.init_schema() == []  # re-running startup changes nothing
     store.close()
-    assert ledger(tmp_path / "cocoon.db") == [(1, "baseline_v1", "applied"), (2, "catalog_bound_sessions", "applied"),
-                                          (3, "actor_tokens", "applied")]
-    assert latest_version() == 3
+    assert ledger(tmp_path / "cocoon.db") == [(m.version, m.name, "applied") for m in MIGRATIONS]
+    assert latest_version() == len(MIGRATIONS)
+    assert [m.name for m in MIGRATIONS[:4]] == ["baseline_v1", "catalog_bound_sessions", "actor_tokens",
+                                               "assigned_tasks"]
 
 
 # ------------------------------------------------------------------ upgrade of the real v1 baseline
@@ -109,7 +124,7 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
     make_populated_baseline(db)
     before = dump(db)
     store = Store(db)
-    assert store.init_schema() == ["adopted:1", "applied:2", "applied:3"]
+    assert store.init_schema() == ["adopted:1"] + [f"applied:{m.version}" for m in MIGRATIONS[1:]]
     assert store.init_schema() == []
     # the next incident continues the AUTOINCREMENT sequence rather than restarting it
     session = store.get_session("ses_legacy")
@@ -121,13 +136,18 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
     after["incidents"] = [r for r in after["incidents"] if r[0] == 1]
     after["sqlite_sequence"] = before["sqlite_sequence"]
     assert after == before  # every legacy row and value is unchanged
-    assert ledger(db) == [(1, "baseline_v1", "adopted_existing"), (2, "catalog_bound_sessions", "applied"),
-                          (3, "actor_tokens", "applied")]
+    assert ledger(db) == [(1, "baseline_v1", "adopted_existing")] + [
+        (m.version, m.name, "applied") for m in MIGRATIONS[1:]]
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT dataset_manifest_sha256, site_id, shift_id, binding_status, context_status,"
                        " context_source FROM sessions WHERE session_id = 'ses_legacy'").fetchone()
     conn.close()
     assert row == (None, None, None, "legacy_unverified", "legacy_unverified", None)  # no fabricated provenance
+    conn = sqlite3.connect(db)
+    # a legacy report was saved immediately as a report: it stays a confirmed operator report, nothing invented
+    assert conn.execute("SELECT origin, severity, site_zone_id, occurred_at FROM incidents"
+                        " WHERE incident_number = 1").fetchone() == ("operator_reported", None, None, None)
+    conn.close()
 
 
 def test_legacy_session_stays_retrievable_and_old_retries_replay(tmp_path):
@@ -178,7 +198,7 @@ def test_newer_schema_and_ledger_gaps_are_refused(tmp_path):
     db = tmp_path / "cocoon.db"
     Store(db).init_schema()
     conn = _connect(db)
-    conn.execute("INSERT INTO schema_migrations VALUES (4, 'from_the_future', 'applied', 'x')")
+    conn.execute("INSERT INTO schema_migrations VALUES (?, 'from_the_future', 'applied', 'x')", (latest_version() + 1,))
     with pytest.raises(MigrationError) as err:
         migrate(conn)
     assert err.value.issue == "newer_schema"
@@ -257,7 +277,7 @@ def test_backup_api_copy_is_consistent_while_the_database_is_open(tmp_path):
     store.close()
     copy = sqlite3.connect(backup)
     assert copy.execute("SELECT COUNT(*) FROM tasks WHERE task_id = 'T-999'").fetchone()[0] == 1
-    assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
+    assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == latest_version()
     assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     copy.close()
     with pytest.raises(FileExistsError):

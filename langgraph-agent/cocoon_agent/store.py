@@ -7,23 +7,43 @@ stable client IDs (turn_id, event_id), not with an in-memory cache.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .api import schemas as s
 from .catalog import Catalog, CatalogError
 from .migrations import migrate
+
+if TYPE_CHECKING:
+    from .rules import SafetyPolicy
 
 SEED_TASKS = [
     ("T-101", "Pre-start walkaround inspection", "Check tracks, hydraulic lines and fluid levels before starting the excavator.", "high", 10),
     ("T-102", "Move the spoil pile in bay 3", "Load the spoil from bay 3 and dump it at the north stockpile.", "normal", 20),
     ("T-103", "Grade the access road at gate 2", "Level the ruts on the access road between gate 2 and the site office.", "normal", 30),
 ]
+
+# Versioned demo text for L1, attached only where the row has no text yet (never overwrites authored content).
+LESSON_CONTENT = {
+    "L1": ("L1.demo.1", "demo_authored_unreviewed", (
+        "Seatbelt and rollover protection basics. "
+        "One: the rollover protective structure only protects you if you stay inside it, and the seatbelt is what "
+        "keeps you there. "
+        "Two: fasten the belt before you start the engine, and keep it fastened while the engine runs, including "
+        "while you wait or idle. "
+        "Three: never unbuckle to lean out or reach for something while the machine can move. Stop, lower the "
+        "attachment and park first. "
+        "Four: if the machine starts to tip, stay in the seat, hold on and brace; do not try to jump. "
+        "Five: report a damaged or missing belt before operating. "
+        "This demo lesson was written for the prototype and has not been reviewed by a trainer."
+    )),
+}
 
 SEED_LESSONS = [
     ("L1", "Seatbelt and rollover protection basics", "Why the seatbelt and ROPS work together, and when to buckle up.", 5),
@@ -46,6 +66,22 @@ def parse_dt(value: str | None) -> datetime | None:
 
 class Conflict(Exception):
     """A stable ID was reused with a different payload."""
+
+
+class NotFound(Exception):
+    """The record does not exist in the caller's scope (never reveals whether it exists elsewhere)."""
+
+
+class VersionConflict(Exception):
+    def __init__(self, current_version: int):
+        super().__init__(f"stale version; current version is {current_version}")
+        self.current_version = current_version
+
+
+class InvalidTransition(Exception):
+    def __init__(self, current_status: str, message: str):
+        super().__init__(message)
+        self.current_status = current_status
 
 
 @dataclass(frozen=True)
@@ -135,6 +171,10 @@ class Store:
                 "INSERT OR IGNORE INTO lessons(lesson_id, title, summary, duration_minutes) VALUES (?, ?, ?, ?)",
                 SEED_LESSONS,
             )
+            has_content = any(r[1] == "content_text" for r in c.execute("PRAGMA table_info(lessons)"))
+            for lesson_id, (version, status, text) in (LESSON_CONTENT.items() if has_content else ()):
+                c.execute("UPDATE lessons SET version = ?, content_status = ?, content_text = ?"
+                          " WHERE lesson_id = ? AND content_text IS NULL", (version, status, text, lesson_id))
 
     def ping(self) -> bool:
         with self._lock:
@@ -258,6 +298,15 @@ class Store:
                 (json.dumps(result), now, now, session_id, turn_id),
             )
 
+    def save_turn_route(self, session_id: str, turn_id: str, route: dict[str, Any]) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE turns SET route_json = ? WHERE session_id = ? AND turn_id = ? AND route_json IS NULL",
+                      (json.dumps(route), session_id, turn_id))
+
+    def turn_route(self, session_id: str, turn_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT route_json FROM turns WHERE session_id = ? AND turn_id = ?", (session_id, turn_id))
+        return json.loads(row["route_json"]) if row and row["route_json"] else None
+
     def fail_turn(self, session_id: str, turn_id: str, error: dict[str, Any]) -> None:
         with self._tx() as c:
             c.execute(
@@ -275,11 +324,131 @@ class Store:
         return _task(row) if row else None
 
     def list_lessons(self) -> list[s.Lesson]:
-        return [s.Lesson(**dict(r)) for r in self._all("SELECT * FROM lessons ORDER BY lesson_id")]
+        return [_lesson(r) for r in self._all("SELECT * FROM lessons ORDER BY lesson_id")]
 
     def get_lesson(self, lesson_id: str) -> s.Lesson | None:
         row = self._one("SELECT * FROM lessons WHERE lesson_id = ?", (lesson_id,))
-        return s.Lesson(**dict(row)) if row else None
+        return _lesson(row) if row else None
+
+    # ------------------------------------------------------------------ demo site, shifts and assigned tasks
+
+    _SEED_COLUMNS = {
+        "sites": "site_id, name, timezone, utc_offset, fixture_version, provenance",
+        "site_zones": "site_zone_id, site_id, name, zone_type, outdoor",
+        "shifts": "shift_id, site_id, operator_id, machine_id, service_date, start_at, end_at, catalog_manifest_sha256,"
+                  " fixture_version",
+        "task_assignments": "task_id, shift_id, operator_id, machine_id, site_zone_id, scheduled_order,"
+                            " scheduled_start_at, task_type, title, details, work_quantity, work_unit, weather_json,"
+                            " duration_minutes, duration_source, updated_at, provenance",
+    }
+    # Columns compared when a seeded row already exists (lifecycle/updated_at may legitimately have changed).
+    _SEED_COMPARE = {"sites": 4, "site_zones": 5, "shifts": 8, "task_assignments": 15}
+
+    def seed_demo_site(self, rows: dict[str, list[tuple[str, tuple]]]) -> dict[str, Any]:
+        """Insert missing rows; keep identical existing rows; refuse (whole seed rolls back) on differing rows."""
+        report: dict[str, Any] = {"inserted": {}, "reused": {}}
+        with self._tx() as c:
+            for table in ("sites", "site_zones", "shifts", "task_assignments"):
+                cols = self._SEED_COLUMNS[table]
+                n = self._SEED_COMPARE[table]
+                inserted = reused = 0
+                for key_col, values in rows.get(table, []):
+                    existing = c.execute(f"SELECT {cols} FROM {table} WHERE {key_col} = ?", (values[0],)).fetchone()
+                    if existing is None:
+                        marks = ", ".join("?" * len(values))
+                        c.execute(f"INSERT INTO {table}({cols}) VALUES ({marks})", values)
+                        inserted += 1
+                    elif tuple(existing)[:n] != tuple(values)[:n]:
+                        raise Conflict(f"{table} row {values[0]} already exists with different content")
+                    else:
+                        reused += 1
+                report["inserted"][table], report["reused"][table] = inserted, reused
+        return report
+
+    def get_shift(self, shift_id: str) -> s.ShiftInfo | None:
+        row = self._one("SELECT sh.*, si.name AS site_name, si.timezone, si.utc_offset FROM shifts sh"
+                        " JOIN sites si USING (site_id)"
+                        " WHERE sh.shift_id = ?", (shift_id,))
+        return _shift(row) if row else None
+
+    def list_assigned_tasks(self, shift_id: str) -> list[s.AssignedTask]:
+        rows = self._all(_TASK_SQL + " WHERE t.shift_id = ? ORDER BY t.scheduled_order", (shift_id,))
+        return [_assigned_task(r) for r in rows]
+
+    def get_command(self, scope: str, command_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT * FROM command_log WHERE scope = ? AND command_id = ?", (scope, command_id))
+        return dict(row) if row else None
+
+    def commands_for_turn(self, session_id: str, turn_id: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._all("SELECT * FROM command_log WHERE session_id = ? AND turn_id = ?"
+                                           " ORDER BY state_version, command_id", (session_id, turn_id))]
+
+    def action_records(self, session_id: str, turn_id: str) -> list[s.ActionRecord]:
+        return [s.ActionRecord(action_id=r["command_id"], kind=r["kind"], outcome=r["outcome"],
+                               record_type=r["record_type"], record_id=r["record_id"], summary=r["summary"],
+                               state_version=r["state_version"], created_at=parse_dt(r["created_at"]))
+                for r in self.commands_for_turn(session_id, turn_id)]
+
+    def run_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session_id: str,
+                    turn_id: str | None, mutate: Callable[[sqlite3.Connection], dict[str, Any]]) -> tuple[dict, bool]:
+        """Execute one domain write exactly once per (scope, command_id), in one short transaction.
+
+        The mutation and its command_log row commit together. An identical retry returns the saved result
+        (duplicate=True); a different payload under the same id raises Conflict. `mutate` raises NotFound /
+        VersionConflict / InvalidTransition to reject without side effects."""
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM command_log WHERE scope = ? AND command_id = ?", (scope, command_id)).fetchone()
+            if row is not None:
+                if row["fingerprint"] != fingerprint:
+                    raise Conflict("command_id was already used with a different payload")
+                return json.loads(row["result_json"]), True
+            outcome = mutate(c)
+            c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
+            version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
+            result = {**outcome, "command_id": command_id, "kind": kind, "state_version": version,
+                      "created_at": iso(utcnow())}
+            c.execute("INSERT INTO command_log(scope, command_id, kind, fingerprint, session_id, turn_id, outcome,"
+                      " record_type, record_id, summary, state_version, result_json, created_at)"
+                      " VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)",
+                      (scope, command_id, kind, fingerprint, session_id, turn_id, outcome.get("record_type"),
+                       outcome.get("record_id"), outcome["summary"], version, json.dumps(result, default=str),
+                       result["created_at"]))
+            return result, False
+
+    @staticmethod
+    def task_transition(session: s.Session, kind: str, task_id: str | None,
+                        expected_version: int | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for task.start / task.complete, scoped to the session's trusted shift."""
+        needed = {"task.start": "scheduled", "task.complete": "in_progress"}[kind]
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            if not session.shift_id:
+                raise NotFound("this session has no assigned shift")
+            if task_id:
+                row = c.execute(_TASK_SQL + " WHERE t.task_id = ? AND t.shift_id = ?",
+                                (task_id, session.shift_id)).fetchone()
+            else:  # voice: "start the next task" / "I've finished"
+                row = c.execute(_TASK_SQL + " WHERE t.shift_id = ? AND t.status = ? ORDER BY t.scheduled_order LIMIT 1",
+                                (session.shift_id, needed)).fetchone()
+            if row is None or row["operator_id"] != session.operator_id or row["machine_id"] != session.machine_id:
+                raise NotFound("no such task in this session's shift" if task_id else f"no {needed} task in this shift")
+            if expected_version is not None and row["version"] != expected_version:
+                raise VersionConflict(row["version"])
+            if row["status"] != needed:
+                raise InvalidTransition(row["status"], f"task is {row['status']}; {kind} needs a {needed} task")
+            now = iso(utcnow())
+            if kind == "task.start":
+                c.execute("UPDATE task_assignments SET status = 'in_progress', version = version + 1, started_at = ?,"
+                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+            else:
+                c.execute("UPDATE task_assignments SET status = 'completed', version = version + 1, completed_at = ?,"
+                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+            task = _assigned_task(c.execute(_TASK_SQL + " WHERE t.task_id = ?", (row["task_id"],)).fetchone())
+            verb = "Started" if kind == "task.start" else "Completed"
+            return {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
+                    "task": task.model_dump(mode="json")}
+
+        return mutate
 
     # ------------------------------------------------------------------ incidents
 
@@ -303,6 +472,153 @@ class Store:
     def list_incidents(self, session_id: str) -> list[s.Incident]:
         rows = self._all("SELECT * FROM incidents WHERE session_id = ? ORDER BY incident_number", (session_id,))
         return [_incident(r) for r in rows]
+
+    def list_drafts(self, session_id: str, status: str = "draft") -> list[s.IncidentDraft]:
+        rows = self._all("SELECT * FROM incident_drafts WHERE session_id = ? AND status = ? ORDER BY draft_number",
+                         (session_id, status))
+        return [_draft(r) for r in rows]
+
+    def list_pending_approvals(self, session_id: str) -> list[s.ApprovalRequest]:
+        rows = self._all("SELECT * FROM approval_requests WHERE session_id = ? AND status = 'pending'"
+                         " ORDER BY created_at", (session_id,))
+        return [_approval(r) for r in rows]
+
+    @staticmethod
+    def incident_report(session: s.Session, turn_id: str, description: str, severity: str | None,
+                        location_text: str | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's report: a new confirmed incident per turn (matching text never merges two
+        intentional reports). Identity comes from the session; "where" is the stated place, else the active task's
+        zone, each with its basis; "when" is the time of the report unless stated otherwise; severity only if stated."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incidents WHERE session_id = ? AND source_turn_id = ?",
+                            (session.session_id, turn_id)).fetchone()
+            reused = row is not None  # written before the command log existed (pre-v5 retry)
+            if row is None:
+                now = iso(utcnow())
+                zone, zone_basis = _resolve_zone(c, session, location_text)
+                number = c.execute(
+                    "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
+                    " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
+                    " occurred_at, occurred_basis, confirmed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, now, severity,
+                     "reported" if severity else None, session.site_id, zone, zone_basis, location_text, now, now),
+                ).lastrowid
+                c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (f"INC-{number:04d}", number))
+                row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
+            inc = _incident(row)
+            return {"record_type": "incident", "record_id": inc.incident_id, "reused": reused,
+                    "summary": f"Logged incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+
+        return mutate
+
+    @staticmethod
+    def insert_auto_draft(c: sqlite3.Connection, session: s.Session, episode_id: str, description: str,
+                          severity: str, occurred_at: datetime) -> str:
+        """An automatic draft for one alert episode (at most one per episode). Not an incident until confirmed."""
+        row = c.execute("SELECT draft_id FROM incident_drafts WHERE episode_id = ?", (episode_id,)).fetchone()
+        if row is not None:
+            return row["draft_id"]
+        zone, zone_basis = _resolve_zone(c, session, None)
+        number = c.execute(
+            "INSERT INTO incident_drafts(session_id, operator_id, machine_id, origin, description, severity,"
+            " severity_basis, site_id, site_zone_id, zone_basis, occurred_at, occurred_basis, episode_id, created_at)"
+            " VALUES (?, ?, ?, 'auto_draft', ?, ?, 'rule_default', ?, ?, ?, ?, 'observation_time', ?, ?)",
+            (session.session_id, session.operator_id, session.machine_id, description, severity, session.site_id,
+             zone, zone_basis, iso(occurred_at), episode_id, iso(utcnow())),
+        ).lastrowid
+        draft_id = f"DRF-{number:04d}"
+        c.execute("UPDATE incident_drafts SET draft_id = ? WHERE draft_number = ?", (draft_id, number))
+        return draft_id
+
+    @staticmethod
+    def incident_transition(session: s.Session, kind: str, draft_id: str, expected_version: int | None,
+                            edits: dict[str, Any] | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for incident.edit / incident.confirm / incident.dismiss on this session's open drafts. Confirming
+        allocates the incident (and its real ID) exactly once; a confirmed or dismissed draft is final."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incident_drafts WHERE draft_id = ? AND session_id = ?",
+                            (draft_id, session.session_id)).fetchone()
+            if row is None:
+                raise NotFound("no such incident draft in this session")
+            if expected_version is not None and row["version"] != expected_version:
+                raise VersionConflict(row["version"])
+            if row["status"] != "draft":
+                raise InvalidTransition(row["status"], f"draft is {row['status']}; {kind} needs an open draft")
+            now = iso(utcnow())
+            incident = None
+            if kind == "incident.confirm":
+                number = c.execute(
+                    "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
+                    " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
+                    " occurred_basis, episode_id, draft_id, confirmed_at)"
+                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?, origin,"
+                    " severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
+                    " occurred_basis, episode_id, draft_id, ? FROM incident_drafts WHERE draft_id = ?",
+                    (now, now, draft_id)).lastrowid
+                incident_id = f"INC-{number:04d}"
+                c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
+                c.execute("UPDATE incident_drafts SET status = 'confirmed', incident_id = ?, confirmed_at = ?,"
+                          " version = version + 1 WHERE draft_id = ?", (incident_id, now, draft_id))
+                incident = _incident(c.execute("SELECT * FROM incidents WHERE incident_number = ?",
+                                               (number,)).fetchone())
+                summary = f"Confirmed draft {row['draft_number']} as incident {number}."
+            elif kind == "incident.dismiss":
+                c.execute("UPDATE incident_drafts SET status = 'dismissed', dismissed_at = ?, version = version + 1"
+                          " WHERE draft_id = ?", (now, draft_id))
+                summary = f"Dismissed draft {row['draft_number']}."
+            else:
+                e = edits or {}
+                sets, args = [], []
+                if e.get("description"):
+                    sets.append("description = ?")
+                    args.append(e["description"])
+                if e.get("severity"):
+                    sets += ["severity = ?", "severity_basis = 'reported'"]
+                    args.append(e["severity"])
+                if e.get("location_text"):
+                    zone, basis = _resolve_zone(c, session, e["location_text"])
+                    sets.append("location_text = ?")
+                    args.append(e["location_text"])
+                    if basis == "reported":
+                        sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
+                        args.append(zone)
+                if not sets:
+                    raise InvalidTransition(row["status"], "incident.edit needs at least one field to change")
+                c.execute(f"UPDATE incident_drafts SET {', '.join(sets)}, version = version + 1 WHERE draft_id = ?",
+                          (*args, draft_id))
+                summary = f"Edited draft {row['draft_number']}."
+            draft = _draft(c.execute("SELECT * FROM incident_drafts WHERE draft_id = ?", (draft_id,)).fetchone())
+            out = {"record_type": "incident" if incident else "incident_draft",
+                   "record_id": incident.incident_id if incident else draft_id, "summary": summary,
+                   "draft": draft.model_dump(mode="json")}
+            if incident is not None:
+                out["incident"] = incident.model_dump(mode="json")
+            return out
+
+        return mutate
+
+    @staticmethod
+    def escalation_request(session: s.Session, incident_id: str) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """A pending supervisor-review request linked to one incident (one per incident). Not a notification."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM approval_requests WHERE kind = 'incident_escalation' AND incident_id = ?",
+                            (incident_id,)).fetchone()
+            if row is None:
+                approval_id = "APR-" + uuid.uuid4().hex[:12]
+                c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id,"
+                          " created_at) VALUES (?, ?, ?, 'incident_escalation', ?, ?)",
+                          (approval_id, session.session_id, session.operator_id, incident_id, iso(utcnow())))
+                row = c.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
+            approval = _approval(row)
+            return {"record_type": "approval_request", "record_id": approval.approval_id,
+                    "summary": f"Requested supervisor review of {incident_id} (pending).",
+                    "approval": approval.model_dump(mode="json")}
+
+        return mutate
 
     # ------------------------------------------------------------------ training
 
@@ -340,6 +656,25 @@ class Store:
             ).fetchone()
             created = existing is None or existing["source_turn_id"] == source_turn_id
             return _assignment(row), created
+
+    @staticmethod
+    def _episode_assignment(c: sqlite3.Connection, session: s.Session, lesson_id: str, episode_id: str) -> str | None:
+        """Assign the policy's lesson for a qualifying episode, once while it is outstanding: an existing assignment of
+        the same lesson (same binding class) is linked instead of creating another. A record held by the other binding
+        class is never linked or exposed (returns None)."""
+        if c.execute("SELECT 1 FROM lessons WHERE lesson_id = ?", (lesson_id,)).fetchone() is None:
+            return None
+        row = c.execute("SELECT ta.assignment_id, s.binding_status FROM training_assignments ta"
+                        " LEFT JOIN sessions s ON s.session_id = ta.session_id"
+                        " WHERE ta.operator_id = ? AND ta.lesson_id = ?", (session.operator_id, lesson_id)).fetchone()
+        if row is not None:
+            return row["assignment_id"] if row["binding_status"] == session.binding_status else None
+        assignment_id = "TA-" + uuid.uuid4().hex[:10]
+        c.execute("INSERT INTO training_assignments(assignment_id, operator_id, lesson_id, session_id, source_turn_id,"
+                  " status, assigned_at, source_episode_id) VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)",
+                  (assignment_id, session.operator_id, lesson_id, session.session_id, f"episode:{episode_id}",
+                   iso(utcnow()), episode_id))
+        return assignment_id
 
     def list_assignments(self, session: s.Session) -> list[s.TrainingAssignment]:
         rows = self._all(
@@ -419,6 +754,77 @@ class Store:
         )
         return _alert(row) if row else None
 
+    def announced_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
+        """Alerts that were announced, with the announcement's event_id and time, newest announcement first."""
+        rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
+                         " JOIN announcements n ON n.alert_id = a.alert_id AND n.type = 'alert_started'"
+                         " WHERE a.session_id = ? ORDER BY n.sequence DESC", (session_id,))
+        return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+
+    def deliveries(self, event_id: str) -> list[s.DeliveryRecord]:
+        return [_delivery(d) for d in self._all("SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id",
+                                                (event_id,))]
+
+    def previous_turn_at(self, session_id: str, turn_id: str) -> datetime | None:
+        row = self._one("SELECT MAX(created_at) FROM turns WHERE session_id = ? AND turn_id != ? AND created_at <="
+                        " (SELECT created_at FROM turns WHERE session_id = ? AND turn_id = ?)",
+                        (session_id, turn_id, session_id, turn_id))
+        return parse_dt(row[0]) if row and row[0] else None
+
+    @staticmethod
+    def idle_reason(session: s.Session, turn_id: str, reason_text: str) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Record the operator's reason against the active idle episode (if any). Never clears an episode."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            idle = c.execute("SELECT alert_id FROM alerts WHERE session_id = ? AND status = 'active' AND alert_type IN"
+                             " ('prolonged_idle', 'idle_unbelted') ORDER BY alert_type = 'prolonged_idle' DESC,"
+                             " started_at DESC LIMIT 1", (session.session_id,)).fetchone()
+            reason_id = "IDR-" + uuid.uuid4().hex[:12]
+            now = iso(utcnow())
+            c.execute("INSERT INTO idle_reasons(reason_id, session_id, operator_id, alert_id, reason_text,"
+                      " source_turn_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (reason_id, session.session_id, session.operator_id, idle["alert_id"] if idle else None,
+                       reason_text, turn_id, now))
+            belt = c.execute("SELECT 1 FROM alerts WHERE session_id = ? AND status = 'active'"
+                             " AND alert_type = 'seatbelt_unfastened'", (session.session_id,)).fetchone()
+            return {"record_type": "idle_reason", "record_id": reason_id,
+                    "summary": f"Recorded idle reason: {reason_text[:80]}.", "reason_id": reason_id,
+                    "reason_text": reason_text, "alert_id": idle["alert_id"] if idle else None,
+                    "belt_warning_active": belt is not None}
+
+        return mutate
+
+    def list_idle_reasons(self, session_id: str) -> list[s.IdleReason]:
+        rows = self._all("SELECT * FROM idle_reasons WHERE session_id = ? ORDER BY created_at", (session_id,))
+        return [s.IdleReason(reason_id=r["reason_id"], reason_text=r["reason_text"], alert_id=r["alert_id"],
+                             created_at=parse_dt(r["created_at"])) for r in rows]
+
+    def ensure_shift_briefing(self, session: s.Session, speech: str, ttl: timedelta) -> tuple[s.ShiftBriefing, bool]:
+        """One briefing per shift: the first bound session publishes it; later sessions and restarts reuse it."""
+        now = utcnow()
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM shift_briefings WHERE shift_id = ?", (session.shift_id,)).fetchone()
+            created = row is None
+            if created:
+                seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
+                                (session.session_id,)).fetchone()[0]
+                event_id = f"ann_briefing_{session.shift_id}"
+                c.execute("INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id,"
+                          " created_at, expires_at) VALUES (?, ?, ?, 'shift_briefing', 'normal', ?, NULL, ?, ?)",
+                          (event_id, session.session_id, seq, speech, iso(now), iso(now + ttl)))
+                c.execute("INSERT INTO shift_briefings(shift_id, session_id, event_id, speech, created_at)"
+                          " VALUES (?, ?, ?, ?, ?)", (session.shift_id, session.session_id, event_id, speech, iso(now)))
+                c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?",
+                          (session.session_id,))
+                row = c.execute("SELECT * FROM shift_briefings WHERE shift_id = ?", (session.shift_id,)).fetchone()
+            return s.ShiftBriefing(shift_id=row["shift_id"], event_id=row["event_id"], speech=row["speech"],
+                                   created_at=parse_dt(row["created_at"])), created
+
+    def get_shift_briefing(self, shift_id: str) -> s.ShiftBriefing | None:
+        row = self._one("SELECT * FROM shift_briefings WHERE shift_id = ?", (shift_id,))
+        return s.ShiftBriefing(shift_id=row["shift_id"], event_id=row["event_id"], speech=row["speech"],
+                               created_at=parse_dt(row["created_at"])) if row else None
+
     def get_telemetry(self, session_id: str, event_id: str) -> tuple[str, dict[str, Any]] | None:
         row = self._one(
             "SELECT request_hash, result_json FROM telemetry_events WHERE session_id = ? AND event_id = ?",
@@ -426,70 +832,126 @@ class Store:
         )
         return (row["request_hash"], json.loads(row["result_json"])) if row else None
 
-    def apply_telemetry(
-        self,
-        session_id: str,
-        req: s.TelemetryRequest,
-        request_hash: str,
-        condition_active: bool,
-        rule: "AlertTemplate",
-        announcement_ttl: timedelta,
-    ) -> dict[str, Any]:
-        """Record one sample and apply the alert episode transition atomically."""
+    def machine_state(self, session_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT * FROM machine_state WHERE session_id = ?", (session_id,))
+        return dict(row) if row else None
+
+    def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
+                          machine_category: str | None, announcement_ttl: timedelta,
+                          requires_engine_on: bool) -> dict[str, Any]:
+        """Record one sample and apply every rule's episode transition, the linked automatic draft and the
+        announcement in ONE short transaction (no model call inside).
+
+        Ordering uses the observation clock: a sample older than the newest applied one is `late`, and one with the
+        same observation time but different readings is `conflicting`; both are recorded but change nothing.
+        Idle streaks are measured between observation timestamps, never against the wall clock."""
+        from .rules import condition, idle_observation
+
         now = utcnow()
+        session_id = session.session_id
         opened: list[str] = []
         cleared: list[str] = []
         announced: list[str] = []
+        drafts: list[str] = []
+        readings_json = req.readings.model_dump_json()
         with self._tx() as c:
+            prev = c.execute("SELECT * FROM machine_state WHERE session_id = ?", (session_id,)).fetchone()
             srow = c.execute("SELECT last_observed_at FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
             last_observed = parse_dt(srow["last_observed_at"])
-            stale = last_observed is not None and req.observed_at < last_observed
+            ignored = None
+            if last_observed is not None and req.observed_at < last_observed:
+                ignored = "late"
+            elif (last_observed is not None and req.observed_at == last_observed and prev is not None
+                  and json.loads(prev["readings_json"]) != json.loads(readings_json)):
+                ignored = "conflicting"
             changed = False
-            if not stale:
-                c.execute("UPDATE sessions SET last_observed_at = ? WHERE session_id = ?", (iso(req.observed_at), session_id))
-                active = c.execute(
-                    "SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
-                    (session_id, rule.rule_id),
-                ).fetchone()
-                if condition_active and active is None:
-                    alert_id = "ALR-" + uuid.uuid4().hex[:12]
-                    c.execute(
-                        "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message,"
-                        " explanation, trigger_readings_json, opened_by_event_id, started_at)"
-                        " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
-                        (alert_id, session_id, rule.rule_id, rule.alert_type, rule.severity, rule.message,
-                         rule.explanation(req), req.readings.model_dump_json(), req.event_id, iso(req.observed_at)),
-                    )
-                    opened.append(alert_id)
-                    announced.append(self._announce(c, session_id, alert_id, "alert_started", "high",
-                                                    rule.start_speech, now, announcement_ttl))
-                    changed = True
-                elif not condition_active and active is not None:
-                    c.execute(
-                        "UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ? WHERE alert_id = ?",
-                        (iso(req.observed_at), req.event_id, active["alert_id"]),
-                    )
-                    cleared.append(active["alert_id"])
-                    announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
-                                                    rule.clear_speech, now, announcement_ttl))
-                    changed = True
+            if ignored is None:
+                idle = idle_observation(req.readings)
+                prev_idle_since = parse_dt(prev["idle_since"]) if prev is not None else None
+                idle_since = (prev_idle_since or req.observed_at) if idle else None
+                idle_seconds = int((req.observed_at - idle_since).total_seconds()) if idle_since else 0
+                c.execute("UPDATE sessions SET last_observed_at = ? WHERE session_id = ?",
+                          (iso(req.observed_at), session_id))
+                c.execute("INSERT INTO machine_state(session_id, event_id, observed_at, received_at, readings_json,"
+                          " idle_since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET"
+                          " event_id = excluded.event_id, observed_at = excluded.observed_at,"
+                          " received_at = excluded.received_at, readings_json = excluded.readings_json,"
+                          " idle_since = excluded.idle_since",
+                          (session_id, req.event_id, iso(req.observed_at), iso(now), readings_json, iso(idle_since)))
+                for rule in policy.rules:
+                    if not rule.applies_to(machine_category):
+                        continue
+                    held = condition(rule, req.readings, idle, idle_seconds, requires_engine_on=requires_engine_on)
+                    active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
+                                       (session_id, rule.rule_id)).fetchone()
+                    if held and active is None:
+                        alert_id = "ALR-" + uuid.uuid4().hex[:12]
+                        correlated = None
+                        if rule.family == "idle_unbelted":
+                            belt = c.execute("SELECT a.alert_id FROM alerts a WHERE a.session_id = ? AND a.status ="
+                                             " 'active' AND a.alert_type = 'seatbelt_unfastened'",
+                                             (session_id,)).fetchone()
+                            correlated = belt["alert_id"] if belt else None
+                        evidence = s.AlertEvidence(
+                            event_id=req.event_id, observed_at=req.observed_at, readings=req.readings,
+                            idle_since=idle_since if rule.family != "seatbelt_engine_on" else None,
+                            idle_seconds_observed=idle_seconds if rule.family != "seatbelt_engine_on" else None,
+                            machine_category=machine_category,
+                            applicability="category_listed" if rule.applies_to_categories else "all_categories")
+                        c.execute(
+                            "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message,"
+                            " explanation, trigger_readings_json, opened_by_event_id, started_at, policy_version,"
+                            " source_status, reason, recommended_action, evidence_json, correlated_alert_id, announced)"
+                            " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (alert_id, session_id, rule.rule_id, rule.alert_type, rule.severity, rule.message,
+                             rule.explanation(req.observed_at, idle_since, idle_seconds), readings_json, req.event_id,
+                             iso(req.observed_at), policy.policy_version, policy.source_status, rule.reason,
+                             rule.recommended_action, evidence.model_dump_json(), correlated, int(correlated is None)),
+                        )
+                        opened.append(alert_id)
+                        if correlated is None:  # one physical situation is announced (and drafted) once
+                            if rule.draft_incident:
+                                draft_id = Store.insert_auto_draft(
+                                    c, session, alert_id, f"{rule.reason.rstrip('.')} (automatic draft from simulated telemetry)",
+                                    rule.draft_severity or "medium", req.observed_at)
+                                c.execute("UPDATE alerts SET draft_incident_id = ? WHERE alert_id = ?",
+                                          (draft_id, alert_id))
+                                drafts.append(draft_id)
+                            if rule.training_lesson_id:
+                                assignment_id = Store._episode_assignment(c, session, rule.training_lesson_id, alert_id)
+                                if assignment_id:
+                                    c.execute("UPDATE alerts SET training_assignment_id = ? WHERE alert_id = ?",
+                                              (assignment_id, alert_id))
+                            announced.append(self._announce(c, session_id, alert_id, "alert_started", "high",
+                                                            rule.start_speech, now, announcement_ttl))
+                        changed = True
+                    elif held is False and active is not None:
+                        c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?"
+                                  " WHERE alert_id = ?", (iso(req.observed_at), req.event_id, active["alert_id"]))
+                        cleared.append(active["alert_id"])
+                        if rule.clear_speech and active["announced"]:
+                            announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
+                                                            rule.clear_speech, now, announcement_ttl))
+                        changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
             result = {
                 "session_id": session_id,
                 "event_id": req.event_id,
-                "stale": stale,
+                "stale": ignored is not None,
+                "ignored_reason": ignored,
                 "alerts_opened": opened,
                 "alerts_cleared": cleared,
                 "announcements_created": announced,
+                "drafts_created": drafts,
                 "state_version": version,
             }
             c.execute(
                 "INSERT INTO telemetry_events(session_id, event_id, request_hash, observed_at, readings_json,"
-                " result_json, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id, req.event_id, request_hash, iso(req.observed_at), req.readings.model_dump_json(),
-                 json.dumps(result), iso(now)),
+                " result_json, received_at, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, req.event_id, request_hash, iso(req.observed_at), readings_json, json.dumps(result),
+                 iso(now), req.provenance.model_dump_json() if req.provenance else None),
             )
             return result
 
@@ -541,24 +1003,40 @@ class Store:
             return _delivery(row)
 
 
-@dataclass(frozen=True)
-class AlertTemplate:
-    rule_id: str
-    alert_type: str
-    severity: str
-    message: str
-    start_speech: str
-    clear_speech: str
-
-    def explanation(self, req: s.TelemetryRequest) -> str:
-        at = req.observed_at.strftime("%H:%M:%S UTC")
-        return (
-            f"At {at} the simulated telemetry showed the engine running while the seatbelt was unfastened. "
-            "This is a prototype rule on simulated data, not validated machine safety logic."
-        )
-
-
 # ---------------------------------------------------------------------- row mappers
+
+_TASK_SQL = ("SELECT t.*, z.name AS zone_name, si.utc_offset FROM task_assignments t"
+             " JOIN site_zones z ON z.site_zone_id = t.site_zone_id"
+             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id")
+
+
+def _local_hhmm(when: datetime, utc_offset: str) -> str:
+    sign = 1 if utc_offset[0] == "+" else -1
+    local = when.astimezone(timezone.utc) + sign * timedelta(hours=int(utc_offset[1:3]), minutes=int(utc_offset[4:6]))
+    return local.strftime("%H:%M")
+
+
+def _assigned_task(r: sqlite3.Row) -> s.AssignedTask:
+    weather = json.loads(r["weather_json"])
+    return s.AssignedTask(
+        task_id=r["task_id"], shift_id=r["shift_id"], machine_id=r["machine_id"], site_zone_id=r["site_zone_id"],
+        zone_name=r["zone_name"], scheduled_order=r["scheduled_order"],
+        scheduled_start_at=parse_dt(r["scheduled_start_at"]),
+        scheduled_start_local=_local_hhmm(parse_dt(r["scheduled_start_at"]), r["utc_offset"]),
+        task_type=r["task_type"], title=r["title"],
+        details=r["details"], work_quantity=r["work_quantity"], work_unit=r["work_unit"], status=r["status"],
+        version=r["version"], started_at=parse_dt(r["started_at"]), completed_at=parse_dt(r["completed_at"]),
+        weather=s.TaskConditions(source=weather["source"], summary=weather.get("summary"),
+                                 temperature_c=weather.get("temperature_c")),
+        duration=s.TaskDuration(minutes=r["duration_minutes"], source=r["duration_source"]),
+    )
+
+
+def _shift(r: sqlite3.Row) -> s.ShiftInfo:
+    return s.ShiftInfo(shift_id=r["shift_id"], site_id=r["site_id"], site_name=r["site_name"], timezone=r["timezone"],
+                       service_date=r["service_date"], start_at=parse_dt(r["start_at"]), end_at=parse_dt(r["end_at"]),
+                       utc_offset=r["utc_offset"], source="synthetic_demo_fixture")
+
 
 # Never selects token_sha256: token metadata leaving the store cannot carry the digest.
 _TOKEN_META_SQL = (
@@ -599,27 +1077,88 @@ def _task(r: sqlite3.Row) -> s.Task:
     return s.Task(task_id=r["task_id"], title=r["title"], details=r["details"], priority=r["priority"], status=r["status"])
 
 
+_INCIDENT_V5 = ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
+                "occurred_basis", "episode_id", "draft_id")
+
+
 def _incident(r: sqlite3.Row) -> s.Incident:
+    # Rows read before migration 5 (only during an upgrade) lack the structured columns: model defaults apply.
+    extra = {k: r[k] for k in _INCIDENT_V5 if k in r.keys()}
+    if "occurred_at" in r.keys():
+        extra.update(occurred_at=parse_dt(r["occurred_at"]), confirmed_at=parse_dt(r["confirmed_at"]))
     return s.Incident(
         incident_id=r["incident_id"], incident_number=r["incident_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], description=r["description"],
-        source_turn_id=r["source_turn_id"], created_at=parse_dt(r["created_at"]),
+        source_turn_id=r["source_turn_id"], created_at=parse_dt(r["created_at"]), **extra,
     )
+
+
+def _draft(r: sqlite3.Row) -> s.IncidentDraft:
+    return s.IncidentDraft(
+        draft_id=r["draft_id"], draft_number=r["draft_number"], session_id=r["session_id"],
+        operator_id=r["operator_id"], machine_id=r["machine_id"], origin=r["origin"], status=r["status"],
+        description=r["description"], severity=r["severity"], severity_basis=r["severity_basis"], site_id=r["site_id"],
+        site_zone_id=r["site_zone_id"], zone_basis=r["zone_basis"], location_text=r["location_text"],
+        occurred_at=parse_dt(r["occurred_at"]), occurred_basis=r["occurred_basis"], episode_id=r["episode_id"],
+        version=r["version"], incident_id=r["incident_id"], created_at=parse_dt(r["created_at"]),
+        confirmed_at=parse_dt(r["confirmed_at"]), dismissed_at=parse_dt(r["dismissed_at"]),
+    )
+
+
+def _approval(r: sqlite3.Row) -> s.ApprovalRequest:
+    return s.ApprovalRequest(approval_id=r["approval_id"], kind=r["kind"], incident_id=r["incident_id"],
+                             status=r["status"], created_at=parse_dt(r["created_at"]))
+
+
+_ZONE_STOPWORDS = {"to", "the", "of", "road", "access", "north", "south", "east", "west", "yard", "strip"}
+
+
+def _resolve_zone(c: sqlite3.Connection, session: s.Session,
+                  location_text: str | None) -> tuple[str | None, str | None]:
+    """Site zone for an incident: the one zone the operator named, else the zone of the task in progress."""
+    if not session.site_id:
+        return None, None
+    if location_text:
+        words = set(re.findall(r"[a-z]+", location_text.lower()))
+        hits = [z["site_zone_id"] for z in c.execute("SELECT site_zone_id, name FROM site_zones WHERE site_id = ?",
+                                                     (session.site_id,))
+                if words & (set(z["name"].lower().split()) - _ZONE_STOPWORDS)]
+        if len(hits) == 1:
+            return hits[0], "reported"
+    if session.shift_id:
+        row = c.execute("SELECT site_zone_id FROM task_assignments WHERE shift_id = ? AND status = 'in_progress'"
+                        " ORDER BY scheduled_order LIMIT 1", (session.shift_id,)).fetchone()
+        if row is not None:
+            return row["site_zone_id"], "active_task"
+    return None, None
 
 
 def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:
     return s.TrainingAssignment(
         assignment_id=r["assignment_id"], lesson_id=r["lesson_id"], lesson_title=r["lesson_title"],
         operator_id=r["operator_id"], status=r["status"], assigned_at=parse_dt(r["assigned_at"]),
+        source_episode_id=r["source_episode_id"] if "source_episode_id" in r.keys() else None,
     )
 
 
+def _lesson(r: sqlite3.Row) -> s.Lesson:
+    return s.Lesson(**{k: r[k] for k in r.keys() if k in s.Lesson.model_fields})
+
+
 def _alert(r: sqlite3.Row) -> s.Alert:
+    keys = r.keys()
+    extra = {}
+    if "evidence_json" in keys:  # absent only while reading a pre-v6 row during an upgrade
+        extra = dict(policy_version=r["policy_version"], source_status=r["source_status"], reason=r["reason"],
+                     recommended_action=r["recommended_action"], correlated_alert_id=r["correlated_alert_id"],
+                     draft_incident_id=r["draft_incident_id"], announced=bool(r["announced"]),
+                     training_assignment_id=r["training_assignment_id"] if "training_assignment_id" in keys else None,
+                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None)
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],
         status=r["status"], message=r["message"], explanation=r["explanation"], simulated=True,
         trigger_readings=s.TelemetryReadings.model_validate_json(r["trigger_readings_json"]),
-        started_at=parse_dt(r["started_at"]), cleared_at=parse_dt(r["cleared_at"]),
+        started_at=parse_dt(r["started_at"]), cleared_at=parse_dt(r["cleared_at"]), **extra,
     )
 
 

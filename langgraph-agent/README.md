@@ -93,6 +93,9 @@ python scripts/smoke.py                 # scripted end-to-end check of every flo
 python scripts/chat_cli.py              # interactive text chat; /state, /events, /quit
 python scripts/simulate_telemetry.py --room <room> --identity <participant>   # SIMULATED seatbelt scenario
 python scripts/simulate_telemetry.py --session-id ses_...  --scenario seatbelt-start
+python scripts/simulate_machine.py --machine EXC_DEMO_001 --scenario belt_idle --start 2026-09-24T07:40:00+05:30
+python scripts/simulate_machine.py --machine DOZ_DEMO_001 --scenario selection_check --pace 0   # any of the 5 assets
+python scripts/simulate_machine.py --machine LDR_DEMO_001 --scenario dataset --limit 20         # dataset minute rows
 python scripts/reset_db.py [--wipe]     # apply migrations and seed demo data idempotently; --wipe deletes data/ (stop server first)
 python scripts/backup_db.py [--dest D] # consistent backup of cocoon.db + checkpoints.db (safe while running)
 ```
@@ -117,6 +120,81 @@ The simulator resolves the session with the same `client_session_key` the worker
 - The LangGraph thread ID is the application `session_id`, and checkpoints go to `data/checkpoints.db` through `AsyncSqliteSaver`. Only the new utterance goes into graph memory each turn, with message IDs `user:<turn_id>` and `ai:<turn_id>`, so a re-run replaces messages instead of duplicating them.
 - Business records go to `data/cocoon.db`: sessions, turns, tasks, lessons, incidents, training assignments, alerts, telemetry, announcements and deliveries. Migrations and seeding are idempotent and run on every start. Verified catalog snapshots are recorded in `catalog_versions*`, and each new session stores the snapshot it was admitted under.
 - The pending question and the latest alert are explicit graph state. Telemetry transitions write the latest alert into the checkpoint as well as the database, so a later "Why?" resolves against it.
+
+## Demo site, shifts and assigned tasks (Batch B)
+
+`demo/demo_site_v1.json` is a tracked **synthetic** fixture: one site, 5 zones, and a 07:00–15:00 shift for each of the
+5 catalog machines with its demo operator (`EXC_DEMO_001`/`OP_DEMO_1_1` … `BHL_DEMO_001`/`OP_DEMO_5_1`), plus 1–3
+scheduled tasks each. Task types and units follow the dataset's task history. Conditions and durations are labelled
+`synthetic_demo_fixture` and `demo_supplied_estimate`; they are not live weather or calibrated estimates. Seeding is
+idempotent: it adds or reuses rows, refuses to overwrite a differing row, never wipes the database and never touches
+the dataset CSVs. It also writes the trusted site/shift bindings file read by the server.
+
+```bash
+python scripts/seed_demo.py                              # today at the site; or --service-date 2026-09-24
+SESSION_BINDINGS_PATH=data/demo/session_bindings.json python -m cocoon_agent
+```
+
+```powershell
+python scripts\seed_demo.py
+$env:SESSION_BINDINGS_PATH = "data\demo\session_bindings.json"; python -m cocoon_agent
+```
+
+- **Binding a session to its shift.** A new session is bound to its shift when it sends a matching
+  `site_id`/`shift_id`. If it sends neither, the server binds it automatically when exactly one trusted binding for
+  that operator and machine is for today's date at the site (`context_source` ends in `:auto`).
+- **What a bound session gets.** `shift` and `assigned_tasks` in `/state`; voice "what's my next task", "what are my
+  tasks", "start the next task" and "I finished the task"; and tap commands on
+  `POST /v1/sessions/{session_id}/commands` (`task.start` / `task.complete`, with optional `expected_version`).
+- **Shared rules.** Voice and taps go through one command service that records each committed command once, with
+  the same ownership, legal-transition and version checks.
+- **Machine replay and safety episodes (B3).** `scripts/simulate_machine.py` posts SIMULATED observations for one
+  catalog machine (operator from the fixture, session bound like the voice worker's) with stable event IDs and
+  `provenance`. Scenarios: `belt_idle` (detailed Cat 320 sequence), `belt_retrigger`, `selection_check`, and `dataset`
+  (re-timed rows of `history_minutes.csv`). `--start` sets the observation clock; `--pace` only spaces the posts.
+  Rules come from the versioned `policies/safety_policy_v1.json` (thresholds are labelled demo assumptions, not CAT
+  limits): belt unfastened with the engine running (checked on that sample, before any motion), prolonged idling
+  (300 s) and idling unbelted (60 s), with idle time measured between observation timestamps. An opening episode
+  saves its evidence, policy version, reason and recommended action, one automatic incident draft and one
+  announcement in the same transaction; an overlapping idle/belt episode is linked, not re-announced. Late or
+  same-time conflicting samples are recorded but ignored. `/state.machine_state` is `unavailable`, `fresh` or
+  `stale` (receipt clock, `COCOON_TELEMETRY_STALE_SECONDS`).
+- **Incidents (B2).** "Log an incident: hose leaking near the stockpile yard, high severity, and tell my supervisor"
+  saves a structured report (what, where + site zone, when, severity, each with its basis; identity from the session)
+  and a linked supervisor-review request that stays `pending` (no notification or decision exists yet). A missing
+  description is asked for. Drafts are listed separately in `/state.incident_drafts`; "confirm/dismiss the draft",
+  a bare "yes" (only when exactly one thing is waiting) and taps `incident.edit` / `incident.confirm` /
+  `incident.dismiss` change them once. Every turn result carries `branch` and `action_records` (also on a failed
+  turn); retrying a failed `turn_id` reuses what was saved and runs only what is missing.
+
+## Batch B demo over HTTP (no voice, no UI)
+
+One command seeds an isolated demo database (`data/demo_run`, never `data/cocoon.db`), starts a mock-mode backend on
+port 8765, runs the whole operator sequence and stops the backend. Requests and responses go to
+`data/demo_run/demo_transcript_<run>.json` (no bearer token). Re-running the same `--run-id` replays the saved
+results (turn replays, duplicate telemetry, `duplicate: true` commands) instead of repeating any action.
+
+```bash
+python scripts/demo_operator.py                    # or --run-id demo2 for a new session in the same demo database
+python scripts/demo_operator.py --base-url http://127.0.0.1:8010   # against a backend you started (seeded, bindings set)
+```
+
+```powershell
+python scripts\demo_operator.py
+```
+
+Sequence: shift briefing → "What are my tasks today?" → "Start the next task" → incident with supervisor request →
+Cat 320 belt/idle replay → warning polled from `/events` → "Why did you warn me?" → "I'm waiting for a truck" →
+"Confirm the draft" → linked L1 assignment → "Read my seatbelt lesson" → rest of the replay → `task.complete` tap.
+
+- **"Why?"** explains the warning from its saved evidence: the one you name ("about idling"), else the one announced
+  since your previous turn, else the single active one; competing warnings get a question. The action carries the
+  announcement's delivery reports, which are not acknowledgement.
+- **"I'm waiting for …"** records an idle reason linked to the active idle episode; it clears nothing.
+- **Shift briefing:** one `shift_briefing` announcement per seeded shift (first bound session), built from that
+  operator's tasks and the synthetic conditions; later sessions and restarts reuse it (`/state.shift_briefing`).
+- **Training link:** a belt episode assigns lesson L1 (versioned demo text `L1.demo.1`, `demo_authored_unreviewed`)
+  once while it is outstanding and links it from the episode. Reading it never marks it complete.
 
 ## Actor tokens (local prototype auth, I02b)
 

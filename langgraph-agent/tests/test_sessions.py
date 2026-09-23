@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from cocoon_agent.api import schemas as s
 from cocoon_agent.api.app import create_app
+from cocoon_agent.migrations import latest_version
 from cocoon_agent.store import Conflict, NewSessionBinding, Store
 
 from .conftest import (
@@ -188,7 +189,7 @@ def test_missing_catalog_blocks_readiness_and_new_sessions_but_not_existing_ones
         sid = c.post("/v1/sessions", json=body("existing"), headers=AUTH).json()["session_id"]
         ready = c.get("/readyz").json()
         assert ready["catalog"] is True and ready["catalog_version"] == FIXTURE_MANIFEST_SHA256
-        assert ready["schema_version"] == 3
+        assert ready["schema_version"] == latest_version()
 
     bad = make_settings(tmp_path, DATASET_MANIFEST_SHA256="0" * 64)
     with TestClient(create_app(bad)) as c:

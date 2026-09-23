@@ -26,8 +26,10 @@ from .catalog import Catalog, SessionBindings
 from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
-from .rules import SEATBELT_RULE, seatbelt_condition
-from .store import Conflict, NewSessionBinding, Store, utcnow
+from .rules import SafetyPolicy, load_policy
+from .store import (
+    Conflict, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
+)
 
 log = logging.getLogger("cocoon_agent.service")
 
@@ -58,16 +60,45 @@ class CocoonService:
         self.catalog = catalog  # immutable verified snapshot, loaded once at startup; None = not admitting
         self.bindings = bindings
         self.catalog_issue = catalog_issue
+        self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
+        self._telemetry_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._inflight: dict[tuple[str, str], asyncio.Task] = {}
 
     # ------------------------------------------------------------------ sessions
 
     def create_session(self, req: s.SessionCreateRequest) -> tuple[s.Session, bool]:
         try:
-            return self.store.get_or_create_session(req, self._admit_new_session)
+            session, created = self.store.get_or_create_session(req, self._admit_new_session)
         except Conflict as exc:
             raise ApiError(409, "session_conflict", str(exc)) from exc
+        if session.shift_id and self.store.get_shift(session.shift_id) is not None:
+            # Once per seeded shift (also retried here for a session whose briefing write was interrupted).
+            self.store.ensure_shift_briefing(session, self._briefing_speech(session),
+                                             timedelta(seconds=self.settings.announcement_ttl_seconds))
+        return session, created
+
+    def _briefing_speech(self, session: s.Session) -> str:
+        """Built only from this operator's assigned tasks and the conditions actually available (synthetic)."""
+        shift = self.store.get_shift(session.shift_id)
+        assert shift is not None
+        tasks = [t for t in self.store.list_assigned_tasks(session.shift_id) if t.status != "completed"]
+        machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+        start, end = shift.start_at.astimezone(shift.tz()), shift.end_at.astimezone(shift.tz())
+        parts = [f"Shift briefing for the {machine.model if machine else session.machine_id} at {shift.site_name}, "
+                 f"{start:%H:%M} to {end:%H:%M}."]
+        if tasks:
+            first = tasks[0]
+            est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
+            parts.append(f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}. First: {first.title} in "
+                         f"{first.zone_name} at {first.scheduled_start_local}{est}.")
+            if first.weather.summary:
+                parts.append(f"Conditions (synthetic demo value, not a forecast): {first.weather.summary}.")
+        else:
+            parts.append("You have no open tasks on this shift.")
+        parts.append("Keep your seatbelt fastened whenever the engine is running.")
+        return " ".join(parts)
 
     def _admit_new_session(self, req: s.SessionCreateRequest) -> NewSessionBinding:
         """Rules for a NEW client_session_key only. Raising aborts the insert; nothing is written.
@@ -87,6 +118,12 @@ class CocoonService:
             code = "unknown_machine" if details[0]["field"] == "body.machine_id" else "unknown_operator"
             raise ApiError(422, code, "session association is not in the verified catalog", details=details)
         if req.site_id is None and req.shift_id is None:
+            auto = self._current_trusted_binding(req.operator_id, req.machine_id)
+            if auto is not None:
+                return NewSessionBinding(
+                    dataset_manifest_sha256=catalog.manifest_sha256, context_status="trusted_binding",
+                    site_id=auto.site_id, shift_id=auto.shift_id,
+                    context_source=f"session-bindings:{self.bindings.sha256}:{auto.binding_id}:auto")
             return NewSessionBinding(dataset_manifest_sha256=catalog.manifest_sha256, context_status="unavailable")
         if req.site_id is None or req.shift_id is None:
             raise ApiError(422, "validation_error", "site_id and shift_id must be supplied together",
@@ -103,6 +140,67 @@ class CocoonService:
             site_id=binding.site_id, shift_id=binding.shift_id,
             context_source=f"session-bindings:{self.bindings.sha256}:{binding.binding_id}",
         )
+
+    def _current_trusted_binding(self, operator_id: str, machine_id: str):
+        """Server-side choice (never client metadata): the single trusted binding for this operator/machine whose
+        seeded shift is for today's date at the site (site-local wall clock). None when there is no binding file,
+        no such shift, or more than one candidate."""
+        if self.bindings is None:
+            return None
+        now = utcnow()
+        candidates = []
+        for b in self.bindings.bindings:
+            if b.operator_id != operator_id or b.machine_id != machine_id:
+                continue
+            shift = self.store.get_shift(b.shift_id)
+            if shift and shift.site_id == b.site_id and shift.service_date == shift.local_date(now):
+                candidates.append(b)
+        return candidates[0] if len(candidates) == 1 else None
+
+    # ------------------------------------------------------------------ task commands (taps and graph tools)
+
+    def execute_command(self, principal: Principal, session: s.Session,
+                        req: s.SessionCommand) -> s.SessionCommandResult:
+        """Tap path. The same domain mutation as the graph tools; identity is scoped to the calling principal."""
+        fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
+                                    "payload": req.payload.model_dump(mode="json"),
+                                    "expected_version": req.expected_version})
+        if req.kind.startswith("task."):
+            mutate, noun = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version), "task"
+        else:
+            edits = req.payload.model_dump(include={"description", "severity", "location_text"}, exclude_none=True)
+            mutate = Store.incident_transition(session, req.kind, req.payload.incident_id, req.expected_version, edits)
+            noun = "incident"
+        result, duplicate = self.run_domain_command(
+            scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind, fingerprint=fingerprint,
+            session=session, mutate=mutate, noun=noun)
+        return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
+                                      status="completed", duplicate=duplicate)
+
+    def run_domain_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
+                           mutate, noun: str) -> tuple[dict, bool]:
+        try:
+            return self.store.run_command(
+                scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
+                turn_id=None, mutate=mutate)
+        except Conflict as exc:
+            raise ApiError(409, "idempotency_conflict", str(exc)) from exc
+        except NotFound as exc:
+            raise ApiError(404, "not_found", str(exc)) from exc
+        except VersionConflict as exc:
+            raise ApiError(409, "version_conflict", str(exc), details=[
+                {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
+        except InvalidTransition as exc:
+            raise ApiError(409, "invalid_transition", str(exc), details=[
+                {"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]) from exc
+
+    def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
+        row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
+        if row is None or row["session_id"] != session.session_id:
+            raise ApiError(404, "not_found", "command not found")
+        result = json.loads(row["result_json"])
+        return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
+                                      status="completed", duplicate=True)
 
     # ------------------------------------------------------------------ authentication and authorisation
 
@@ -212,6 +310,7 @@ class CocoonService:
             return s.TurnResult(
                 session_id=session_id, turn_id=turn_id, status="failed", error=s.ErrorBody(**row.error),
                 created_at=row.created_at, llm_mode=self.brain.mode,
+                action_records=self.store.action_records(session_id, turn_id),
             )
         return self._processing(session_id, turn_id, row.created_at)
 
@@ -240,7 +339,8 @@ class CocoonService:
                 result = s.TurnResult(
                     session_id=session_id, turn_id=req.turn_id, status="completed", speech=final["speech"],
                     actions=final.get("actions", []), state_version=version, llm_mode=self.brain.mode,
-                    created_at=created_at, completed_at=utcnow(),
+                    created_at=created_at, completed_at=utcnow(), branch=(final.get("route") or {}).get("branch"),
+                    action_records=self.store.action_records(session_id, req.turn_id),
                 )
                 self.store.complete_turn(session_id, req.turn_id, result.model_dump(mode="json"))
                 log.info(
@@ -250,20 +350,35 @@ class CocoonService:
                 )
                 return result
         except ApiError as exc:
+            self._note_saved_actions(session_id, req.turn_id, exc)
             self.store.fail_turn(session_id, req.turn_id, self._error_dict(exc, request_id))
             log.warning("turn failed session=%s turn=%s code=%s", session_id, req.turn_id, exc.code)
             raise
         except Exception as exc:
             log.exception("turn crashed session=%s turn=%s", session_id, req.turn_id)
             err = ApiError(500, "internal_error", "turn processing failed", retryable=True)
+            self._note_saved_actions(session_id, req.turn_id, err)
             self.store.fail_turn(session_id, req.turn_id, self._error_dict(err, request_id))
             raise err from exc
         finally:
             self._inflight.pop(key, None)
 
+    def _note_saved_actions(self, session_id: str, turn_id: str, exc: ApiError) -> None:
+        """A failure after committed writes must not read as "nothing was saved": name them in the error. Retrying
+        the same turn_id reuses them (turn-scoped command IDs) and only runs what is still missing."""
+        records = self.store.action_records(session_id, turn_id)
+        if records:
+            exc.message = (f"{exc.message}; {len(records)} action(s) were saved before the failure and will not be "
+                           "repeated on retry")
+            exc.details = (exc.details or []) + [
+                {"field": "action_records", "issue": f"{r.kind} {r.outcome}: {r.record_id or '-'}"} for r in records]
+
     @staticmethod
     def _error_dict(exc: ApiError, request_id: str) -> dict[str, Any]:
-        return {"code": exc.code, "message": exc.message, "retryable": exc.retryable, "request_id": request_id}
+        out = {"code": exc.code, "message": exc.message, "retryable": exc.retryable, "request_id": request_id}
+        if exc.details:
+            out["details"] = exc.details
+        return out
 
     # ------------------------------------------------------------------ state
 
@@ -277,44 +392,64 @@ class CocoonService:
             llm_mode=self.brain.mode,
             tasks=self.store.list_tasks(),
             incidents=self.store.list_incidents(session_id),
+            incident_drafts=self.store.list_drafts(session_id),
+            pending_approvals=self.store.list_pending_approvals(session_id),
             training_assignments=self.store.list_assignments(session),
             available_lessons=self.store.list_lessons(),
             active_alerts=self.store.active_alerts(session_id),
             latest_alert=self.store.latest_alert(session_id),
             pending_question=s.PendingQuestion.model_validate(pending) if pending else None,
+            shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
+            assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
+            machine_state=self._machine_state(session_id),
+            idle_reasons=self.store.list_idle_reasons(session_id),
+            shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
+        )
+
+    def _machine_state(self, session_id: str) -> s.MachineStateView:
+        limit = self.settings.telemetry_stale_seconds
+        row = self.store.machine_state(session_id)
+        if row is None:
+            return s.MachineStateView(status="unavailable", stale_after_seconds=limit)
+        readings = s.TelemetryReadings.model_validate_json(row["readings_json"])
+        received = datetime.fromisoformat(row["received_at"])
+        observed = datetime.fromisoformat(row["observed_at"])
+        idle_since = datetime.fromisoformat(row["idle_since"]) if row["idle_since"] else None
+        return s.MachineStateView(
+            status="stale" if (utcnow() - received).total_seconds() > limit else "fresh",
+            observed_at=observed, received_at=received, engine_on=readings.engine_on,
+            seatbelt_fastened=readings.seatbelt_fastened, operating_state=readings.operating_state,
+            speed_kph=readings.speed_kph, idle_since=idle_since,
+            idle_seconds_observed=int((observed - idle_since).total_seconds()) if idle_since else None,
+            stale_after_seconds=limit,
         )
 
     # ------------------------------------------------------------------ telemetry
 
     async def submit_telemetry(self, session_id: str, req: s.TelemetryRequest) -> s.TelemetryResult:
-        self.require_session(session_id)
+        """Rules run synchronously on the sample, in one short transaction, without any model call. The graph reads
+        alerts from the database when a turn starts, so no checkpoint write (and no turn lock) is needed here."""
+        session = self.require_session(session_id)
         digest = payload_hash(req.model_dump(mode="json", exclude={"event_id"}))
-        async with self._locks[session_id]:  # ordered with turns for the same session
+        async with self._telemetry_locks[session_id]:
             prior = self.store.get_telemetry(session_id, req.event_id)
             if prior is not None:
                 if prior[0] != digest:
                     raise ApiError(409, "idempotency_conflict", "event_id was already used with a different payload")
                 return self._telemetry_result(session_id, prior[1], duplicate=True)
-            condition = seatbelt_condition(
-                req.readings, requires_engine_on=self.settings.seatbelt_rule_requires_engine_on
-            )
-            outcome = self.store.apply_telemetry(
-                session_id, req, digest, condition, SEATBELT_RULE,
+            machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+            outcome = self.store.apply_observation(
+                session, req, digest, self.policy, machine.category if machine else None,
                 timedelta(seconds=self.settings.announcement_ttl_seconds),
+                requires_engine_on=self.settings.seatbelt_rule_requires_engine_on,
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
-                latest = self.store.latest_alert(session_id)
-                # keep graph context in step so a later "why?" resolves against this alert
-                await self.graph.aupdate_state(
-                    thread_config(session_id),
-                    {"latest_alert": latest.model_dump(mode="json") if latest else None},
-                    as_node="compose",
-                )
-                log.info("alert transition session=%s opened=%s cleared=%s",
-                         session_id, outcome["alerts_opened"], outcome["alerts_cleared"])
+                log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,
+                         outcome["alerts_opened"], outcome["alerts_cleared"], outcome["drafts_created"])
             return self._telemetry_result(session_id, outcome, duplicate=False)
 
     def _telemetry_result(self, session_id: str, outcome: dict[str, Any], duplicate: bool) -> s.TelemetryResult:
+        outcome = {k: v for k, v in outcome.items() if k in s.TelemetryResult.model_fields}  # pre-B3 saved results
         return s.TelemetryResult(**outcome, duplicate=duplicate, active_alerts=self.store.active_alerts(session_id))
 
     # ------------------------------------------------------------------ announcements

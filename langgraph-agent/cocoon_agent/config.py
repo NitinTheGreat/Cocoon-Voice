@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     turn_poll_after_ms: int = Field(default=500, alias="COCOON_TURN_POLL_AFTER_MS")
     announcement_ttl_seconds: int = Field(default=120, alias="COCOON_ANNOUNCEMENT_TTL_SECONDS")
     seatbelt_rule_requires_engine_on: bool = Field(default=True, alias="COCOON_SEATBELT_RULE_REQUIRES_ENGINE_ON")
+    # Versioned safety rule policy (JSON, schema cocoon.safety-policy.v1). Unset = policies/safety_policy_v1.json.
+    safety_policy_path: Path | None = Field(default=None, alias="COCOON_SAFETY_POLICY_PATH")
+    # Machine state counts as stale when no sample was RECEIVED (server clock) for this long.
+    telemetry_stale_seconds: int = Field(default=30, alias="COCOON_TELEMETRY_STALE_SECONDS", ge=1)
 
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
@@ -81,6 +85,8 @@ class Settings(BaseSettings):
             self.data_dir = SERVICE_DIR / self.data_dir
         if not self.dataset_root.is_absolute():
             self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
+        if self.safety_policy_path is not None and not self.safety_policy_path.is_absolute():
+            self.safety_policy_path = (SERVICE_DIR / self.safety_policy_path).resolve()
         if self.session_bindings_path is not None and not self.session_bindings_path.is_absolute():
             self.session_bindings_path = (SERVICE_DIR / self.session_bindings_path).resolve()
         if self.google_application_credentials is not None and not self.google_application_credentials.is_absolute():

@@ -7,10 +7,10 @@ regenerate the committed spec with `python scripts/export_openapi.py`.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Union
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$"
 
@@ -37,6 +37,8 @@ ErrorCode = Literal[
     "catalog_unavailable",
     "forbidden",
     "auth_unavailable",
+    "version_conflict",
+    "invalid_transition",
 ]
 
 
@@ -117,7 +119,73 @@ class Task(ContractModel):
     status: Literal["pending", "in_progress", "done"]
 
 
+class TaskConditions(ContractModel):
+    source: Literal["synthetic_demo_fixture"] = Field(
+        description="Where the conditions come from. Only a synthetic fixture exists until live weather (Batch C).")
+    summary: str | None = None
+    temperature_c: float | None = None
+
+
+class TaskDuration(ContractModel):
+    minutes: int | None = None
+    source: Literal["demo_supplied_estimate"] = Field(
+        description="A supplied demo figure, not a calibrated prediction (the estimator is Batch C).")
+
+
+class AssignedTask(ContractModel):
+    """A task assigned to the session's operator/machine for its trusted shift. Versioned for command concurrency."""
+
+    task_id: str
+    shift_id: str
+    machine_id: str
+    site_zone_id: str
+    zone_name: str
+    scheduled_order: int
+    scheduled_start_at: datetime
+    scheduled_start_local: str = Field(description="HH:MM at the site (site UTC offset).")
+    task_type: str
+    title: str
+    details: str
+    work_quantity: float | None = None
+    work_unit: str | None = None
+    status: Literal["scheduled", "in_progress", "completed"]
+    version: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    weather: TaskConditions
+    duration: TaskDuration
+
+
+class ShiftInfo(ContractModel):
+    shift_id: str
+    site_id: str
+    site_name: str
+    timezone: str
+    service_date: str
+    start_at: datetime
+    end_at: datetime
+    utc_offset: str = Field(pattern=r"^[+-]\d{2}:\d{2}$", description="Site offset used for the service date.")
+    source: Literal["synthetic_demo_fixture"]
+
+    def tz(self) -> timezone:
+        sign = 1 if self.utc_offset[0] == "+" else -1
+        return timezone(sign * timedelta(hours=int(self.utc_offset[1:3]), minutes=int(self.utc_offset[4:6])))
+
+    def local_date(self, when: datetime) -> str:
+        return when.astimezone(self.tz()).date().isoformat()
+
+
+Severity = Literal["low", "medium", "high", "critical"]
+
+
+ZoneBasis = Literal["reported", "active_task"]
+
+
 class Incident(ContractModel):
+    """A confirmed report. `description` is the "what". Structured fields are additive; each `*_basis` says where a
+    value came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks
+    invented."""
+
     incident_id: str
     incident_number: int
     session_id: str
@@ -126,6 +194,71 @@ class Incident(ContractModel):
     description: str
     source_turn_id: str
     created_at: datetime
+    status: Literal["confirmed"] = Field(default="confirmed", description="Unconfirmed drafts are IncidentDraft.")
+    origin: Literal["operator_reported", "auto_draft"] = "operator_reported"
+    severity: Severity | None = Field(default=None, description="Null = not stated (never guessed).")
+    severity_basis: Literal["reported", "rule_default"] | None = None
+    site_id: str | None = None
+    site_zone_id: str | None = None
+    zone_basis: ZoneBasis | None = None
+    location_text: str | None = None
+    occurred_at: datetime | None = None
+    occurred_basis: Literal["time_of_report", "observation_time"] | None = None
+    episode_id: str | None = Field(default=None, description="Alert episode behind a confirmed automatic draft.")
+    draft_id: str | None = Field(default=None, description="The draft this incident was confirmed from.")
+    confirmed_at: datetime | None = None
+
+
+class IncidentDraft(ContractModel):
+    """An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates the real
+    incident ID once (`incident_id`)."""
+
+    draft_id: str
+    draft_number: int
+    session_id: str
+    operator_id: str
+    machine_id: str
+    origin: Literal["auto_draft"]
+    status: Literal["draft", "confirmed", "dismissed"]
+    description: str
+    severity: Severity | None = None
+    severity_basis: Literal["reported", "rule_default"] | None = None
+    site_id: str | None = None
+    site_zone_id: str | None = None
+    zone_basis: ZoneBasis | None = None
+    location_text: str | None = None
+    occurred_at: datetime | None = None
+    occurred_basis: Literal["time_of_report", "observation_time"] | None = None
+    episode_id: str | None = None
+    version: int
+    incident_id: str | None = Field(default=None, description="Set once, when the draft is confirmed.")
+    created_at: datetime
+    confirmed_at: datetime | None = None
+    dismissed_at: datetime | None = None
+
+
+class ApprovalRequest(ContractModel):
+    """A request for supervisor review. `pending` until a supervisor decision route exists (Batch D); creating it
+    is not a notification and not an approval."""
+
+    approval_id: str
+    kind: Literal["incident_escalation"]
+    incident_id: str
+    status: Literal["pending", "approved", "rejected", "expired"]
+    created_at: datetime
+
+
+class ActionRecord(ContractModel):
+    """Durable outcome of one write in this turn (committed together with the write)."""
+
+    action_id: str
+    kind: str
+    outcome: Literal["completed", "failed", "unknown"]
+    record_type: str | None = None
+    record_id: str | None = None
+    summary: str
+    state_version: int | None = None
+    created_at: datetime
 
 
 class Lesson(ContractModel):
@@ -133,6 +266,10 @@ class Lesson(ContractModel):
     title: str
     summary: str
     duration_minutes: int
+    version: str | None = Field(default=None, description="Content version, when lesson text exists.")
+    content_text: str | None = Field(default=None, description="Readable lesson text (demo lessons only so far).")
+    content_status: Literal["demo_authored_unreviewed"] | None = Field(
+        default=None, description="demo_authored_unreviewed: written for the demo, not reviewed by a trainer.")
 
 
 class TrainingAssignment(ContractModel):
@@ -140,20 +277,40 @@ class TrainingAssignment(ContractModel):
     lesson_id: str
     lesson_title: str
     operator_id: str
-    status: Literal["assigned", "completed"]
+    status: Literal["assigned", "completed"] = Field(description="Reading or playback never sets completed.")
     assigned_at: datetime
+    source_episode_id: str | None = Field(default=None, description="Safety episode that triggered the assignment.")
+
+
+OperatingState = Literal["off", "idle", "working", "travel"]
 
 
 class TelemetryReadings(ContractModel):
     engine_on: bool
     seatbelt_fastened: bool
-    idle_seconds: int = Field(ge=0, le=86_400)
+    idle_seconds: int = Field(ge=0, le=86_400, description="Client-reported counter; informational. Idle rules time "
+                                                           "idling from observation timestamps instead.")
+    operating_state: OperatingState | None = Field(
+        default=None, description="Observed machine state. Omitted = unknown: idle rules neither open nor clear.")
+    speed_kph: float | None = Field(default=None, ge=0, le=100, description="Observed ground speed (motion).")
+
+
+class AlertEvidence(ContractModel):
+    """What the rule saw when the episode opened. Saved once; later readings never change it."""
+
+    event_id: str
+    observed_at: datetime = Field(description="Observation (data) time of the triggering sample.")
+    readings: TelemetryReadings
+    idle_since: datetime | None = Field(default=None, description="Start of the observed idle streak, if any.")
+    idle_seconds_observed: int | None = Field(default=None, description="observed_at - idle_since (data clock).")
+    machine_category: str | None = None
+    applicability: Literal["all_categories", "category_listed"] = "all_categories"
 
 
 class Alert(ContractModel):
     alert_id: str
     rule_id: str
-    alert_type: Literal["seatbelt_unfastened"]
+    alert_type: Literal["seatbelt_unfastened", "prolonged_idle", "idle_unbelted"]
     severity: Literal["warning", "critical"]
     status: Literal["active", "cleared"]
     message: str
@@ -162,12 +319,42 @@ class Alert(ContractModel):
     trigger_readings: TelemetryReadings
     started_at: datetime
     cleared_at: datetime | None = None
+    policy_version: str | None = Field(default=None, description="Safety policy that produced this episode.")
+    source_status: Literal["demo_assumption", "published_limit"] | None = Field(
+        default=None, description="demo_assumption: thresholds are demo values, not published CAT limits.")
+    reason: str | None = None
+    recommended_action: str | None = None
+    evidence: AlertEvidence | None = None
+    correlated_alert_id: str | None = Field(
+        default=None, description="Episode this one overlaps (same physical situation); it is not announced again.")
+    draft_incident_id: str | None = Field(default=None, description="Automatic incident draft linked to this episode.")
+    training_assignment_id: str | None = Field(default=None, description="Lesson assignment linked to this episode.")
+    announced: bool = Field(default=True, description="An alert_started announcement was created (not: heard).")
+
+
+class MachineStateView(ContractModel):
+    """Latest accepted observation. Two clocks: durations use observation time (`observed_at`); freshness uses the
+    server's receipt time. Missing or stale data is reported as such, never as healthy."""
+
+    status: Literal["unavailable", "fresh", "stale"]
+    observed_at: datetime | None = None
+    received_at: datetime | None = None
+    engine_on: bool | None = None
+    seatbelt_fastened: bool | None = None
+    operating_state: OperatingState | None = None
+    speed_kph: float | None = None
+    idle_since: datetime | None = None
+    idle_seconds_observed: int | None = None
+    stale_after_seconds: int
 
 
 class PendingQuestion(ContractModel):
     kind: Literal["incident_description"]
     for_action: Literal["log_incident"]
     asked_in_turn_id: str
+    notify_supervisor: bool = Field(default=False, description="The report was asked to go to a supervisor too.")
+    severity: Severity | None = None
+    location_text: str | None = None
 
 
 # --------------------------------------------------------------------------- turns
@@ -216,13 +403,92 @@ class TrainingStatusAction(ContractModel):
 
 
 class AlertExplainedAction(ContractModel):
+    """The explanation comes from the episode's saved evidence, never from the latest readings."""
+
     type: Literal["alert_explained"]
     alert: Alert | None
+    announcement_event_id: str | None = Field(default=None, description="The announcement that raised this alert.")
+    deliveries: list["DeliveryRecord"] = Field(
+        default_factory=list, description="Playback reports for that announcement. Played is not acknowledgement.")
+
+
+class IdleReasonRecordedAction(ContractModel):
+    """The operator's stated reason for idling. Recording it does not clear any warning."""
+
+    type: Literal["idle_reason_recorded"]
+    reason_id: str
+    reason_text: str
+    alert_id: str | None = Field(default=None, description="Idle episode the reason is linked to, if one is active.")
+    belt_warning_active: bool
+    created: bool
+
+
+class LessonContentAction(ContractModel):
+    type: Literal["lesson_content"]
+    lesson: Lesson
+    assignment: TrainingAssignment | None = None
 
 
 class PendingCancelledAction(ContractModel):
     type: Literal["pending_cancelled"]
     cancelled: Literal["log_incident"] | None
+
+
+class AssignedTasksAction(ContractModel):
+    """Read of the shift's assigned tasks (next task or full list)."""
+
+    type: Literal["assigned_tasks"]
+    scope: Literal["next", "all"]
+    tasks: list[AssignedTask]
+    shift_bound: bool = Field(description="False when the session has no trusted shift; tasks is then empty.")
+
+
+class TaskTransitionAction(ContractModel):
+    type: Literal["task_started", "task_completed"]
+    task: AssignedTask
+    command_id: str
+    created: bool = Field(description="False when this exact command was already committed (retry).")
+
+
+class IncidentDraftAction(ContractModel):
+    type: Literal["incident_confirmed", "incident_dismissed"]
+    draft: IncidentDraft
+    incident: Incident | None = Field(default=None, description="The incident created by confirming (confirm only).")
+    created: bool
+
+
+class EscalationRequestedAction(ContractModel):
+    type: Literal["escalation_requested"]
+    approval: ApprovalRequest
+    created: bool
+
+
+class IncidentDraftsAction(ContractModel):
+    type: Literal["incident_drafts"]
+    drafts: list[IncidentDraft]
+
+
+class ClarificationAction(ContractModel):
+    """Nothing was changed: several workflows could match, or there is nothing to act on."""
+
+    type: Literal["clarification_needed"]
+    for_action: Literal["confirm_draft", "dismiss_draft", "explain_alert", "affirm", "read_lesson"]
+    reason: Literal["several_candidates", "nothing_pending"]
+    options: list[str] = Field(default_factory=list)
+
+
+class CapabilityUnavailableAction(ContractModel):
+    type: Literal["capability_unavailable"]
+    capability: str = Field(max_length=60)
+
+
+class TaskRejectedAction(ContractModel):
+    """A task command that changed nothing, with the reason (no shift, no eligible task, illegal transition)."""
+
+    type: Literal["task_rejected"]
+    for_action: Literal["task.start", "task.complete"]
+    reason: Literal["no_shift", "no_eligible_task", "invalid_transition"]
+    current_status: str | None = None
 
 
 ActionResult = Annotated[
@@ -234,6 +500,16 @@ ActionResult = Annotated[
         TrainingStatusAction,
         AlertExplainedAction,
         PendingCancelledAction,
+        AssignedTasksAction,
+        TaskTransitionAction,
+        TaskRejectedAction,
+        IncidentDraftAction,
+        IncidentDraftsAction,
+        IdleReasonRecordedAction,
+        LessonContentAction,
+        EscalationRequestedAction,
+        ClarificationAction,
+        CapabilityUnavailableAction,
     ],
     Field(discriminator="type"),
 ]
@@ -256,6 +532,11 @@ class TurnResult(ContractModel):
     poll_url: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
+    branch: Literal["tasks", "safety_incidents", "training", "general_assistance"] | None = Field(
+        default=None, description="Workflow branch the turn was classified into.")
+    action_records: list[ActionRecord] = Field(
+        default_factory=list, description="Writes committed by this turn, also on a failed turn: a failure after a "
+                                          "committed write never means nothing was saved.")
 
 
 # --------------------------------------------------------------------------- state
@@ -272,9 +553,41 @@ class SessionState(ContractModel):
     active_alerts: list[Alert]
     latest_alert: Alert | None
     pending_question: PendingQuestion | None
+    shift: ShiftInfo | None = Field(
+        default=None, description="The session's trusted shift (synthetic demo fixture), or null when unbound.")
+    assigned_tasks: list[AssignedTask] = Field(
+        default_factory=list, description="Tasks of the trusted shift. `tasks` stays the legacy shared demo list.")
+    incident_drafts: list[IncidentDraft] = Field(
+        default_factory=list, description="Open automatic drafts. `incidents` lists confirmed reports only.")
+    pending_approvals: list[ApprovalRequest] = Field(default_factory=list)
+    machine_state: MachineStateView | None = Field(default=None, description="Freshness of machine observations.")
+    idle_reasons: list["IdleReason"] = Field(default_factory=list)
+    shift_briefing: "ShiftBriefing | None" = None
+
+
+class IdleReason(ContractModel):
+    reason_id: str
+    reason_text: str
+    alert_id: str | None = None
+    created_at: datetime
+
+
+class ShiftBriefing(ContractModel):
+    """Created once per shift and published as a `shift_briefing` announcement."""
+
+    shift_id: str
+    event_id: str
+    speech: str
+    created_at: datetime
 
 
 # --------------------------------------------------------------------------- telemetry
+
+
+class TelemetryProvenance(ContractModel):
+    origin: Literal["synthetic_scenario", "dataset_replay"]
+    generator: str = Field(max_length=80)
+    record_ref: str | None = Field(default=None, max_length=120, description="Dataset record ID for a replay.")
 
 
 class TelemetryRequest(ContractModel):
@@ -282,6 +595,8 @@ class TelemetryRequest(ContractModel):
     observed_at: AwareDatetime = Field(description="Timezone-aware timestamp; normalised to UTC.")
     simulated: Literal[True] = Field(description="Must be true: v1 accepts prototype simulator data only.")
     readings: TelemetryReadings
+    provenance: TelemetryProvenance | None = Field(
+        default=None, description="Where a simulated sample came from. Stored, never used by the rules.")
 
     @field_validator("observed_at")
     @classmethod
@@ -293,10 +608,14 @@ class TelemetryResult(ContractModel):
     session_id: str
     event_id: str
     duplicate: bool
-    stale: bool = Field(description="True when observed_at is older than the newest processed sample.")
+    stale: bool = Field(description="True when the sample was not applied (late or conflicting).")
+    ignored_reason: Literal["late", "conflicting"] | None = Field(
+        default=None, description="late: older than the newest applied sample; conflicting: same observation time as "
+                                  "the newest applied sample but different readings.")
     alerts_opened: list[str]
     alerts_cleared: list[str]
     announcements_created: list[str]
+    drafts_created: list[str] = Field(default_factory=list, description="Automatic incident drafts opened.")
     active_alerts: list[Alert]
     state_version: int
 
@@ -324,7 +643,7 @@ class DeliveryRecord(ContractModel):
 class Announcement(ContractModel):
     event_id: str
     sequence: int
-    type: Literal["alert_started", "alert_cleared"]
+    type: Literal["alert_started", "alert_cleared", "shift_briefing"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -390,3 +709,55 @@ class ReadyResponse(ContractModel):
     catalog_version: str | None = Field(default=None, description="Manifest SHA-256 of the loaded catalog.")
     catalog_issue: str | None = Field(default=None, description="Sanitized reason code when catalog is false.")
     schema_version: int | None = Field(default=None, description="Applied cocoon.db migration version.")
+
+
+# --------------------------------------------------------------------------- commands (taps and graph tools)
+
+CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss"]
+
+
+class CommandPayload(ContractModel):
+    task_id: StableId | None = None
+    incident_id: StableId | None = Field(default=None, description="incident.* commands: the draft ID (DRF-…).")
+    description: str | None = Field(default=None, min_length=1, max_length=1000)
+    severity: Severity | None = None
+    location_text: str | None = Field(default=None, max_length=300)
+
+
+class SessionCommand(ContractModel):
+    """POST /v1/sessions/{session_id}/commands. A subset of the proposed cocoon.command.v1 envelope: the binding is
+    taken from the authenticated session (never from the body); `expected_version` guards against stale taps."""
+
+    schema_version: Literal["cocoon.command.v1"] = "cocoon.command.v1"
+    command_id: StableId = Field(description="Unique per caller; an identical retry returns the saved result.")
+    kind: CommandKind
+    captured_at: AwareDatetime | None = Field(default=None, description="Device time of the tap (informational).")
+    expected_version: int | None = Field(default=None, ge=1)
+    payload: CommandPayload
+
+    @model_validator(mode="after")
+    def _payload_for_kind(self) -> "SessionCommand":
+        if self.kind.startswith("task.") and not self.payload.task_id:
+            raise ValueError("task commands need payload.task_id")
+        if self.kind.startswith("incident.") and not self.payload.incident_id:
+            raise ValueError("incident commands need payload.incident_id")
+        return self
+
+
+class SessionCommandResult(ContractModel):
+    command_id: str
+    kind: str
+    status: Literal["completed"]
+    duplicate: bool = Field(description="True when this identical command was already committed.")
+    record_type: str | None = None
+    record_id: str | None = None
+    summary: str
+    state_version: int
+    task: AssignedTask | None = None
+    draft: IncidentDraft | None = None
+    incident: Incident | None = None
+    created_at: datetime
+
+
+AlertExplainedAction.model_rebuild()
+SessionState.model_rebuild()
