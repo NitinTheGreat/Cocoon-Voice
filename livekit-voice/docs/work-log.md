@@ -2,6 +2,22 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 18:45 UTC — M4: Porcupine acoustic routing (branch `voice`)
+
+- **Scope:** `AcousticRouter` is the single consumer of the agent audio input in `WAKE_MODE=porcupine`: frames
+  (already filtered by the configured Krisp processor — RoomIO applies it on the participant `AudioStream`
+  before frames reach the agent input, VAD and `stt_node`) are resampled to the engine rate, cut into the engine's
+  frame length, and forwarded to STT only inside ACTIVE segments that start with a bounded pre-roll.
+- **Measured (offline):** `rtc.AudioResampler` 24 kHz→16 kHz emits ~525-sample blocks with one push of delay;
+  with 512-sample engine framing, routing adds ~40–60 ms before the engine sees the keyword end. Default
+  `PORCUPINE_PREROLL_MS=400` covers it with margin.
+- **Checks run:** `pytest tests/test_porcupine_router.py` → 9 passed (exact 512-sample engine frames at 16/24/48 kHz
+  input, nothing lost; ARMED audio never reaches STT; one segment per activation with ~400 ms pre-roll, every frame
+  forwarded once in order; segment closes on re-arm and reopens on next detection; bounded drop-oldest buffer;
+  controller feeds STT once per activation). Full suite 108 passed, 1 skipped.
+- **Not validated:** acoustic keyword spotting itself (false accepts/misses, truncation). A fake engine was used.
+  BLOCKED on `PICOVOICE_ACCESS_KEY` and a real custom `Hey Cat` .ppn for Windows (x86_64); none is faked.
+
 ## 2026-09-23 18:25 UTC — M3: streaming, interruption and recovery (branch `voice`)
 
 - **Finding:** a real `AgentSession` with default connection options retried a failed LLM stream three times
@@ -12,7 +28,8 @@ Newest first. Evidence only: every result below was observed on the recorded mac
   never spoken); first-chunk and mid-stream stall timeouts; empty output fallback; one-off thinking cue only when the
   first text is later than `THINKING_CUE_DELAY_MS`; stale-epoch suppression; provider stream closed on
   cancellation; fixed-phrase audio cache keyed by provider/model/voice/language/speed and persisted on disk.
-- **Checks run:** `pytest tests/test_streaming.py` → 13 passed; full suite 100 passed, 1 skipped.
+- **Checks run:** `pytest tests/test_streaming.py` → 12 passed; full suite 99 passed, 1 skipped.
+  *(Corrected in M4: this entry originally said 13/100, which did not match the observed run.)*
 - **Limits:** barge-in stop latency and played-text truncation depend on live audio output (SDK
   `use_tts_aligned_transcript` with Cartesia word timestamps); not measurable until Cartesia/AssemblyAI keys exist.
 
