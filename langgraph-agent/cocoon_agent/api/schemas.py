@@ -167,10 +167,12 @@ class ShiftInfo(ContractModel):
     utc_offset: str = Field(pattern=r"^[+-]\d{2}:\d{2}$", description="Site offset used for the service date.")
     source: Literal["synthetic_demo_fixture"]
 
-    def local_date(self, when: datetime) -> str:
+    def tz(self) -> timezone:
         sign = 1 if self.utc_offset[0] == "+" else -1
-        hours, minutes = int(self.utc_offset[1:3]), int(self.utc_offset[4:6])
-        return (when.astimezone(timezone.utc) + sign * timedelta(hours=hours, minutes=minutes)).date().isoformat()
+        return timezone(sign * timedelta(hours=int(self.utc_offset[1:3]), minutes=int(self.utc_offset[4:6])))
+
+    def local_date(self, when: datetime) -> str:
+        return when.astimezone(self.tz()).date().isoformat()
 
 
 Severity = Literal["low", "medium", "high", "critical"]
@@ -264,6 +266,10 @@ class Lesson(ContractModel):
     title: str
     summary: str
     duration_minutes: int
+    version: str | None = Field(default=None, description="Content version, when lesson text exists.")
+    content_text: str | None = Field(default=None, description="Readable lesson text (demo lessons only so far).")
+    content_status: Literal["demo_authored_unreviewed"] | None = Field(
+        default=None, description="demo_authored_unreviewed: written for the demo, not reviewed by a trainer.")
 
 
 class TrainingAssignment(ContractModel):
@@ -271,8 +277,9 @@ class TrainingAssignment(ContractModel):
     lesson_id: str
     lesson_title: str
     operator_id: str
-    status: Literal["assigned", "completed"]
+    status: Literal["assigned", "completed"] = Field(description="Reading or playback never sets completed.")
     assigned_at: datetime
+    source_episode_id: str | None = Field(default=None, description="Safety episode that triggered the assignment.")
 
 
 OperatingState = Literal["off", "idle", "working", "travel"]
@@ -321,6 +328,7 @@ class Alert(ContractModel):
     correlated_alert_id: str | None = Field(
         default=None, description="Episode this one overlaps (same physical situation); it is not announced again.")
     draft_incident_id: str | None = Field(default=None, description="Automatic incident draft linked to this episode.")
+    training_assignment_id: str | None = Field(default=None, description="Lesson assignment linked to this episode.")
     announced: bool = Field(default=True, description="An alert_started announcement was created (not: heard).")
 
 
@@ -395,8 +403,30 @@ class TrainingStatusAction(ContractModel):
 
 
 class AlertExplainedAction(ContractModel):
+    """The explanation comes from the episode's saved evidence, never from the latest readings."""
+
     type: Literal["alert_explained"]
     alert: Alert | None
+    announcement_event_id: str | None = Field(default=None, description="The announcement that raised this alert.")
+    deliveries: list["DeliveryRecord"] = Field(
+        default_factory=list, description="Playback reports for that announcement. Played is not acknowledgement.")
+
+
+class IdleReasonRecordedAction(ContractModel):
+    """The operator's stated reason for idling. Recording it does not clear any warning."""
+
+    type: Literal["idle_reason_recorded"]
+    reason_id: str
+    reason_text: str
+    alert_id: str | None = Field(default=None, description="Idle episode the reason is linked to, if one is active.")
+    belt_warning_active: bool
+    created: bool
+
+
+class LessonContentAction(ContractModel):
+    type: Literal["lesson_content"]
+    lesson: Lesson
+    assignment: TrainingAssignment | None = None
 
 
 class PendingCancelledAction(ContractModel):
@@ -442,7 +472,7 @@ class ClarificationAction(ContractModel):
     """Nothing was changed: several workflows could match, or there is nothing to act on."""
 
     type: Literal["clarification_needed"]
-    for_action: Literal["confirm_draft", "dismiss_draft", "explain_alert", "affirm"]
+    for_action: Literal["confirm_draft", "dismiss_draft", "explain_alert", "affirm", "read_lesson"]
     reason: Literal["several_candidates", "nothing_pending"]
     options: list[str] = Field(default_factory=list)
 
@@ -475,6 +505,8 @@ ActionResult = Annotated[
         TaskRejectedAction,
         IncidentDraftAction,
         IncidentDraftsAction,
+        IdleReasonRecordedAction,
+        LessonContentAction,
         EscalationRequestedAction,
         ClarificationAction,
         CapabilityUnavailableAction,
@@ -529,6 +561,24 @@ class SessionState(ContractModel):
         default_factory=list, description="Open automatic drafts. `incidents` lists confirmed reports only.")
     pending_approvals: list[ApprovalRequest] = Field(default_factory=list)
     machine_state: MachineStateView | None = Field(default=None, description="Freshness of machine observations.")
+    idle_reasons: list["IdleReason"] = Field(default_factory=list)
+    shift_briefing: "ShiftBriefing | None" = None
+
+
+class IdleReason(ContractModel):
+    reason_id: str
+    reason_text: str
+    alert_id: str | None = None
+    created_at: datetime
+
+
+class ShiftBriefing(ContractModel):
+    """Created once per shift and published as a `shift_briefing` announcement."""
+
+    shift_id: str
+    event_id: str
+    speech: str
+    created_at: datetime
 
 
 # --------------------------------------------------------------------------- telemetry
@@ -593,7 +643,7 @@ class DeliveryRecord(ContractModel):
 class Announcement(ContractModel):
     event_id: str
     sequence: int
-    type: Literal["alert_started", "alert_cleared"]
+    type: Literal["alert_started", "alert_cleared", "shift_briefing"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -707,3 +757,7 @@ class SessionCommandResult(ContractModel):
     draft: IncidentDraft | None = None
     incident: Incident | None = None
     created_at: datetime
+
+
+AlertExplainedAction.model_rebuild()
+SessionState.model_rebuild()

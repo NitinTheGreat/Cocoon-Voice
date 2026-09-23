@@ -53,7 +53,8 @@ def test_cat320_replay_warns_before_motion_without_spam_and_links_one_draft(tmp_
         assert results[3]["alerts_opened"] == [] and results[3]["announcements_created"] == []  # repeated sample
 
         page = c.get(f"/v1/sessions/{sid}/events?after=0", headers=AUTH).json()  # no turn needed
-        assert [e["type"] for e in page["events"]] == ["alert_started", "alert_started", "alert_cleared"]
+        assert [e["type"] for e in page["events"]] == ["shift_briefing", "alert_started", "alert_started",
+                                                       "alert_cleared"]
         state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
         assert state["active_alerts"] == []  # moving and belted: every condition cleared
         assert state["machine_state"]["status"] == "fresh"
@@ -75,7 +76,7 @@ def test_cat320_replay_warns_before_motion_without_spam_and_links_one_draft(tmp_
         assert belt["draft_incident_id"] == draft["draft_id"] and belt["announced"] == 1
         assert kinds["idle_unbelted"]["correlated_alert_id"] is not None and kinds["idle_unbelted"]["announced"] == 0
         assert kinds["idle_unbelted"]["draft_incident_id"] is None
-        assert all(r["policy_version"] == "demo-safety-2026-09-24.1" for r in rows)
+        assert all(r["policy_version"] == "demo-safety-2026-09-24.2" for r in rows)
         assert '"idle_seconds_observed":315' in kinds["prolonged_idle"]["evidence_json"]
         again = post(c, sid, events[2])
         assert again["duplicate"] and again["alerts_opened"] == results[2]["alerts_opened"]
@@ -130,7 +131,7 @@ def test_every_catalog_machine_can_be_selected_and_stays_isolated(tmp_path, monk
             state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
             assert len(state["incident_drafts"]) == 1 and state["incident_drafts"][0]["machine_id"] == m
             events = c.get(f"/v1/sessions/{sid}/events?after=0", headers=AUTH).json()["events"]
-            assert [e["type"] for e in events] == ["alert_started", "alert_cleared"]
+            assert [e["type"] for e in events] == ["shift_briefing", "alert_started", "alert_cleared"]
         # freshness uses the receipt clock: no new sample for longer than the limit -> stale, never "healthy"
         later = datetime.now(timezone.utc) + timedelta(seconds=settings.telemetry_stale_seconds + 5)
         monkeypatch.setattr(service_module, "utcnow", lambda: later)

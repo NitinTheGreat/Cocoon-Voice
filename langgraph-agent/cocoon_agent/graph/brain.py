@@ -27,13 +27,14 @@ log = logging.getLogger("cocoon_agent.brain")
 Intent = Literal[
     "next_task", "list_tasks", "start_task", "complete_task",
     "log_incident", "review_drafts", "confirm_draft", "dismiss_draft", "affirm",
-    "training", "explain_alert", "answer_pending", "cancel_pending", "unsupported", "smalltalk",
+    "training", "explain_alert", "record_idle_reason", "answer_pending", "cancel_pending", "unsupported", "smalltalk",
 ]
 Branch = Literal["tasks", "safety_incidents", "training", "general_assistance"]
 BRANCH_OF: dict[str, str] = {
     "next_task": "tasks", "list_tasks": "tasks", "start_task": "tasks", "complete_task": "tasks",
     "log_incident": "safety_incidents", "review_drafts": "safety_incidents", "confirm_draft": "safety_incidents",
     "dismiss_draft": "safety_incidents", "explain_alert": "safety_incidents", "answer_pending": "safety_incidents",
+    "record_idle_reason": "safety_incidents",
     "training": "training",
     "affirm": "general_assistance", "cancel_pending": "general_assistance", "unsupported": "general_assistance",
     "smalltalk": "general_assistance",
@@ -66,7 +67,10 @@ class RouteDecision(BaseModel):
     notify_supervisor: bool = Field(default=False, description="The operator asked to tell/escalate to a supervisor.")
     incident_number: int | None = Field(default=None, description="A draft number the operator named.")
     unsupported_capability: UnsupportedCapability | None = None
-    training_action: Literal["assign", "status"] | None = None
+    alert_hint: Literal["seatbelt", "idle"] | None = Field(
+        default=None, description="Which warning the operator means, if they said (seatbelt or idling).")
+    idle_reason: str | None = Field(default=None, description="The operator's reason for idling, in their words.")
+    training_action: Literal["assign", "status", "read"] | None = None
     lesson_id: Literal["L1", "L2", "L3"] | None = None
 
     @model_validator(mode="after")
@@ -143,6 +147,10 @@ _UNSUPPORTED = [
     ("supervisor_messages", re.compile(r"\b(call|message|text|tell|notify)\b.*\b(supervisor|boss|foreman)\b")),
 ]
 _TRAINING = re.compile(r"\b(training|lesson|lessons|course)\b")
+_READ = re.compile(r"\b(read|open|play|tell me|what'?s in|go through)\b")
+_IDLE_REASON = re.compile(r"\b(waiting (for|on)|i'?m waiting|on standby|stuck behind|queue for|queued)\b")
+_HINT_BELT = re.compile(r"\bseat ?belt|\bbelt\b")
+_HINT_IDLE = re.compile(r"\bidl(e|ing)\b")
 _NEXT_TASK = re.compile(r"\b(next task|next job|what'?s next|what should i do|my task|what do i do)\b")
 _LIST_TASKS = re.compile(r"\b(all|list|today'?s|my) (tasks|jobs)\b|\bwhat are my (tasks|jobs)\b")
 _START_TASK = re.compile(r"\b(start|begin|starting|beginning)\b.*\b(task|job|next one|it)\b")
@@ -186,7 +194,10 @@ class MockBrain:
         if ctx.pending and _CANCEL.search(t):
             return RouteDecision(intent="cancel_pending")
         if _EXPLAIN.search(t):
-            return RouteDecision(intent="explain_alert")
+            hint = "seatbelt" if _HINT_BELT.search(t) else ("idle" if _HINT_IDLE.search(t) else None)
+            return RouteDecision(intent="explain_alert", alert_hint=hint)
+        if _IDLE_REASON.search(t) and not ctx.pending:
+            return RouteDecision(intent="record_idle_reason", idle_reason=ctx.text.strip(" .")[:300])
         if _AFFIRM.match(t):
             return RouteDecision(intent="affirm")
         number = _INCIDENT_NUMBER.search(t)
@@ -205,7 +216,7 @@ class MockBrain:
                 return RouteDecision(intent="unsupported", unsupported_capability=capability)
         if _TRAINING.search(t):
             lesson = next((lid for lid, rx in _LESSON_WORDS.items() if rx.search(t)), None)
-            action = "assign" if (_ASSIGN.search(t) or lesson) else "status"
+            action = "read" if _READ.search(t) else ("assign" if (_ASSIGN.search(t) or lesson) else "status")
             return RouteDecision(intent="training", training_action=action, lesson_id=lesson)
         if _START_TASK.search(t):
             return RouteDecision(intent="start_task")
@@ -261,9 +272,13 @@ def _template(a: dict[str, Any]) -> str:
         if a["reason"] == "several_candidates":
             if a["for_action"] == "affirm":
                 return f"I'm not sure what you're saying yes to: {options}. Please say which one."
+            if a["for_action"] == "explain_alert":
+                return f"I've given more than one warning: {options}. Which one do you mean?"
             return f"There's more than one: {options}. Which one?"
         if a["for_action"] == "affirm":
             return "There's nothing waiting for a yes right now."
+        if a["for_action"] == "read_lesson":
+            return "You don't have a lesson with readable text assigned yet."
         return "There's no draft report to act on." + (f" Open drafts are {options}." if options else "")
     if kind == "capability_unavailable":
         name = CAPABILITY_NAMES.get(a["capability"], "That")
@@ -282,7 +297,23 @@ def _template(a: dict[str, Any]) -> str:
         alert = a["alert"]
         if not alert:
             return "I haven't issued any warnings in this session."
-        return f"I warned you because {alert['explanation'][0].lower()}{alert['explanation'][1:]}"
+        text = f"I warned you because {alert['explanation'][0].lower()}{alert['explanation'][1:]}"
+        if alert.get("recommended_action"):
+            text += f" {alert['recommended_action']}"
+        if alert["status"] == "cleared":
+            text += " That warning has since cleared."
+        return text
+    if kind == "idle_reason_recorded":
+        text = f"Noted: {a['reason_text'].rstrip('.')}."
+        if a["belt_warning_active"]:
+            text += " Your seatbelt warning is still active, so please keep your seatbelt fastened while you wait."
+        return text
+    if kind == "lesson_content":
+        lesson = a["lesson"]
+        if not lesson.get("content_text"):
+            return f"The lesson {lesson['title']} has no readable text yet. {lesson['summary']}"
+        return (f"{lesson['content_text']} Reading this lesson does not mark it complete; quizzes and completion "
+                "tracking aren't available yet.")
     if kind == "pending_cancelled":
         return "Okay, I've dropped that." if a["cancelled"] else "There was nothing to cancel."
     if kind == "assigned_tasks":
@@ -331,8 +362,9 @@ Choose exactly one intent:
 - review_drafts: the operator asks to hear their draft (unconfirmed) incident reports.
 - confirm_draft / dismiss_draft: the operator confirms or discards a draft report. Set incident_number if they name one.
 - affirm: a bare yes/okay/go ahead. Never guess what it confirms.
-- training: the operator asks about training or lessons. training_action is "assign" when they want a lesson assigned or started, "status" when they ask what is assigned. Set lesson_id only if a catalog lesson is identifiable.
-- explain_alert: the operator asks why Cocoon warned them or about the latest alert, including a bare "why?" right after a warning.
+- training: the operator asks about training or lessons. training_action is "assign" when they want a lesson assigned or started, "read" when they want to hear or read a lesson's content, "status" when they ask what is assigned. Set lesson_id only if a catalog lesson is identifiable.
+- explain_alert: the operator asks why Cocoon warned them or about the latest alert, including a bare "why?" right after a warning. Set alert_hint to seatbelt or idle only if they said which warning.
+- record_idle_reason: the operator explains why they are idling or waiting (for example "I'm waiting for a truck"). Put their words in idle_reason.
 - answer_pending: a pending question exists and this utterance answers it. Put the answer in incident_description.
 - cancel_pending: a pending question exists and the operator wants to drop it.
 - unsupported: a capability that does not exist yet (weather forecasts, video lessons, quizzes or scores, skill levels, messaging a supervisor without an incident, wellbeing checks, proximity detection). Set unsupported_capability.

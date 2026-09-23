@@ -100,7 +100,8 @@ def build_graph(store: Store, brain: Brain):
         return {"route": route_}
 
     def choose(state: CocoonState) -> Literal[
-        "tasks", "log_incident", "drafts", "training", "explain_alert", "cancel_pending", "unsupported", "compose"
+        "tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
+        "unsupported", "compose"
     ]:
         intent = state["route"]["intent"]
         if intent == "answer_pending":
@@ -240,6 +241,20 @@ def build_graph(store: Store, brain: Brain):
         session = _session(state)
         r = state["route"]
         lessons = store.list_lessons()
+        if r.get("training_action") == "read":
+            assignments = store.list_assignments(session)
+            readable = {l.lesson_id for l in lessons if l.content_text}
+            # the lesson they named, else their most recent assignment that has readable text
+            lesson_id = r.get("lesson_id") or next(
+                (a.lesson_id for a in reversed(assignments) if a.lesson_id in readable), None)
+            lesson = store.get_lesson(lesson_id) if lesson_id else None
+            if lesson is None:
+                action = s.ClarificationAction(type="clarification_needed", for_action="read_lesson",
+                                               reason="nothing_pending")
+                return {"actions": [action.model_dump(mode="json")]}
+            assignment = next((a for a in assignments if a.lesson_id == lesson.lesson_id), None)
+            action = s.LessonContentAction(type="lesson_content", lesson=lesson, assignment=assignment)
+            return {"actions": [action.model_dump(mode="json")]}
         if r.get("training_action") == "assign":
             assigned = {a.lesson_id for a in store.list_assignments(session)}
             lesson_id = r.get("lesson_id") or next((l.lesson_id for l in lessons if l.lesson_id not in assigned), None)
@@ -254,8 +269,46 @@ def build_graph(store: Store, brain: Brain):
         return {"actions": [action.model_dump(mode="json")]}
 
     async def explain_alert(state: CocoonState) -> CocoonState:
-        alert = store.latest_alert(state["session_id"])
-        action = s.AlertExplainedAction(type="alert_explained", alert=alert)
+        """Explain the warning the operator refers to, from that episode's saved evidence (never the latest readings).
+        Reference: the warning they named; else the one warning announced since their previous turn; else the one
+        active announced warning; else the latest announced one. Competing candidates get a question, not a guess."""
+        sid = state["session_id"]
+        announced = store.announced_alerts(sid)  # newest announcement first
+        hint = state["route"].get("alert_hint")
+        families = {"seatbelt": {"seatbelt_unfastened"}, "idle": {"prolonged_idle", "idle_unbelted"}}
+        if hint:
+            pool = [x for x in announced if x[0].alert_type in families[hint]]
+            active = [x for x in pool if x[0].status == "active"]
+            candidates = (active or pool)[:1]
+        else:
+            since = store.previous_turn_at(sid, state["turn_id"])
+            recent = [x for x in announced if since is not None and x[2] > since]
+            active = [x for x in announced if x[0].status == "active"]
+            candidates = recent if recent else (active if active else announced[:1])
+        if len(candidates) > 1:
+            names = {"seatbelt_unfastened": "the seatbelt warning", "prolonged_idle": "the idling warning",
+                     "idle_unbelted": "the idling warning"}
+            options = list(dict.fromkeys(names[x[0].alert_type] for x in candidates))
+            action = s.ClarificationAction(type="clarification_needed", for_action="explain_alert",
+                                           reason="several_candidates", options=options)
+            return {"actions": [action.model_dump(mode="json")]}
+        if not candidates:
+            action = s.AlertExplainedAction(type="alert_explained", alert=None)
+            return {"actions": [action.model_dump(mode="json")]}
+        alert, event_id, _ = candidates[0]
+        action = s.AlertExplainedAction(type="alert_explained", alert=alert, announcement_event_id=event_id,
+                                        deliveries=store.deliveries(event_id))
+        return {"actions": [action.model_dump(mode="json")], "latest_alert": alert.model_dump(mode="json")}
+
+    async def record_idle_reason(state: CocoonState) -> CocoonState:
+        """Record why the operator is idling. Acknowledgement, delivery and the condition clearing stay separate facts:
+        this never clears the idle or belt episode."""
+        text = (state["route"].get("idle_reason") or state["user_text"]).strip()[:300]
+        result, duplicate = _command(state, "idle.record_reason", "idle.record_reason",
+                                     Store.idle_reason(_session(state), state["turn_id"], text))
+        action = s.IdleReasonRecordedAction(
+            type="idle_reason_recorded", reason_id=result["reason_id"], reason_text=result["reason_text"],
+            alert_id=result["alert_id"], belt_warning_active=result["belt_warning_active"], created=not duplicate)
         return {"actions": [action.model_dump(mode="json")]}
 
     async def cancel_pending(state: CocoonState) -> CocoonState:
@@ -274,6 +327,7 @@ def build_graph(store: Store, brain: Brain):
     g.add_node("log_incident", log_incident)
     g.add_node("drafts", drafts)
     g.add_node("unsupported", unsupported)
+    g.add_node("record_idle_reason", record_idle_reason)
     g.add_node("training", training)
     g.add_node("explain_alert", explain_alert)
     g.add_node("cancel_pending", cancel_pending)
@@ -281,7 +335,8 @@ def build_graph(store: Store, brain: Brain):
     g.add_edge(START, "load_context")
     g.add_edge("load_context", "route")
     g.add_conditional_edges("route", choose)
-    for node in ("tasks", "log_incident", "drafts", "training", "explain_alert", "cancel_pending", "unsupported"):
+    for node in ("tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
+                 "unsupported"):
         g.add_edge(node, "compose")
     g.add_edge("compose", END)
     return g

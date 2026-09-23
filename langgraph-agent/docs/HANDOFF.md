@@ -2,6 +2,23 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## B4: explanations, idle reasons, shift briefing, training link and the HTTP demo
+
+- **Schema v7:** `idle_reasons`, `shift_briefings`, lesson `version`/`content_text`/`content_status`,
+  `training_assignments.source_episode_id`, `alerts.training_assignment_id`.
+- **Behaviour:** "Why?" explains the referenced warning from its saved evidence and returns its announcement's
+  delivery reports (not acknowledgement); competing warnings get a question. "I'm waiting for a truck" records an idle
+  reason and keeps the belt warning. One shift briefing per seeded shift. The belt policy assigns L1 once per
+  outstanding assignment, in the alert's transaction; "read my seatbelt lesson" reads the versioned demo text without
+  completing it. Safety policy is now `demo-safety-2026-09-24.2` (adds the lesson link).
+- **Demo:** `scripts/demo_operator.py` seeds `data/demo_run`, starts a mock backend, runs the nine-step sequence over
+  HTTP, writes a transcript and stops. Re-running the same run ID was observed to replay every saved result.
+- **Checks:** `tests/test_operator_context.py` (5): evidence-based "why" after readings change, delivery ≠
+  acknowledgement, competing warnings; idle reason kept once and belt warning retained; one briefing across sessions
+  and restart; one episode-linked L1 assignment across two episodes, operator isolation, reading ≠ completion; legacy
+  record never linked. Full suite (310 passed, 1 skipped) and contract drift checks pass. Not observed: audio,
+  Android, live-model classification of the B2–B4 intents.
+
 ## B3: machine replay, belt/idle episodes and automatic drafts
 
 - **Schema v6:** alert episode columns (policy version, source status, reason, recommended action, evidence,

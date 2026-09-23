@@ -378,6 +378,36 @@ MACHINE_EPISODES: tuple[str, ...] = (
 )
 
 
+OPERATOR_CONTEXT: tuple[str, ...] = (
+    # An operator's stated reason for idling, linked to the idle episode it explains. It never clears an episode.
+    """CREATE TABLE idle_reasons (
+    reason_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    alert_id TEXT,
+    reason_text TEXT NOT NULL,
+    source_turn_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, source_turn_id)
+)""",
+    # One briefing per shift, whatever the number of sessions or restarts.
+    """CREATE TABLE shift_briefings (
+    shift_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    event_id TEXT NOT NULL,
+    speech TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)""",
+    # Versioned lesson text (only where authored; NULL = title/summary only, as before).
+    "ALTER TABLE lessons ADD COLUMN version TEXT",
+    "ALTER TABLE lessons ADD COLUMN content_text TEXT",
+    "ALTER TABLE lessons ADD COLUMN content_status TEXT",
+    # Behaviour-triggered assignment: the episode that caused it, and the link from the episode.
+    "ALTER TABLE training_assignments ADD COLUMN source_episode_id TEXT",
+    "ALTER TABLE alerts ADD COLUMN training_assignment_id TEXT",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -392,6 +422,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "assigned_tasks", ASSIGNED_TASKS),
     Migration(5, "structured_incidents", STRUCTURED_INCIDENTS),
     Migration(6, "machine_episodes", MACHINE_EPISODES),
+    Migration(7, "operator_context", OPERATOR_CONTEXT),
 )
 
 

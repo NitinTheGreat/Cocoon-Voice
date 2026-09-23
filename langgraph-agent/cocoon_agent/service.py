@@ -70,9 +70,35 @@ class CocoonService:
 
     def create_session(self, req: s.SessionCreateRequest) -> tuple[s.Session, bool]:
         try:
-            return self.store.get_or_create_session(req, self._admit_new_session)
+            session, created = self.store.get_or_create_session(req, self._admit_new_session)
         except Conflict as exc:
             raise ApiError(409, "session_conflict", str(exc)) from exc
+        if session.shift_id and self.store.get_shift(session.shift_id) is not None:
+            # Once per seeded shift (also retried here for a session whose briefing write was interrupted).
+            self.store.ensure_shift_briefing(session, self._briefing_speech(session),
+                                             timedelta(seconds=self.settings.announcement_ttl_seconds))
+        return session, created
+
+    def _briefing_speech(self, session: s.Session) -> str:
+        """Built only from this operator's assigned tasks and the conditions actually available (synthetic)."""
+        shift = self.store.get_shift(session.shift_id)
+        assert shift is not None
+        tasks = [t for t in self.store.list_assigned_tasks(session.shift_id) if t.status != "completed"]
+        machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+        start, end = shift.start_at.astimezone(shift.tz()), shift.end_at.astimezone(shift.tz())
+        parts = [f"Shift briefing for the {machine.model if machine else session.machine_id} at {shift.site_name}, "
+                 f"{start:%H:%M} to {end:%H:%M}."]
+        if tasks:
+            first = tasks[0]
+            est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
+            parts.append(f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}. First: {first.title} in "
+                         f"{first.zone_name} at {first.scheduled_start_local}{est}.")
+            if first.weather.summary:
+                parts.append(f"Conditions (synthetic demo value, not a forecast): {first.weather.summary}.")
+        else:
+            parts.append("You have no open tasks on this shift.")
+        parts.append("Keep your seatbelt fastened whenever the engine is running.")
+        return " ".join(parts)
 
     def _admit_new_session(self, req: s.SessionCreateRequest) -> NewSessionBinding:
         """Rules for a NEW client_session_key only. Raising aborts the insert; nothing is written.
@@ -376,6 +402,8 @@ class CocoonService:
             shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
             assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
             machine_state=self._machine_state(session_id),
+            idle_reasons=self.store.list_idle_reasons(session_id),
+            shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
         )
 
     def _machine_state(self, session_id: str) -> s.MachineStateView:

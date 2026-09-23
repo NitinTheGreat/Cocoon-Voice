@@ -96,7 +96,8 @@ def world(tmp_path):
         conn.execute("INSERT INTO sessions(session_id, client_session_key, room_name, participant_identity,"
                      " operator_id, machine_id, created_at) VALUES ('ses_legacy', 'legacy-key', 'old', 'old',"
                      " 'OP_TEST_1', 'cat-320-demo', '2026-09-01T00:00:00+00:00')")
-        conn.execute("INSERT INTO training_assignments VALUES ('TA-legacy', 'OP_TEST_1', 'L2', 'ses_legacy', 'x',"
+        conn.execute("INSERT INTO training_assignments(assignment_id, operator_id, lesson_id, session_id,"
+                     " source_turn_id, status, assigned_at) VALUES ('TA-legacy', 'OP_TEST_1', 'L2', 'ses_legacy', 'x',"
                      " 'assigned', '2026-09-01T00:00:01+00:00')")
         conn.commit()
         conn.close()

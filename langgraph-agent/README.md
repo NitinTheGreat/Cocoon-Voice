@@ -167,6 +167,35 @@ $env:SESSION_BINDINGS_PATH = "data\demo\session_bindings.json"; python -m cocoon
   `incident.dismiss` change them once. Every turn result carries `branch` and `action_records` (also on a failed
   turn); retrying a failed `turn_id` reuses what was saved and runs only what is missing.
 
+## Batch B demo over HTTP (no voice, no UI)
+
+One command seeds an isolated demo database (`data/demo_run`, never `data/cocoon.db`), starts a mock-mode backend on
+port 8765, runs the whole operator sequence and stops the backend. Requests and responses go to
+`data/demo_run/demo_transcript_<run>.json` (no bearer token). Re-running the same `--run-id` replays the saved
+results (turn replays, duplicate telemetry, `duplicate: true` commands) instead of repeating any action.
+
+```bash
+python scripts/demo_operator.py                    # or --run-id demo2 for a new session in the same demo database
+python scripts/demo_operator.py --base-url http://127.0.0.1:8010   # against a backend you started (seeded, bindings set)
+```
+
+```powershell
+python scripts\demo_operator.py
+```
+
+Sequence: shift briefing → "What are my tasks today?" → "Start the next task" → incident with supervisor request →
+Cat 320 belt/idle replay → warning polled from `/events` → "Why did you warn me?" → "I'm waiting for a truck" →
+"Confirm the draft" → linked L1 assignment → "Read my seatbelt lesson" → rest of the replay → `task.complete` tap.
+
+- **"Why?"** explains the warning from its saved evidence: the one you name ("about idling"), else the one announced
+  since your previous turn, else the single active one; competing warnings get a question. The action carries the
+  announcement's delivery reports, which are not acknowledgement.
+- **"I'm waiting for …"** records an idle reason linked to the active idle episode; it clears nothing.
+- **Shift briefing:** one `shift_briefing` announcement per seeded shift (first bound session), built from that
+  operator's tasks and the synthetic conditions; later sessions and restarts reuse it (`/state.shift_briefing`).
+- **Training link:** a belt episode assigns lesson L1 (versioned demo text `L1.demo.1`, `demo_authored_unreviewed`)
+  once while it is outstanding and links it from the episode. Reading it never marks it complete.
+
 ## Actor tokens (local prototype auth, I02b)
 
 The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.

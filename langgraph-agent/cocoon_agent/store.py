@@ -29,6 +29,22 @@ SEED_TASKS = [
     ("T-103", "Grade the access road at gate 2", "Level the ruts on the access road between gate 2 and the site office.", "normal", 30),
 ]
 
+# Versioned demo text for L1, attached only where the row has no text yet (never overwrites authored content).
+LESSON_CONTENT = {
+    "L1": ("L1.demo.1", "demo_authored_unreviewed", (
+        "Seatbelt and rollover protection basics. "
+        "One: the rollover protective structure only protects you if you stay inside it, and the seatbelt is what "
+        "keeps you there. "
+        "Two: fasten the belt before you start the engine, and keep it fastened while the engine runs, including "
+        "while you wait or idle. "
+        "Three: never unbuckle to lean out or reach for something while the machine can move. Stop, lower the "
+        "attachment and park first. "
+        "Four: if the machine starts to tip, stay in the seat, hold on and brace; do not try to jump. "
+        "Five: report a damaged or missing belt before operating. "
+        "This demo lesson was written for the prototype and has not been reviewed by a trainer."
+    )),
+}
+
 SEED_LESSONS = [
     ("L1", "Seatbelt and rollover protection basics", "Why the seatbelt and ROPS work together, and when to buckle up.", 5),
     ("L2", "Pre-start walkaround inspection", "A step-by-step walkaround before starting heavy equipment.", 8),
@@ -155,6 +171,10 @@ class Store:
                 "INSERT OR IGNORE INTO lessons(lesson_id, title, summary, duration_minutes) VALUES (?, ?, ?, ?)",
                 SEED_LESSONS,
             )
+            has_content = any(r[1] == "content_text" for r in c.execute("PRAGMA table_info(lessons)"))
+            for lesson_id, (version, status, text) in (LESSON_CONTENT.items() if has_content else ()):
+                c.execute("UPDATE lessons SET version = ?, content_status = ?, content_text = ?"
+                          " WHERE lesson_id = ? AND content_text IS NULL", (version, status, text, lesson_id))
 
     def ping(self) -> bool:
         with self._lock:
@@ -304,11 +324,11 @@ class Store:
         return _task(row) if row else None
 
     def list_lessons(self) -> list[s.Lesson]:
-        return [s.Lesson(**dict(r)) for r in self._all("SELECT * FROM lessons ORDER BY lesson_id")]
+        return [_lesson(r) for r in self._all("SELECT * FROM lessons ORDER BY lesson_id")]
 
     def get_lesson(self, lesson_id: str) -> s.Lesson | None:
         row = self._one("SELECT * FROM lessons WHERE lesson_id = ?", (lesson_id,))
-        return s.Lesson(**dict(row)) if row else None
+        return _lesson(row) if row else None
 
     # ------------------------------------------------------------------ demo site, shifts and assigned tasks
 
@@ -637,6 +657,25 @@ class Store:
             created = existing is None or existing["source_turn_id"] == source_turn_id
             return _assignment(row), created
 
+    @staticmethod
+    def _episode_assignment(c: sqlite3.Connection, session: s.Session, lesson_id: str, episode_id: str) -> str | None:
+        """Assign the policy's lesson for a qualifying episode, once while it is outstanding: an existing assignment of
+        the same lesson (same binding class) is linked instead of creating another. A record held by the other binding
+        class is never linked or exposed (returns None)."""
+        if c.execute("SELECT 1 FROM lessons WHERE lesson_id = ?", (lesson_id,)).fetchone() is None:
+            return None
+        row = c.execute("SELECT ta.assignment_id, s.binding_status FROM training_assignments ta"
+                        " LEFT JOIN sessions s ON s.session_id = ta.session_id"
+                        " WHERE ta.operator_id = ? AND ta.lesson_id = ?", (session.operator_id, lesson_id)).fetchone()
+        if row is not None:
+            return row["assignment_id"] if row["binding_status"] == session.binding_status else None
+        assignment_id = "TA-" + uuid.uuid4().hex[:10]
+        c.execute("INSERT INTO training_assignments(assignment_id, operator_id, lesson_id, session_id, source_turn_id,"
+                  " status, assigned_at, source_episode_id) VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)",
+                  (assignment_id, session.operator_id, lesson_id, session.session_id, f"episode:{episode_id}",
+                   iso(utcnow()), episode_id))
+        return assignment_id
+
     def list_assignments(self, session: s.Session) -> list[s.TrainingAssignment]:
         rows = self._all(
             "SELECT ta.*, l.title AS lesson_title FROM training_assignments ta JOIN lessons l USING (lesson_id)"
@@ -714,6 +753,77 @@ class Store:
             (session_id,),
         )
         return _alert(row) if row else None
+
+    def announced_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
+        """Alerts that were announced, with the announcement's event_id and time, newest announcement first."""
+        rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
+                         " JOIN announcements n ON n.alert_id = a.alert_id AND n.type = 'alert_started'"
+                         " WHERE a.session_id = ? ORDER BY n.sequence DESC", (session_id,))
+        return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+
+    def deliveries(self, event_id: str) -> list[s.DeliveryRecord]:
+        return [_delivery(d) for d in self._all("SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id",
+                                                (event_id,))]
+
+    def previous_turn_at(self, session_id: str, turn_id: str) -> datetime | None:
+        row = self._one("SELECT MAX(created_at) FROM turns WHERE session_id = ? AND turn_id != ? AND created_at <="
+                        " (SELECT created_at FROM turns WHERE session_id = ? AND turn_id = ?)",
+                        (session_id, turn_id, session_id, turn_id))
+        return parse_dt(row[0]) if row and row[0] else None
+
+    @staticmethod
+    def idle_reason(session: s.Session, turn_id: str, reason_text: str) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Record the operator's reason against the active idle episode (if any). Never clears an episode."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            idle = c.execute("SELECT alert_id FROM alerts WHERE session_id = ? AND status = 'active' AND alert_type IN"
+                             " ('prolonged_idle', 'idle_unbelted') ORDER BY alert_type = 'prolonged_idle' DESC,"
+                             " started_at DESC LIMIT 1", (session.session_id,)).fetchone()
+            reason_id = "IDR-" + uuid.uuid4().hex[:12]
+            now = iso(utcnow())
+            c.execute("INSERT INTO idle_reasons(reason_id, session_id, operator_id, alert_id, reason_text,"
+                      " source_turn_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (reason_id, session.session_id, session.operator_id, idle["alert_id"] if idle else None,
+                       reason_text, turn_id, now))
+            belt = c.execute("SELECT 1 FROM alerts WHERE session_id = ? AND status = 'active'"
+                             " AND alert_type = 'seatbelt_unfastened'", (session.session_id,)).fetchone()
+            return {"record_type": "idle_reason", "record_id": reason_id,
+                    "summary": f"Recorded idle reason: {reason_text[:80]}.", "reason_id": reason_id,
+                    "reason_text": reason_text, "alert_id": idle["alert_id"] if idle else None,
+                    "belt_warning_active": belt is not None}
+
+        return mutate
+
+    def list_idle_reasons(self, session_id: str) -> list[s.IdleReason]:
+        rows = self._all("SELECT * FROM idle_reasons WHERE session_id = ? ORDER BY created_at", (session_id,))
+        return [s.IdleReason(reason_id=r["reason_id"], reason_text=r["reason_text"], alert_id=r["alert_id"],
+                             created_at=parse_dt(r["created_at"])) for r in rows]
+
+    def ensure_shift_briefing(self, session: s.Session, speech: str, ttl: timedelta) -> tuple[s.ShiftBriefing, bool]:
+        """One briefing per shift: the first bound session publishes it; later sessions and restarts reuse it."""
+        now = utcnow()
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM shift_briefings WHERE shift_id = ?", (session.shift_id,)).fetchone()
+            created = row is None
+            if created:
+                seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
+                                (session.session_id,)).fetchone()[0]
+                event_id = f"ann_briefing_{session.shift_id}"
+                c.execute("INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id,"
+                          " created_at, expires_at) VALUES (?, ?, ?, 'shift_briefing', 'normal', ?, NULL, ?, ?)",
+                          (event_id, session.session_id, seq, speech, iso(now), iso(now + ttl)))
+                c.execute("INSERT INTO shift_briefings(shift_id, session_id, event_id, speech, created_at)"
+                          " VALUES (?, ?, ?, ?, ?)", (session.shift_id, session.session_id, event_id, speech, iso(now)))
+                c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?",
+                          (session.session_id,))
+                row = c.execute("SELECT * FROM shift_briefings WHERE shift_id = ?", (session.shift_id,)).fetchone()
+            return s.ShiftBriefing(shift_id=row["shift_id"], event_id=row["event_id"], speech=row["speech"],
+                                   created_at=parse_dt(row["created_at"])), created
+
+    def get_shift_briefing(self, shift_id: str) -> s.ShiftBriefing | None:
+        row = self._one("SELECT * FROM shift_briefings WHERE shift_id = ?", (shift_id,))
+        return s.ShiftBriefing(shift_id=row["shift_id"], event_id=row["event_id"], speech=row["speech"],
+                               created_at=parse_dt(row["created_at"])) if row else None
 
     def get_telemetry(self, session_id: str, event_id: str) -> tuple[str, dict[str, Any]] | None:
         row = self._one(
@@ -802,11 +912,16 @@ class Store:
                         if correlated is None:  # one physical situation is announced (and drafted) once
                             if rule.draft_incident:
                                 draft_id = Store.insert_auto_draft(
-                                    c, session, alert_id, f"{rule.reason} (automatic draft from simulated telemetry)",
+                                    c, session, alert_id, f"{rule.reason.rstrip('.')} (automatic draft from simulated telemetry)",
                                     rule.draft_severity or "medium", req.observed_at)
                                 c.execute("UPDATE alerts SET draft_incident_id = ? WHERE alert_id = ?",
                                           (draft_id, alert_id))
                                 drafts.append(draft_id)
+                            if rule.training_lesson_id:
+                                assignment_id = Store._episode_assignment(c, session, rule.training_lesson_id, alert_id)
+                                if assignment_id:
+                                    c.execute("UPDATE alerts SET training_assignment_id = ? WHERE alert_id = ?",
+                                              (assignment_id, alert_id))
                             announced.append(self._announce(c, session_id, alert_id, "alert_started", "high",
                                                             rule.start_speech, now, announcement_ttl))
                         changed = True
@@ -1022,7 +1137,12 @@ def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:
     return s.TrainingAssignment(
         assignment_id=r["assignment_id"], lesson_id=r["lesson_id"], lesson_title=r["lesson_title"],
         operator_id=r["operator_id"], status=r["status"], assigned_at=parse_dt(r["assigned_at"]),
+        source_episode_id=r["source_episode_id"] if "source_episode_id" in r.keys() else None,
     )
+
+
+def _lesson(r: sqlite3.Row) -> s.Lesson:
+    return s.Lesson(**{k: r[k] for k in r.keys() if k in s.Lesson.model_fields})
 
 
 def _alert(r: sqlite3.Row) -> s.Alert:
@@ -1032,6 +1152,7 @@ def _alert(r: sqlite3.Row) -> s.Alert:
         extra = dict(policy_version=r["policy_version"], source_status=r["source_status"], reason=r["reason"],
                      recommended_action=r["recommended_action"], correlated_alert_id=r["correlated_alert_id"],
                      draft_incident_id=r["draft_incident_id"], announced=bool(r["announced"]),
+                     training_assignment_id=r["training_assignment_id"] if "training_assignment_id" in keys else None,
                      evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None)
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],

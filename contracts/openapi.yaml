@@ -862,6 +862,12 @@ components:
           - type: 'null'
           title: Draft Incident Id
           description: Automatic incident draft linked to this episode.
+        training_assignment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Training Assignment Id
+          description: Lesson assignment linked to this episode.
         announced:
           type: boolean
           title: Announced
@@ -936,12 +942,25 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Alert'
           - type: 'null'
+        announcement_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Announcement Event Id
+          description: The announcement that raised this alert.
+        deliveries:
+          items:
+            $ref: '#/components/schemas/DeliveryRecord'
+          type: array
+          title: Deliveries
+          description: Playback reports for that announcement. Played is not acknowledgement.
       additionalProperties: false
       type: object
       required:
       - type
       - alert
       title: AlertExplainedAction
+      description: The explanation comes from the episode's saved evidence, never from the latest readings.
     Announcement:
       properties:
         event_id:
@@ -955,6 +974,7 @@ components:
           enum:
           - alert_started
           - alert_cleared
+          - shift_briefing
           title: Type
         priority:
           type: string
@@ -1188,6 +1208,7 @@ components:
           - dismiss_draft
           - explain_alert
           - affirm
+          - read_lesson
           title: For Action
         reason:
           type: string
@@ -1436,6 +1457,64 @@ components:
       required:
       - status
       title: HealthResponse
+    IdleReason:
+      properties:
+        reason_id:
+          type: string
+          title: Reason Id
+        reason_text:
+          type: string
+          title: Reason Text
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - reason_id
+      - reason_text
+      - created_at
+      title: IdleReason
+    IdleReasonRecordedAction:
+      properties:
+        type:
+          type: string
+          const: idle_reason_recorded
+          title: Type
+        reason_id:
+          type: string
+          title: Reason Id
+        reason_text:
+          type: string
+          title: Reason Text
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+          description: Idle episode the reason is linked to, if one is active.
+        belt_warning_active:
+          type: boolean
+          title: Belt Warning Active
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - reason_id
+      - reason_text
+      - belt_warning_active
+      - created
+      title: IdleReasonRecordedAction
+      description: The operator's stated reason for idling. Recording it does not clear any warning.
     Incident:
       properties:
         incident_id:
@@ -1798,6 +1877,25 @@ components:
         duration_minutes:
           type: integer
           title: Duration Minutes
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+          description: Content version, when lesson text exists.
+        content_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Text
+          description: Readable lesson text (demo lessons only so far).
+        content_status:
+          anyOf:
+          - type: string
+            const: demo_authored_unreviewed
+          - type: 'null'
+          title: Content Status
+          description: 'demo_authored_unreviewed: written for the demo, not reviewed by a trainer.'
       additionalProperties: false
       type: object
       required:
@@ -1806,6 +1904,24 @@ components:
       - summary
       - duration_minutes
       title: Lesson
+    LessonContentAction:
+      properties:
+        type:
+          type: string
+          const: lesson_content
+          title: Type
+        lesson:
+          $ref: '#/components/schemas/Lesson'
+        assignment:
+          anyOf:
+          - $ref: '#/components/schemas/TrainingAssignment'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - lesson
+      title: LessonContentAction
     MachineStateView:
       properties:
         status:
@@ -2421,6 +2537,15 @@ components:
           - $ref: '#/components/schemas/MachineStateView'
           - type: 'null'
           description: Freshness of machine observations.
+        idle_reasons:
+          items:
+            $ref: '#/components/schemas/IdleReason'
+          type: array
+          title: Idle Reasons
+        shift_briefing:
+          anyOf:
+          - $ref: '#/components/schemas/ShiftBriefing'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -2435,6 +2560,30 @@ components:
       - latest_alert
       - pending_question
       title: SessionState
+    ShiftBriefing:
+      properties:
+        shift_id:
+          type: string
+          title: Shift Id
+        event_id:
+          type: string
+          title: Event Id
+        speech:
+          type: string
+          title: Speech
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - shift_id
+      - event_id
+      - speech
+      - created_at
+      title: ShiftBriefing
+      description: Created once per shift and published as a `shift_briefing` announcement.
     ShiftInfo:
       properties:
         shift_id:
@@ -2818,10 +2967,17 @@ components:
           - assigned
           - completed
           title: Status
+          description: Reading or playback never sets completed.
         assigned_at:
           type: string
           format: date-time
           title: Assigned At
+        source_episode_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Episode Id
+          description: Safety episode that triggered the assignment.
       additionalProperties: false
       type: object
       required:
@@ -2917,6 +3073,8 @@ components:
             - $ref: '#/components/schemas/TaskRejectedAction'
             - $ref: '#/components/schemas/IncidentDraftAction'
             - $ref: '#/components/schemas/IncidentDraftsAction'
+            - $ref: '#/components/schemas/IdleReasonRecordedAction'
+            - $ref: '#/components/schemas/LessonContentAction'
             - $ref: '#/components/schemas/EscalationRequestedAction'
             - $ref: '#/components/schemas/ClarificationAction'
             - $ref: '#/components/schemas/CapabilityUnavailableAction'
@@ -2928,11 +3086,13 @@ components:
                 capability_unavailable: '#/components/schemas/CapabilityUnavailableAction'
                 clarification_needed: '#/components/schemas/ClarificationAction'
                 escalation_requested: '#/components/schemas/EscalationRequestedAction'
+                idle_reason_recorded: '#/components/schemas/IdleReasonRecordedAction'
                 incident_confirmed: '#/components/schemas/IncidentDraftAction'
                 incident_dismissed: '#/components/schemas/IncidentDraftAction'
                 incident_drafts: '#/components/schemas/IncidentDraftsAction'
                 incident_logged: '#/components/schemas/IncidentLoggedAction'
                 information_requested: '#/components/schemas/InformationRequestedAction'
+                lesson_content: '#/components/schemas/LessonContentAction'
                 next_task: '#/components/schemas/NextTaskAction'
                 pending_cancelled: '#/components/schemas/PendingCancelledAction'
                 task_completed: '#/components/schemas/TaskTransitionAction'

@@ -37,6 +37,7 @@ class RulePolicy(BaseModel):
     clear_speech: str | None = None
     draft_incident: bool = False
     draft_severity: Literal["low", "medium", "high", "critical"] | None = None
+    training_lesson_id: str | None = Field(default=None, description="Lesson assigned for a qualifying episode.")
     applies_to_categories: list[str] = Field(default_factory=list, description="Empty = every machine category.")
 
     def applies_to(self, category: str | None) -> bool:

@@ -1,6 +1,6 @@
 {
   "schema": "cocoon.safety-policy.v1",
-  "policy_version": "demo-safety-2026-09-24.1",
+  "policy_version": "demo-safety-2026-09-24.2",
   "source_status": "demo_assumption",
   "note": "Prototype rules on simulated data. Thresholds are demo assumptions chosen so a replay shows each rule within minutes; they are not published Caterpillar limits and must not protect people on a real machine.",
   "rules": [
@@ -16,6 +16,7 @@
       "clear_speech": "Thanks, your seatbelt is fastened. The seatbelt warning is cleared.",
       "draft_incident": true,
       "draft_severity": "medium",
+      "training_lesson_id": "L1",
       "applies_to_categories": []
     },
     {
