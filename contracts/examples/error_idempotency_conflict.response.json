@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "idempotency_conflict",
+    "message": "turn_id was already used with a different text or source",
+    "retryable": false,
+    "request_id": "req_example_0001"
+  }
+}

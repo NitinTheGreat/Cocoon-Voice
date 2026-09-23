@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cocoon-voice"
+version = "0.1.0"
+description = "Cocoon LiveKit Agents voice worker (Developer A)"
+requires-python = ">=3.11,<3.12"
+# Runtime dependencies are pinned in requirements.txt; install with `pip install -r requirements-dev.txt -e . --no-deps`.
+dependencies = []
+
+[project.scripts]
+cocoon-voice = "cocoon_voice.agent:main"
+cocoon-voice-mock-backend = "cocoon_voice.mock_backend:main"
+
+[tool.setuptools.packages.find]
+include = ["cocoon_voice*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: needs a running backend at COCOON_INTEGRATION_BACKEND_URL"]

@@ -1,0 +1,6 @@
+# Dev/test deps. Compile: uv pip compile --universal --python-version 3.11 requirements-dev.in -o requirements-dev.txt
+-r requirements.in
+pytest
+pytest-asyncio
+jsonschema
+pyyaml

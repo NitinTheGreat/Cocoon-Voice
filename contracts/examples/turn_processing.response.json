@@ -1,0 +1,14 @@
+{
+  "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
+  "turn_id": "lk-item_7f3a9c24",
+  "status": "processing",
+  "speech": null,
+  "actions": [],
+  "state_version": null,
+  "llm_mode": "mock",
+  "error": null,
+  "retry_after_ms": 500,
+  "poll_url": "/v1/sessions/ses_92063baf2cf04d96be8d9647ef1cb388/turns/lk-item_7f3a9c24",
+  "created_at": "2026-09-23T10:16:00.000000Z",
+  "completed_at": null
+}

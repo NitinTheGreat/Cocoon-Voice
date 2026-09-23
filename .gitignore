@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Secrets: commit only .env.example
+.env
+.env.local
+.env.*.local
+
+# Service-owned SQLite data (langgraph-agent/data/)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+langgraph-agent/data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

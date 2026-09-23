@@ -1,0 +1,20 @@
+{
+  "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
+  "turn_id": "lk-item_7f3a9c22",
+  "status": "completed",
+  "speech": "Okay, I'll log an incident. What happened?",
+  "actions": [
+    {
+      "type": "information_requested",
+      "for_action": "log_incident",
+      "missing_field": "description"
+    }
+  ],
+  "state_version": 2,
+  "llm_mode": "mock",
+  "error": null,
+  "retry_after_ms": null,
+  "poll_url": null,
+  "created_at": "2026-09-23T11:44:22.981329Z",
+  "completed_at": "2026-09-23T11:44:23.019824Z"
+}

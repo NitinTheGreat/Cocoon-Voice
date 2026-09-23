@@ -1,0 +1,11 @@
+# Top-level runtime deps for langgraph-agent. Compile: uv pip compile --universal --python-version 3.11 requirements.in -o requirements.txt
+fastapi
+uvicorn
+langgraph
+langgraph-checkpoint-sqlite
+langchain-core
+anthropic
+pydantic
+pydantic-settings
+python-dotenv
+httpx

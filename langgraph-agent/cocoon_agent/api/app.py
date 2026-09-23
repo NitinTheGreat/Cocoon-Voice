@@ -1,0 +1,215 @@
+"""FastAPI application exposing the v1 contract."""
+
+import logging
+import re
+import secrets
+import uuid
+from contextlib import asynccontextmanager
+from typing import Annotated, Any
+
+from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from .. import __version__
+from ..config import Settings, get_settings
+from ..graph.brain import Brain, build_brain
+from ..graph.builder import build_graph
+from ..service import ApiError, CocoonService
+from ..store import Store
+from . import schemas as s
+
+log = logging.getLogger("cocoon_agent.api")
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+_bearer = HTTPBearer(auto_error=False, description="Service token from COCOON_SERVICE_TOKEN")
+
+ERRORS = {
+    401: {"model": s.ErrorResponse, "description": "Missing or invalid service bearer token"},
+    404: {"model": s.ErrorResponse, "description": "Unknown session or resource"},
+    422: {"model": s.ErrorResponse, "description": "Malformed request"},
+    500: {"model": s.ErrorResponse, "description": "Unexpected server error (retryable)"},
+}
+
+
+def _error_response(status: int, code: str, message: str, retryable: bool, request_id: str,
+                    details: list[dict[str, str]] | None = None, headers: dict[str, str] | None = None) -> JSONResponse:
+    body = s.ErrorResponse(error=s.ErrorBody(
+        code=code, message=message, retryable=retryable, request_id=request_id,
+        details=[s.ErrorDetail(**d) for d in details] if details else None,
+    ))
+    return JSONResponse(body.model_dump(mode="json", exclude_none=True), status_code=status,
+                        headers={"X-Request-ID": request_id, **(headers or {})})
+
+
+def create_app(settings: Settings | None = None, brain: Brain | None = None) -> FastAPI:
+    """`brain` overrides the configured router/composer (tests inject slow or failing brains)."""
+    settings = settings or get_settings()
+    injected_brain = brain
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        store = Store(settings.db_path)
+        store.init_schema()
+        store.seed_demo()
+        brain = injected_brain or build_brain(settings)
+        async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
+            graph = build_graph(store, brain).compile(checkpointer=saver)
+            app.state.service = CocoonService(settings, store, graph, brain)
+            app.state.saver = saver
+            log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
+                     " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
+                     settings.db_path)
+            try:
+                yield
+            finally:
+                if hasattr(brain, "aclose"):
+                    await brain.aclose()
+                store.close()
+
+    app = FastAPI(
+        title="Cocoon backend API",
+        version="1.0.0",
+        summary="LangGraph application backend for the Cocoon voice assistant (Team Butterfly).",
+        lifespan=lifespan,
+    )
+
+    # ------------------------------------------------------------------ plumbing
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        incoming = request.headers.get("X-Request-ID", "")
+        request.state.request_id = incoming if _REQUEST_ID_RE.match(incoming) else "req_" + uuid.uuid4().hex[:16]
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+
+    def rid(request: Request) -> str:
+        return getattr(request.state, "request_id", "req_unknown")
+
+    @app.exception_handler(ApiError)
+    async def _api_error(request: Request, exc: ApiError):
+        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request))
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(request: Request, exc: RequestValidationError):
+        details = [{"field": ".".join(str(p) for p in e["loc"]), "issue": e["msg"]} for e in exc.errors()]
+        return _error_response(422, "validation_error", "request did not match the v1 contract", False,
+                               rid(request), details)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        code = {401: "unauthorized", 404: "not_found"}.get(exc.status_code, "internal_error")
+        return _error_response(exc.status_code, code, str(exc.detail), exc.status_code >= 500, rid(request))
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception):
+        log.exception("unhandled error request_id=%s", rid(request))
+        return _error_response(500, "internal_error", "unexpected server error", True, rid(request))
+
+    async def require_token(
+        creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    ) -> None:
+        expected = settings.service_token.get_secret_value()
+        if creds is None or not secrets.compare_digest(creds.credentials.encode(), expected.encode()):
+            raise ApiError(401, "unauthorized", "missing or invalid service bearer token")
+
+    def svc(request: Request) -> CocoonService:
+        return request.app.state.service
+
+    Service = Annotated[CocoonService, Depends(svc)]
+
+    def v1(extra: dict[int | str, Any] | None = None) -> dict[str, Any]:
+        return {"dependencies": [Depends(require_token)], "responses": {**ERRORS, **(extra or {})}}
+
+    # ------------------------------------------------------------------ health
+
+    @app.get("/healthz", response_model=s.HealthResponse, tags=["health"])
+    async def healthz() -> s.HealthResponse:
+        return s.HealthResponse(status="ok")
+
+    @app.get("/readyz", response_model=s.ReadyResponse, tags=["health"],
+             responses={503: {"model": s.ReadyResponse, "description": "Not ready"}})
+    async def readyz(request: Request, response: Response) -> s.ReadyResponse:
+        service: CocoonService | None = getattr(request.app.state, "service", None)
+        db_ok = False
+        try:
+            db_ok = bool(service and service.store.ping())
+        except Exception:
+            db_ok = False
+        cp_ok = getattr(request.app.state, "saver", None) is not None
+        ready = db_ok and cp_ok
+        if not ready:
+            response.status_code = 503
+        return s.ReadyResponse(status="ready" if ready else "not_ready", llm_mode=settings.llm_mode,
+                               database=db_ok, checkpointer=cp_ok, version=__version__)
+
+    # ------------------------------------------------------------------ sessions
+
+    @app.post("/v1/sessions", response_model=s.Session, status_code=201, tags=["sessions"],
+              **v1({200: {"model": s.Session, "description": "Existing session for this client_session_key"},
+                    409: {"model": s.ErrorResponse,
+                          "description": "Key already bound to a different room/participant/operator/machine"}}))
+    async def create_session(body: s.SessionCreateRequest, service: Service, response: Response) -> s.Session:
+        session, created = service.create_session(body)
+        response.status_code = 201 if created else 200
+        return session
+
+    # ------------------------------------------------------------------ turns
+
+    @app.post(
+        "/v1/sessions/{session_id}/turns", response_model=s.TurnResult, tags=["turns"],
+        **v1({
+            202: {"model": s.TurnResult, "description": (
+                "Same turn_id is still processing. Wait retry_after_ms (also the Retry-After header, seconds) "
+                "then GET poll_url (also the Location header). Do not resubmit with a new turn_id.")},
+            409: {"model": s.ErrorResponse, "description": "turn_id reused with a different text or source"},
+            503: {"model": s.ErrorResponse, "description": "LLM unavailable or turn timed out (retryable, same turn_id)"},
+        }),
+    )
+    async def submit_turn(session_id: str, body: s.TurnRequest, service: Service, request: Request,
+                          response: Response) -> s.TurnResult:
+        status, result = await service.submit_turn(session_id, body, rid(request))
+        response.status_code = status
+        if status == 202:
+            response.headers["Retry-After"] = str(max(1, round(service.settings.turn_poll_after_ms / 1000)))
+            response.headers["Location"] = result.poll_url or ""
+        return result
+
+    @app.get("/v1/sessions/{session_id}/turns/{turn_id}", response_model=s.TurnResult, tags=["turns"], **v1())
+    async def get_turn(session_id: str, turn_id: str, service: Service) -> s.TurnResult:
+        return service.get_turn(session_id, turn_id)
+
+    # ------------------------------------------------------------------ state
+
+    @app.get("/v1/sessions/{session_id}/state", response_model=s.SessionState, tags=["state"], **v1())
+    async def get_state(session_id: str, service: Service) -> s.SessionState:
+        return await service.get_state(session_id)
+
+    # ------------------------------------------------------------------ telemetry
+
+    @app.post("/v1/sessions/{session_id}/telemetry", response_model=s.TelemetryResult, tags=["telemetry"],
+              **v1({409: {"model": s.ErrorResponse, "description": "event_id reused with a different payload"}}))
+    async def submit_telemetry(session_id: str, body: s.TelemetryRequest, service: Service) -> s.TelemetryResult:
+        return await service.submit_telemetry(session_id, body)
+
+    # ------------------------------------------------------------------ announcements
+
+    @app.get("/v1/sessions/{session_id}/events", response_model=s.EventsPage, tags=["announcements"], **v1())
+    async def list_events(
+        session_id: str, service: Service,
+        after: Annotated[int, Query(ge=0, description="Return announcements with sequence > after")] = 0,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> s.EventsPage:
+        return service.list_events(session_id, after, limit)
+
+    @app.post("/v1/sessions/{session_id}/events/{event_id}/delivery", response_model=s.DeliveryRecord,
+              tags=["announcements"], **v1())
+    async def record_delivery(session_id: str, event_id: str, body: s.DeliveryReport,
+                              service: Service) -> s.DeliveryRecord:
+        return service.record_delivery(session_id, event_id, body)
+
+    return app

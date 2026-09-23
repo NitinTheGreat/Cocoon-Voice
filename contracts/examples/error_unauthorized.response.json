@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "missing or invalid service bearer token",
+    "retryable": false,
+    "request_id": "req_example_0001"
+  }
+}

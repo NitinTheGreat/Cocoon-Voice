@@ -1,0 +1,33 @@
+{
+  "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
+  "event_id": "sim-seatbelt-0002",
+  "duplicate": false,
+  "stale": false,
+  "alerts_opened": [
+    "ALR-bf6268550c26"
+  ],
+  "alerts_cleared": [],
+  "announcements_created": [
+    "ann_ALR-bf6268550c26_start"
+  ],
+  "active_alerts": [
+    {
+      "alert_id": "ALR-bf6268550c26",
+      "rule_id": "prototype.seatbelt_unfastened.v1",
+      "alert_type": "seatbelt_unfastened",
+      "severity": "warning",
+      "status": "active",
+      "message": "Seatbelt unfastened while the engine is running (simulated).",
+      "explanation": "At 10:15:02 UTC the simulated telemetry showed the engine running while the seatbelt was unfastened. This is a prototype rule on simulated data, not validated machine safety logic.",
+      "simulated": true,
+      "trigger_readings": {
+        "engine_on": true,
+        "seatbelt_fastened": false,
+        "idle_seconds": 0
+      },
+      "started_at": "2026-09-23T10:15:02Z",
+      "cleared_at": null
+    }
+  ],
+  "state_version": 3
+}

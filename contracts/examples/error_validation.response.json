@@ -1,0 +1,22 @@
+{
+  "error": {
+    "code": "validation_error",
+    "message": "request did not match the v1 contract",
+    "retryable": false,
+    "request_id": "req_example_0001",
+    "details": [
+      {
+        "field": "body.turn_id",
+        "issue": "String should match pattern '^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$'"
+      },
+      {
+        "field": "body.text",
+        "issue": "String should have at least 1 character"
+      },
+      {
+        "field": "body.source",
+        "issue": "Input should be 'voice' or 'text'"
+      }
+    ]
+  }
+}

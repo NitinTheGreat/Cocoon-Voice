@@ -1,0 +1,102 @@
+{
+  "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
+  "state_version": 4,
+  "llm_mode": "mock",
+  "tasks": [
+    {
+      "task_id": "T-101",
+      "title": "Pre-start walkaround inspection",
+      "details": "Check tracks, hydraulic lines and fluid levels before starting the excavator.",
+      "priority": "high",
+      "status": "pending"
+    },
+    {
+      "task_id": "T-102",
+      "title": "Move the spoil pile in bay 3",
+      "details": "Load the spoil from bay 3 and dump it at the north stockpile.",
+      "priority": "normal",
+      "status": "pending"
+    },
+    {
+      "task_id": "T-103",
+      "title": "Grade the access road at gate 2",
+      "details": "Level the ruts on the access road between gate 2 and the site office.",
+      "priority": "normal",
+      "status": "pending"
+    }
+  ],
+  "incidents": [
+    {
+      "incident_id": "INC-0001",
+      "incident_number": 1,
+      "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
+      "operator_id": "operator-7",
+      "machine_id": "cat-320-demo",
+      "description": "hydraulic hose leaking on the boom",
+      "source_turn_id": "lk-item_7f3a9c21",
+      "created_at": "2026-09-23T11:44:22.939501Z"
+    }
+  ],
+  "training_assignments": [],
+  "available_lessons": [
+    {
+      "lesson_id": "L1",
+      "title": "Seatbelt and rollover protection basics",
+      "summary": "Why the seatbelt and ROPS work together, and when to buckle up.",
+      "duration_minutes": 5
+    },
+    {
+      "lesson_id": "L2",
+      "title": "Pre-start walkaround inspection",
+      "summary": "A step-by-step walkaround before starting heavy equipment.",
+      "duration_minutes": 8
+    },
+    {
+      "lesson_id": "L3",
+      "title": "Responding to a hydraulic leak",
+      "summary": "How to stop safely, isolate the machine and report a hydraulic leak.",
+      "duration_minutes": 6
+    }
+  ],
+  "active_alerts": [
+    {
+      "alert_id": "ALR-bf6268550c26",
+      "rule_id": "prototype.seatbelt_unfastened.v1",
+      "alert_type": "seatbelt_unfastened",
+      "severity": "warning",
+      "status": "active",
+      "message": "Seatbelt unfastened while the engine is running (simulated).",
+      "explanation": "At 10:15:02 UTC the simulated telemetry showed the engine running while the seatbelt was unfastened. This is a prototype rule on simulated data, not validated machine safety logic.",
+      "simulated": true,
+      "trigger_readings": {
+        "engine_on": true,
+        "seatbelt_fastened": false,
+        "idle_seconds": 0
+      },
+      "started_at": "2026-09-23T10:15:02Z",
+      "cleared_at": null
+    }
+  ],
+  "latest_alert": {
+    "alert_id": "ALR-bf6268550c26",
+    "rule_id": "prototype.seatbelt_unfastened.v1",
+    "alert_type": "seatbelt_unfastened",
+    "severity": "warning",
+    "status": "active",
+    "message": "Seatbelt unfastened while the engine is running (simulated).",
+    "explanation": "At 10:15:02 UTC the simulated telemetry showed the engine running while the seatbelt was unfastened. This is a prototype rule on simulated data, not validated machine safety logic.",
+    "simulated": true,
+    "trigger_readings": {
+      "engine_on": true,
+      "seatbelt_fastened": false,
+      "idle_seconds": 0
+    },
+    "started_at": "2026-09-23T10:15:02Z",
+    "cleared_at": null
+  },
+  "pending_question": {
+    "kind": "incident_description",
+    "for_action": "log_incident",
+    "asked_in_turn_id": "lk-item_7f3a9c22"
+  }
+}

@@ -1,0 +1,1390 @@
+# GENERATED from langgraph-agent/cocoon_agent/api/schemas.py by scripts/export_openapi.py.
+# Do not edit by hand. See API_CONTRACT.md for the change process.
+openapi: 3.1.0
+info:
+  title: Cocoon backend API
+  summary: LangGraph application backend for the Cocoon voice assistant (Team Butterfly).
+  version: 1.0.0
+paths:
+  /healthz:
+    get:
+      tags:
+      - health
+      summary: Healthz
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    get:
+      tags:
+      - health
+      summary: Readyz
+      operationId: readyz_readyz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /v1/sessions:
+    post:
+      tags:
+      - sessions
+      summary: Create Session
+      operationId: create_session_v1_sessions_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '200':
+          description: Existing session for this client_session_key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '409':
+          description: Key already bound to a different room/participant/operator/machine
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - HTTPBearer: []
+  /v1/sessions/{session_id}/turns:
+    post:
+      tags:
+      - turns
+      summary: Submit Turn
+      operationId: submit_turn_v1_sessions__session_id__turns_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnResult'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '202':
+          description: Same turn_id is still processing. Wait retry_after_ms (also the Retry-After header, seconds)
+            then GET poll_url (also the Location header). Do not resubmit with a new turn_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnResult'
+        '409':
+          description: turn_id reused with a different text or source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: LLM unavailable or turn timed out (retryable, same turn_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/turns/{turn_id}:
+    get:
+      tags:
+      - turns
+      summary: Get Turn
+      operationId: get_turn_v1_sessions__session_id__turns__turn_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: turn_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Turn Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnResult'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/state:
+    get:
+      tags:
+      - state
+      summary: Get State
+      operationId: get_state_v1_sessions__session_id__state_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionState'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/telemetry:
+    post:
+      tags:
+      - telemetry
+      summary: Submit Telemetry
+      operationId: submit_telemetry_v1_sessions__session_id__telemetry_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelemetryRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelemetryResult'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: event_id reused with a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/events:
+    get:
+      tags:
+      - announcements
+      summary: List Events
+      operationId: list_events_v1_sessions__session_id__events_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Return announcements with sequence > after
+          default: 0
+          title: After
+        description: Return announcements with sequence > after
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsPage'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/events/{event_id}/delivery:
+    post:
+      tags:
+      - announcements
+      summary: Record Delivery
+      operationId: record_delivery_v1_sessions__session_id__events__event_id__delivery_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReport'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryRecord'
+        '401':
+          description: Missing or invalid service bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    Alert:
+      properties:
+        alert_id:
+          type: string
+          title: Alert Id
+        rule_id:
+          type: string
+          title: Rule Id
+        alert_type:
+          type: string
+          const: seatbelt_unfastened
+          title: Alert Type
+        severity:
+          type: string
+          enum:
+          - warning
+          - critical
+          title: Severity
+        status:
+          type: string
+          enum:
+          - active
+          - cleared
+          title: Status
+        message:
+          type: string
+          title: Message
+        explanation:
+          type: string
+          title: Explanation
+        simulated:
+          type: boolean
+          title: Simulated
+        trigger_readings:
+          $ref: '#/components/schemas/TelemetryReadings'
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        cleared_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cleared At
+      additionalProperties: false
+      type: object
+      required:
+      - alert_id
+      - rule_id
+      - alert_type
+      - severity
+      - status
+      - message
+      - explanation
+      - simulated
+      - trigger_readings
+      - started_at
+      title: Alert
+    AlertExplainedAction:
+      properties:
+        type:
+          type: string
+          const: alert_explained
+          title: Type
+        alert:
+          anyOf:
+          - $ref: '#/components/schemas/Alert'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - alert
+      title: AlertExplainedAction
+    Announcement:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        sequence:
+          type: integer
+          title: Sequence
+        type:
+          type: string
+          enum:
+          - alert_started
+          - alert_cleared
+          title: Type
+        priority:
+          type: string
+          enum:
+          - low
+          - normal
+          - high
+          - critical
+          title: Priority
+        speech:
+          type: string
+          title: Speech
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        deliveries:
+          items:
+            $ref: '#/components/schemas/DeliveryRecord'
+          type: array
+          title: Deliveries
+          description: Latest playback report per consumer. Played is not acknowledgement.
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - sequence
+      - type
+      - priority
+      - speech
+      - created_at
+      title: Announcement
+    DeliveryRecord:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        consumer_id:
+          type: string
+          title: Consumer Id
+        status:
+          type: string
+          enum:
+          - played
+          - interrupted
+          - failed
+          - expired
+          title: Status
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detail
+        recorded_at:
+          type: string
+          format: date-time
+          title: Recorded At
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - consumer_id
+      - status
+      - recorded_at
+      title: DeliveryRecord
+    DeliveryReport:
+      properties:
+        consumer_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Consumer Id
+          examples:
+          - lk-item_4f2c9a
+        status:
+          type: string
+          enum:
+          - played
+          - interrupted
+          - failed
+          - expired
+          title: Status
+        detail:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Detail
+      additionalProperties: false
+      type: object
+      required:
+      - consumer_id
+      - status
+      title: DeliveryReport
+    ErrorBody:
+      properties:
+        code:
+          type: string
+          enum:
+          - unauthorized
+          - not_found
+          - validation_error
+          - idempotency_conflict
+          - session_conflict
+          - llm_unavailable
+          - turn_failed
+          - internal_error
+          title: Code
+        message:
+          type: string
+          title: Message
+        retryable:
+          type: boolean
+          title: Retryable
+        request_id:
+          type: string
+          title: Request Id
+        details:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ErrorDetail'
+            type: array
+          - type: 'null'
+          title: Details
+      additionalProperties: false
+      type: object
+      required:
+      - code
+      - message
+      - retryable
+      - request_id
+      title: ErrorBody
+    ErrorDetail:
+      properties:
+        field:
+          type: string
+          title: Field
+        issue:
+          type: string
+          title: Issue
+      additionalProperties: false
+      type: object
+      required:
+      - field
+      - issue
+      title: ErrorDetail
+    ErrorResponse:
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+      additionalProperties: false
+      type: object
+      required:
+      - error
+      title: ErrorResponse
+    EventsPage:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        events:
+          items:
+            $ref: '#/components/schemas/Announcement'
+          type: array
+          title: Events
+        next_cursor:
+          type: integer
+          title: Next Cursor
+          description: Pass as ?after= on the next poll.
+        has_more:
+          type: boolean
+          title: Has More
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - events
+      - next_cursor
+      - has_more
+      title: EventsPage
+    HealthResponse:
+      properties:
+        status:
+          type: string
+          const: ok
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: HealthResponse
+    Incident:
+      properties:
+        incident_id:
+          type: string
+          title: Incident Id
+        incident_number:
+          type: integer
+          title: Incident Number
+        session_id:
+          type: string
+          title: Session Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        description:
+          type: string
+          title: Description
+        source_turn_id:
+          type: string
+          title: Source Turn Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - incident_id
+      - incident_number
+      - session_id
+      - operator_id
+      - machine_id
+      - description
+      - source_turn_id
+      - created_at
+      title: Incident
+    IncidentLoggedAction:
+      properties:
+        type:
+          type: string
+          const: incident_logged
+          title: Type
+        incident:
+          $ref: '#/components/schemas/Incident'
+        created:
+          type: boolean
+          title: Created
+          description: False when an earlier attempt of the same turn already saved it.
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - incident
+      - created
+      title: IncidentLoggedAction
+    InformationRequestedAction:
+      properties:
+        type:
+          type: string
+          const: information_requested
+          title: Type
+        for_action:
+          type: string
+          const: log_incident
+          title: For Action
+        missing_field:
+          type: string
+          const: description
+          title: Missing Field
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - for_action
+      - missing_field
+      title: InformationRequestedAction
+    Lesson:
+      properties:
+        lesson_id:
+          type: string
+          title: Lesson Id
+        title:
+          type: string
+          title: Title
+        summary:
+          type: string
+          title: Summary
+        duration_minutes:
+          type: integer
+          title: Duration Minutes
+      additionalProperties: false
+      type: object
+      required:
+      - lesson_id
+      - title
+      - summary
+      - duration_minutes
+      title: Lesson
+    NextTaskAction:
+      properties:
+        type:
+          type: string
+          const: next_task
+          title: Type
+        task:
+          anyOf:
+          - $ref: '#/components/schemas/Task'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - task
+      title: NextTaskAction
+    PendingCancelledAction:
+      properties:
+        type:
+          type: string
+          const: pending_cancelled
+          title: Type
+        cancelled:
+          anyOf:
+          - type: string
+            const: log_incident
+          - type: 'null'
+          title: Cancelled
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - cancelled
+      title: PendingCancelledAction
+    PendingQuestion:
+      properties:
+        kind:
+          type: string
+          const: incident_description
+          title: Kind
+        for_action:
+          type: string
+          const: log_incident
+          title: For Action
+        asked_in_turn_id:
+          type: string
+          title: Asked In Turn Id
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - for_action
+      - asked_in_turn_id
+      title: PendingQuestion
+    ReadyResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - not_ready
+          title: Status
+        llm_mode:
+          type: string
+          enum:
+          - live
+          - mock
+          title: Llm Mode
+        database:
+          type: boolean
+          title: Database
+        checkpointer:
+          type: boolean
+          title: Checkpointer
+        version:
+          type: string
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - llm_mode
+      - database
+      - checkpointer
+      - version
+      title: ReadyResponse
+    Session:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        client_session_key:
+          type: string
+          title: Client Session Key
+        room_name:
+          type: string
+          title: Room Name
+        participant_identity:
+          type: string
+          title: Participant Identity
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        state_version:
+          type: integer
+          title: State Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - client_session_key
+      - room_name
+      - participant_identity
+      - operator_id
+      - machine_id
+      - state_version
+      - created_at
+      title: Session
+    SessionCreateRequest:
+      properties:
+        client_session_key:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Client Session Key
+        room_name:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Room Name
+        participant_identity:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Participant Identity
+        operator_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Operator Id
+        machine_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Machine Id
+      additionalProperties: false
+      type: object
+      required:
+      - client_session_key
+      - room_name
+      - participant_identity
+      - operator_id
+      - machine_id
+      title: SessionCreateRequest
+    SessionState:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        state_version:
+          type: integer
+          title: State Version
+        llm_mode:
+          type: string
+          enum:
+          - live
+          - mock
+          title: Llm Mode
+        tasks:
+          items:
+            $ref: '#/components/schemas/Task'
+          type: array
+          title: Tasks
+        incidents:
+          items:
+            $ref: '#/components/schemas/Incident'
+          type: array
+          title: Incidents
+        training_assignments:
+          items:
+            $ref: '#/components/schemas/TrainingAssignment'
+          type: array
+          title: Training Assignments
+        available_lessons:
+          items:
+            $ref: '#/components/schemas/Lesson'
+          type: array
+          title: Available Lessons
+        active_alerts:
+          items:
+            $ref: '#/components/schemas/Alert'
+          type: array
+          title: Active Alerts
+        latest_alert:
+          anyOf:
+          - $ref: '#/components/schemas/Alert'
+          - type: 'null'
+        pending_question:
+          anyOf:
+          - $ref: '#/components/schemas/PendingQuestion'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - state_version
+      - llm_mode
+      - tasks
+      - incidents
+      - training_assignments
+      - available_lessons
+      - active_alerts
+      - latest_alert
+      - pending_question
+      title: SessionState
+    Task:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        title:
+          type: string
+          title: Title
+        details:
+          type: string
+          title: Details
+        priority:
+          type: string
+          enum:
+          - low
+          - normal
+          - high
+          title: Priority
+        status:
+          type: string
+          enum:
+          - pending
+          - in_progress
+          - done
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - title
+      - details
+      - priority
+      - status
+      title: Task
+    TelemetryReadings:
+      properties:
+        engine_on:
+          type: boolean
+          title: Engine On
+        seatbelt_fastened:
+          type: boolean
+          title: Seatbelt Fastened
+        idle_seconds:
+          type: integer
+          maximum: 86400.0
+          minimum: 0.0
+          title: Idle Seconds
+      additionalProperties: false
+      type: object
+      required:
+      - engine_on
+      - seatbelt_fastened
+      - idle_seconds
+      title: TelemetryReadings
+    TelemetryRequest:
+      properties:
+        event_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Event Id
+          examples:
+          - lk-item_4f2c9a
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+          description: Timezone-aware timestamp; normalised to UTC.
+        simulated:
+          type: boolean
+          const: true
+          title: Simulated
+          description: 'Must be true: v1 accepts prototype simulator data only.'
+        readings:
+          $ref: '#/components/schemas/TelemetryReadings'
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - observed_at
+      - simulated
+      - readings
+      title: TelemetryRequest
+    TelemetryResult:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        event_id:
+          type: string
+          title: Event Id
+        duplicate:
+          type: boolean
+          title: Duplicate
+        stale:
+          type: boolean
+          title: Stale
+          description: True when observed_at is older than the newest processed sample.
+        alerts_opened:
+          items:
+            type: string
+          type: array
+          title: Alerts Opened
+        alerts_cleared:
+          items:
+            type: string
+          type: array
+          title: Alerts Cleared
+        announcements_created:
+          items:
+            type: string
+          type: array
+          title: Announcements Created
+        active_alerts:
+          items:
+            $ref: '#/components/schemas/Alert'
+          type: array
+          title: Active Alerts
+        state_version:
+          type: integer
+          title: State Version
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - event_id
+      - duplicate
+      - stale
+      - alerts_opened
+      - alerts_cleared
+      - announcements_created
+      - active_alerts
+      - state_version
+      title: TelemetryResult
+    TrainingAssignedAction:
+      properties:
+        type:
+          type: string
+          const: training_assigned
+          title: Type
+        assignment:
+          $ref: '#/components/schemas/TrainingAssignment'
+        created:
+          type: boolean
+          title: Created
+          description: False when this lesson was already assigned to the operator.
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - assignment
+      - created
+      title: TrainingAssignedAction
+    TrainingAssignment:
+      properties:
+        assignment_id:
+          type: string
+          title: Assignment Id
+        lesson_id:
+          type: string
+          title: Lesson Id
+        lesson_title:
+          type: string
+          title: Lesson Title
+        operator_id:
+          type: string
+          title: Operator Id
+        status:
+          type: string
+          enum:
+          - assigned
+          - completed
+          title: Status
+        assigned_at:
+          type: string
+          format: date-time
+          title: Assigned At
+      additionalProperties: false
+      type: object
+      required:
+      - assignment_id
+      - lesson_id
+      - lesson_title
+      - operator_id
+      - status
+      - assigned_at
+      title: TrainingAssignment
+    TrainingStatusAction:
+      properties:
+        type:
+          type: string
+          const: training_status
+          title: Type
+        assignments:
+          items:
+            $ref: '#/components/schemas/TrainingAssignment'
+          type: array
+          title: Assignments
+        available_lessons:
+          items:
+            $ref: '#/components/schemas/Lesson'
+          type: array
+          title: Available Lessons
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - assignments
+      - available_lessons
+      title: TrainingStatusAction
+    TurnRequest:
+      properties:
+        turn_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Turn Id
+          examples:
+          - lk-item_4f2c9a
+        text:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Text
+        source:
+          type: string
+          enum:
+          - voice
+          - text
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - turn_id
+      - text
+      - source
+      title: TurnRequest
+    TurnResult:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        turn_id:
+          type: string
+          title: Turn Id
+        status:
+          type: string
+          enum:
+          - processing
+          - completed
+          - failed
+          title: Status
+        speech:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Speech
+          description: Operator-facing text for TTS. Present only when status is completed.
+        actions:
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/NextTaskAction'
+            - $ref: '#/components/schemas/IncidentLoggedAction'
+            - $ref: '#/components/schemas/InformationRequestedAction'
+            - $ref: '#/components/schemas/TrainingAssignedAction'
+            - $ref: '#/components/schemas/TrainingStatusAction'
+            - $ref: '#/components/schemas/AlertExplainedAction'
+            - $ref: '#/components/schemas/PendingCancelledAction'
+            discriminator:
+              propertyName: type
+              mapping:
+                alert_explained: '#/components/schemas/AlertExplainedAction'
+                incident_logged: '#/components/schemas/IncidentLoggedAction'
+                information_requested: '#/components/schemas/InformationRequestedAction'
+                next_task: '#/components/schemas/NextTaskAction'
+                pending_cancelled: '#/components/schemas/PendingCancelledAction'
+                training_assigned: '#/components/schemas/TrainingAssignedAction'
+                training_status: '#/components/schemas/TrainingStatusAction'
+          type: array
+          title: Actions
+        state_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: State Version
+        llm_mode:
+          anyOf:
+          - type: string
+            enum:
+            - live
+            - mock
+          - type: 'null'
+          title: Llm Mode
+        error:
+          anyOf:
+          - $ref: '#/components/schemas/ErrorBody'
+          - type: 'null'
+        retry_after_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Retry After Ms
+          description: 'Present when status is processing: wait this long, then GET poll_url.'
+        poll_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Poll Url
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - turn_id
+      - status
+      - created_at
+      title: TurnResult
+  securitySchemes:
+    HTTPBearer:
+      type: http
+      description: Service token from COCOON_SERVICE_TOKEN
+      scheme: bearer
