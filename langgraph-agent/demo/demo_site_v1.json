@@ -13,7 +13,9 @@
     "site_id": "SITE_DEMO_NORTH",
     "name": "North quarry (synthetic demo site)",
     "timezone": "Asia/Kolkata",
-    "utc_offset": "+05:30"
+    "utc_offset": "+05:30",
+    "location": {"latitude": 12.9692, "longitude": 79.1559,
+                 "basis": "synthetic_demo_location: coordinates near Vellore chosen only so live weather has a place to look up; not a real quarry"}
   },
   "zones": [
     {"site_zone_id": "ZONE_N_PIT", "name": "North pit", "zone_type": "excavation", "outdoor": true},

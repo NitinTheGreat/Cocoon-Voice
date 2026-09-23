@@ -787,6 +787,7 @@ components:
           - seatbelt_unfastened
           - prolonged_idle
           - idle_unbelted
+          - working_conditions
           title: Alert Type
         severity:
           type: string
@@ -875,6 +876,14 @@ components:
           title: Announced
           description: 'An alert_started announcement was created (not: heard).'
           default: true
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+          description: Family-specific evidence saved when the episode opened (e.g. the condition check of a working_conditions
+            episode). Null for belt/idle episodes.
       additionalProperties: false
       type: object
       required:
@@ -1137,6 +1146,22 @@ components:
           $ref: '#/components/schemas/TaskConditions'
         duration:
           $ref: '#/components/schemas/TaskDuration'
+        outdoor:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Outdoor
+          description: The task's zone is outdoors (working-condition checks).
+        conditions:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionCheck'
+          - type: 'null'
+          description: Current working-conditions check for this task (not saved; for display).
+        start_check:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionCheck'
+          - type: 'null'
+          description: The saved check the task started under; later weather never rewrites it.
       additionalProperties: false
       type: object
       required:
@@ -1305,9 +1330,180 @@ components:
           - type: 'null'
           title: Occurred At
           description: 'incident.edit: an exact occurrence time picked on the device.'
+        acknowledge_conditions:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Acknowledge Conditions
+          description: 'task.start: the operator confirms starting despite findings that need acknowledgement (never
+            overrides a block).'
       additionalProperties: false
       type: object
       title: CommandPayload
+    ConditionCheck:
+      properties:
+        check_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Check Id
+          description: Set when the check was saved (task start, in-task).
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Id
+        level:
+          type: string
+          enum:
+          - clear
+          - advisory
+          - acknowledge
+          - block
+          - unknown
+          - not_applicable
+          title: Level
+        coverage:
+          type: string
+          enum:
+          - fresh
+          - stale
+          - unavailable
+          - misaligned
+          - not_applicable
+          title: Coverage
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        findings:
+          items:
+            $ref: '#/components/schemas/ConditionFinding'
+          type: array
+          title: Findings
+        weather:
+          anyOf:
+          - $ref: '#/components/schemas/WeatherSnapshot'
+          - type: 'null'
+        policy_version:
+          type: string
+          title: Policy Version
+        data_time:
+          type: string
+          format: date-time
+          title: Data Time
+          description: The session's data clock the conditions were matched to.
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+        acknowledged:
+          type: boolean
+          title: Acknowledged
+          description: The operator confirmed starting despite the findings.
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - level
+      - coverage
+      - policy_version
+      - data_time
+      - checked_at
+      title: ConditionCheck
+      description: 'A deterministic working-conditions check for an outdoor task under a versioned policy.
+
+
+        level: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting),
+        block
+
+        (start refused), unknown (no usable weather: shown, never read as fine), not_applicable (indoor zone).
+
+        coverage: fresh / stale (cached value older than the freshness limit, labelled) / unavailable / misaligned
+        (live
+
+        weather cannot describe a replay''s data time) / not_applicable.'
+    ConditionFinding:
+      properties:
+        variable:
+          type: string
+          enum:
+          - temperature_c
+          - relative_humidity_pct
+          - precipitation_rate_mm_h
+          - wind_speed_ms
+          - wind_gust_ms
+          - visibility_m
+          title: Variable
+        value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Value
+          description: Null = not supplied by the source (the level is then unknown).
+        unit:
+          type: string
+          title: Unit
+        level:
+          type: string
+          enum:
+          - clear
+          - advisory
+          - acknowledge
+          - block
+          - unknown
+          title: Level
+        threshold:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Threshold
+          description: Policy limit that set this level.
+        comparison:
+          type: string
+          enum:
+          - at_or_above
+          - below
+          title: Comparison
+        basis:
+          type: string
+          enum:
+          - synthetic_demo_assumption
+          - site_configured
+          - published_guidance
+          title: Basis
+      additionalProperties: false
+      type: object
+      required:
+      - variable
+      - value
+      - unit
+      - level
+      - comparison
+      - basis
+      title: ConditionFinding
+    ConditionsReportAction:
+      properties:
+        type:
+          type: string
+          const: conditions_report
+          title: Type
+        check:
+          $ref: '#/components/schemas/ConditionCheck'
+        task_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Title
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - check
+      title: ConditionsReportAction
+      description: 'Answer to "what are the conditions?": the check for the next/current task (or the site when
+        unbound).'
     DeliveryRecord:
       properties:
         event_id:
@@ -2189,7 +2385,9 @@ components:
         cancelled:
           anyOf:
           - type: string
-            const: log_incident
+            enum:
+            - log_incident
+            - start_task
           - type: 'null'
           title: Cancelled
         kept_draft_number:
@@ -2212,10 +2410,13 @@ components:
           - incident_description
           - incident_severity
           - incident_time
+          - task_start_ack
           title: Kind
         for_action:
           type: string
-          const: log_incident
+          enum:
+          - log_incident
+          - start_task
           title: For Action
         asked_in_turn_id:
           type: string
@@ -2260,6 +2461,12 @@ components:
           description: Answering also confirms the draft once nothing is missing (false when the question came from
             an edit).
           default: true
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Id
+          description: 'task_start_ack: the task waiting for confirmation.'
       additionalProperties: false
       type: object
       required:
@@ -2691,6 +2898,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ShiftBriefing'
           - type: 'null'
+        site_conditions:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionCheck'
+          - type: 'null'
+          description: Site conditions at the session's data clock (null when the session has no site).
       additionalProperties: false
       type: object
       required:
@@ -2868,12 +3080,29 @@ components:
           - no_shift
           - no_eligible_task
           - invalid_transition
+          - conditions_block
+          - conditions_need_acknowledgement
           title: Reason
         current_status:
           anyOf:
           - type: string
           - type: 'null'
           title: Current Status
+        conditions:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionCheck'
+          - type: 'null'
+          description: The check that stopped the start.
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Id
+        task_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Title
       additionalProperties: false
       type: object
       required:
@@ -2899,6 +3128,11 @@ components:
           type: boolean
           title: Created
           description: False when this exact command was already committed (retry).
+        conditions:
+          anyOf:
+          - $ref: '#/components/schemas/ConditionCheck'
+          - type: 'null'
+          description: The saved start check (task_started).
       additionalProperties: false
       type: object
       required:
@@ -3220,6 +3454,7 @@ components:
             - $ref: '#/components/schemas/IncidentDraftsAction'
             - $ref: '#/components/schemas/IdleReasonRecordedAction'
             - $ref: '#/components/schemas/LessonContentAction'
+            - $ref: '#/components/schemas/ConditionsReportAction'
             - $ref: '#/components/schemas/EscalationRequestedAction'
             - $ref: '#/components/schemas/ClarificationAction'
             - $ref: '#/components/schemas/CapabilityUnavailableAction'
@@ -3230,6 +3465,7 @@ components:
                 assigned_tasks: '#/components/schemas/AssignedTasksAction'
                 capability_unavailable: '#/components/schemas/CapabilityUnavailableAction'
                 clarification_needed: '#/components/schemas/ClarificationAction'
+                conditions_report: '#/components/schemas/ConditionsReportAction'
                 escalation_requested: '#/components/schemas/EscalationRequestedAction'
                 idle_reason_recorded: '#/components/schemas/IdleReasonRecordedAction'
                 incident_confirmed: '#/components/schemas/IncidentDraftAction'
@@ -3312,6 +3548,151 @@ components:
       - status
       - created_at
       title: TurnResult
+    WeatherSnapshot:
+      properties:
+        record_id:
+          type: string
+          title: Record Id
+        provider:
+          type: string
+          enum:
+          - open_meteo
+          - fixture
+          title: Provider
+        kind:
+          type: string
+          enum:
+          - modelled_current
+          - modelled_forecast
+          - synthetic_fixture
+          title: Kind
+        site_id:
+          type: string
+          title: Site Id
+        latitude:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Latitude
+          description: Provider grid-cell latitude (may differ from the site).
+        longitude:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Longitude
+        valid_from:
+          type: string
+          format: date-time
+          title: Valid From
+        valid_to:
+          type: string
+          format: date-time
+          title: Valid To
+        precipitation_window_start:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Precipitation Window Start
+        precipitation_window_end:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Precipitation Window End
+        temperature_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Temperature C
+        relative_humidity_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Relative Humidity Pct
+        precipitation_mm:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Precipitation Mm
+        precipitation_rate_mm_h:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Precipitation Rate Mm H
+        wind_speed_ms:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Wind Speed Ms
+        wind_gust_ms:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Wind Gust Ms
+        visibility_m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Visibility M
+        weather_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Weather Code
+          description: WMO weather code as reported by the provider.
+        retrieved_at:
+          type: string
+          format: date-time
+          title: Retrieved At
+        issued_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Issued At
+        units:
+          additionalProperties:
+            type: string
+          type: object
+          title: Units
+        quality:
+          type: string
+          enum:
+          - complete
+          - partial
+          title: Quality
+        provenance:
+          type: string
+          title: Provenance
+      additionalProperties: false
+      type: object
+      required:
+      - record_id
+      - provider
+      - kind
+      - site_id
+      - valid_from
+      - valid_to
+      - retrieved_at
+      - units
+      - quality
+      - provenance
+      title: WeatherSnapshot
+      description: 'Numeric site conditions exactly as used by a check. Values are normalised to the units in `units`.
+
+
+        Open-Meteo values are weather-model output for the site''s grid cell (`kind` modelled_current / modelled_forecast),
+
+        not a machine-mounted sensor. Instant variables apply at `valid_from`; precipitation is the provider''s
+        sum over
+
+        [`precipitation_window_start`, `precipitation_window_end`], also given as a rate. `issued_at` is only set
+        when the
+
+        provider states a forecast issue time (Open-Meteo does not; retrieval time and generation time are not issue
+
+        times). Fixture values are synthetic and aligned to the site-local clock of the data time.'
   securitySchemes:
     HTTPBearer:
       type: http

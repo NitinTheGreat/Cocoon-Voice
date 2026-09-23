@@ -1,0 +1,34 @@
+{
+  "schema": "cocoon.working-conditions-policy.v1",
+  "policy_version": "demo-conditions-2026-09-24.1",
+  "note": "Demo thresholds for the pre-task working-conditions check. Every numeric limit below is a synthetic demo assumption chosen so the demo shows each level; none is a published Caterpillar, OEM or site limit. Use the machine's Operation and Maintenance Manual and the site's own rules for real limits.",
+  "levels": {
+    "advisory": "Proceed; the operator is told what was found.",
+    "acknowledge": "The operator must confirm before the task starts (voice 'start anyway' or a tap with acknowledge_conditions).",
+    "block": "The task start is refused while the finding holds.",
+    "unknown": "No usable weather. Shown to the operator; never treated as clear. Treated as an advisory for the start."
+  },
+  "missing_weather_level": "advisory",
+  "worsening_announcement_minimum": "acknowledge",
+  "outdoor_only": true,
+  "variables": {
+    "temperature_c": {"unit": "degC", "comparison": "at_or_above", "advisory": 35, "acknowledge": 40, "block": 46,
+                      "basis": "synthetic_demo_assumption",
+                      "advice": "Plan water and shaded breaks; heat-stress screening is a separate wellbeing check."},
+    "relative_humidity_pct": {"unit": "%", "comparison": "at_or_above", "advisory": 85, "acknowledge": null, "block": null,
+                              "basis": "synthetic_demo_assumption", "advice": "Expect slippery steps and fogged glass."},
+    "precipitation_rate_mm_h": {"unit": "mm/h", "comparison": "at_or_above", "advisory": 0.5, "acknowledge": 4, "block": 12,
+                                "basis": "synthetic_demo_assumption",
+                                "advice": "Check ground bearing and slopes before working in rain."},
+    "wind_speed_ms": {"unit": "m/s", "comparison": "at_or_above", "advisory": 9, "acknowledge": 12, "block": 18,
+                      "basis": "synthetic_demo_assumption", "advice": "Keep loads low and watch for dust."},
+    "wind_gust_ms": {"unit": "m/s", "comparison": "at_or_above", "advisory": 11, "acknowledge": 13, "block": 20,
+                     "basis": "synthetic_demo_assumption", "advice": "Avoid raised loads and lifting in gusts."},
+    "visibility_m": {"unit": "m", "comparison": "below", "advisory": 1000, "acknowledge": 500, "block": 150,
+                     "basis": "synthetic_demo_assumption", "advice": "Use lights, slow down and confirm spotters."}
+  },
+  "task_overrides": {
+    "demolition": {"wind_gust_ms": {"advisory": 9, "acknowledge": 11, "block": 17}},
+    "material_loading": {"wind_gust_ms": {"advisory": 10, "acknowledge": 12, "block": 18}}
+  }
+}

@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     # Machine state counts as stale when no sample was RECEIVED (server clock) for this long.
     telemetry_stale_seconds: int = Field(default=30, alias="COCOON_TELEMETRY_STALE_SECONDS", ge=1)
 
+    # Site weather, independent of the LLM mode: fixture (synthetic, aligned to the data clock), live (Open-Meteo for
+    # the site's trusted coordinates, cached and refreshed in the background) or off.
+    weather_mode: Literal["fixture", "live", "off"] = Field(default="fixture", alias="COCOON_WEATHER_MODE")
+    weather_fixture_path: Path | None = Field(default=None, alias="COCOON_WEATHER_FIXTURE_PATH")
+    weather_timeout_seconds: float = Field(default=5.0, alias="COCOON_WEATHER_TIMEOUT_SECONDS", gt=0, le=30)
+    weather_refresh_seconds: int = Field(default=600, alias="COCOON_WEATHER_REFRESH_SECONDS", ge=60)
+    weather_fresh_seconds: int = Field(default=900, alias="COCOON_WEATHER_FRESH_SECONDS", ge=60)
+    weather_stale_limit_seconds: int = Field(default=3600, alias="COCOON_WEATHER_STALE_LIMIT_SECONDS", ge=60)
+    weather_misalign_seconds: int = Field(default=5400, alias="COCOON_WEATHER_MISALIGN_SECONDS", ge=600)
+    conditions_policy_path: Path | None = Field(default=None, alias="COCOON_CONDITIONS_POLICY_PATH")
+
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
                                          pattern=r"^[0-9a-f]{64}$")
@@ -85,6 +96,10 @@ class Settings(BaseSettings):
             self.data_dir = SERVICE_DIR / self.data_dir
         if not self.dataset_root.is_absolute():
             self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
+        for name in ("weather_fixture_path", "conditions_policy_path"):
+            value = getattr(self, name)
+            if value is not None and not value.is_absolute():
+                setattr(self, name, (SERVICE_DIR / value).resolve())
         if self.safety_policy_path is not None and not self.safety_policy_path.is_absolute():
             self.safety_policy_path = (SERVICE_DIR / self.safety_policy_path).resolve()
         if self.session_bindings_path is not None and not self.session_bindings_path.is_absolute():

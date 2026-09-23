@@ -83,7 +83,8 @@ def test_one_briefing_per_shift_across_sessions_and_restarts(tmp_path):
         assert [e["type"] for e in events] == ["shift_briefing"]
         speech = events[0]["speech"]
         assert "Excavate the north pit bench" in speech and "North pit" in speech and "07:30" in speech
-        assert "synthetic demo value" in speech and "3 tasks" in speech
+        # C2: conditions come from the weather check; with no weather source the briefing says so (never "fine")
+        assert "weather isn't available" in speech and "3 tasks" in speech
         assert c.get(f"/v1/sessions/{second}/events?after=0", headers=AUTH).json()["events"] == []
         assert state(c, second)["shift_briefing"]["event_id"] == events[0]["event_id"]
     with TestClient(create_app(settings)) as c:  # restart + session retrieval: still one briefing

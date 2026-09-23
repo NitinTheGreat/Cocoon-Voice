@@ -74,7 +74,7 @@ ADDED_COLUMNS = {
                   "occurred_reference_at"),
     "turns": ("route_json",),
     "alerts": ("policy_version", "source_status", "reason", "recommended_action", "evidence_json",
-               "correlated_alert_id", "draft_incident_id", "announced", "training_assignment_id"),
+               "correlated_alert_id", "draft_incident_id", "announced", "training_assignment_id", "details_json"),
     "telemetry_events": ("provenance_json",),
     "lessons": ("version", "content_text", "content_status"),
     "training_assignments": ("source_episode_id",),

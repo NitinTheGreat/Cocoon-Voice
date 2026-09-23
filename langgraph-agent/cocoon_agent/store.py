@@ -20,6 +20,7 @@ from .api import schemas as s
 from .catalog import Catalog, CatalogError
 from .incident_time import interpret, offset_timezone
 from .migrations import migrate
+from .weather import Site
 
 if TYPE_CHECKING:
     from .rules import SafetyPolicy
@@ -79,6 +80,14 @@ class VersionConflict(Exception):
         self.current_version = current_version
 
 
+class ConditionsGate(Exception):
+    """A task start stopped by the working-conditions check (block, or a finding that needs acknowledgement)."""
+
+    def __init__(self, reason: str, check: s.ConditionCheck | None, task: s.AssignedTask):
+        super().__init__(reason)
+        self.reason, self.check, self.task = reason, check, task
+
+
 class InvalidTransition(Exception):
     def __init__(self, current_status: str, message: str, missing: list[str] | None = None):
         super().__init__(message)
@@ -109,6 +118,30 @@ class NewSessionBinding:
     site_id: str | None = None
     shift_id: str | None = None
     context_source: str | None = None
+
+
+@dataclass(frozen=True)
+class RuleOutcome:
+    """One evaluation of a C-family rule for the current sample: held True (condition present), False (observed
+    absent) or None (cannot be evaluated: missing, stale or not applicable input; neither opens nor clears).
+    `details` is the family-specific evidence saved once when the episode opens."""
+
+    rule_id: str
+    family: str
+    alert_type: str
+    severity: str
+    message: str
+    reason: str
+    recommended_action: str
+    start_speech: str
+    clear_speech: str | None
+    policy_version: str
+    source_status: str
+    held: bool | None
+    explanation: str
+    details: dict[str, Any]
+    subject_key: str = ""
+    priority: str = "high"
 
 
 @dataclass
@@ -432,9 +465,70 @@ class Store:
             return result, False
 
     @staticmethod
-    def task_transition(session: s.Session, kind: str, task_id: str | None,
-                        expected_version: int | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
-        """Mutation for task.start / task.complete, scoped to the session's trusted shift."""
+    def save_condition_check(c: sqlite3.Connection, session: s.Session, check: s.ConditionCheck, purpose: str) -> str:
+        """Persist a check and the exact weather values it used (the snapshot row is written once)."""
+        check_id = "CHK-" + uuid.uuid4().hex[:12]
+        check = check.model_copy(update={"check_id": check_id})
+        record_id = None
+        if check.weather is not None:
+            record_id = check.weather.record_id
+            c.execute("INSERT OR IGNORE INTO weather_records(record_id, site_id, provider, kind, record_json,"
+                      " retrieved_at) VALUES (?, ?, ?, ?, ?, ?)",
+                      (record_id, check.weather.site_id, check.weather.provider, check.weather.kind,
+                       check.weather.model_dump_json(), iso(check.weather.retrieved_at)))
+        c.execute("INSERT INTO condition_checks(check_id, session_id, task_id, purpose, level, coverage, check_json,"
+                  " weather_record_id, policy_version, data_time, acknowledged, created_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (check_id, session.session_id, check.task_id, purpose, check.level, check.coverage,
+                   check.model_dump_json(), record_id, check.policy_version, iso(check.data_time),
+                   int(check.acknowledged), iso(utcnow())))
+        return check_id
+
+    def get_site(self, site_id: str | None) -> "Site | None":
+        if not site_id:
+            return None
+        row = self._one("SELECT site_id, utc_offset, latitude, longitude FROM sites WHERE site_id = ?", (site_id,))
+        return Site(row["site_id"], row["utc_offset"], row["latitude"], row["longitude"]) if row else None
+
+    def located_sites(self) -> "list[Site]":
+        return [Site(r["site_id"], r["utc_offset"], r["latitude"], r["longitude"])
+                for r in self._all("SELECT * FROM sites WHERE latitude IS NOT NULL AND longitude IS NOT NULL")]
+
+    def set_site_location(self, site_id: str, latitude: float, longitude: float, basis: str) -> bool:
+        """Fill the trusted coordinates once (never overwrites a different stored location)."""
+        with self._tx() as c:
+            row = c.execute("SELECT latitude, longitude FROM sites WHERE site_id = ?", (site_id,)).fetchone()
+            if row is None:
+                return False
+            if row["latitude"] is None:
+                c.execute("UPDATE sites SET latitude = ?, longitude = ?, location_basis = ? WHERE site_id = ?",
+                          (latitude, longitude, basis, site_id))
+                return True
+            if (row["latitude"], row["longitude"]) != (latitude, longitude):
+                raise Conflict(f"site {site_id} already has a different trusted location")
+            return False
+
+    def in_progress_task(self, shift_id: str | None) -> s.AssignedTask | None:
+        if not shift_id:
+            return None
+        row = self._one(_TASK_SQL + " WHERE t.shift_id = ? AND t.status = 'in_progress' ORDER BY t.scheduled_order"
+                        " LIMIT 1", (shift_id,))
+        return _assigned_task(row) if row else None
+
+    def data_clock(self, session_id: str) -> datetime | None:
+        """The session's data time: the newest applied observation (None before any telemetry)."""
+        row = self._one("SELECT observed_at FROM machine_state WHERE session_id = ?", (session_id,))
+        return parse_dt(row["observed_at"]) if row else None
+
+    @staticmethod
+    def task_transition(session: s.Session, kind: str, task_id: str | None, expected_version: int | None,
+                        check_for: "Callable[[s.AssignedTask], tuple[s.ConditionCheck | None, str]] | None" = None,
+                        acknowledged: bool = False) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for task.start / task.complete, scoped to the session's trusted shift.
+
+        task.start runs the working-conditions gate on the task actually selected (`check_for` returns the check and
+        proceed/acknowledge/block): a block refuses, an unacknowledged finding refuses (ConditionsGate), otherwise the
+        check is saved with the start in this transaction and never rewritten later."""
         needed = {"task.start": "scheduled", "task.complete": "in_progress"}[kind]
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
@@ -453,16 +547,28 @@ class Store:
             if row["status"] != needed:
                 raise InvalidTransition(row["status"], f"task is {row['status']}; {kind} needs a {needed} task")
             now = iso(utcnow())
+            check_id = None
+            if kind == "task.start" and check_for is not None:
+                check, gate = check_for(_assigned_task(row))
+                if gate == "block" or (gate == "acknowledge" and not acknowledged):
+                    raise ConditionsGate("conditions_block" if gate == "block" else "conditions_need_acknowledgement",
+                                         check, _assigned_task(row))
+                if check is not None:
+                    check_id = Store.save_condition_check(
+                        c, session, check.model_copy(update={"acknowledged": gate == "acknowledge"}), "task_start")
             if kind == "task.start":
                 c.execute("UPDATE task_assignments SET status = 'in_progress', version = version + 1, started_at = ?,"
-                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+                          " updated_at = ?, start_check_id = ? WHERE task_id = ?", (now, now, check_id, row["task_id"]))
             else:
                 c.execute("UPDATE task_assignments SET status = 'completed', version = version + 1, completed_at = ?,"
                           " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
             task = _assigned_task(c.execute(_TASK_SQL + " WHERE t.task_id = ?", (row["task_id"],)).fetchone())
             verb = "Started" if kind == "task.start" else "Completed"
-            return {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
-                    "task": task.model_dump(mode="json")}
+            out = {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
+                   "task": task.model_dump(mode="json")}
+            if task.start_check is not None and kind == "task.start":
+                out["conditions"] = task.start_check.model_dump(mode="json")
+            return out
 
         return mutate
 
@@ -915,7 +1021,8 @@ class Store:
 
     def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
                           machine_category: str | None, announcement_ttl: timedelta,
-                          requires_engine_on: bool) -> dict[str, Any]:
+                          requires_engine_on: bool, outcomes: "list[RuleOutcome] | None" = None,
+                          in_task_check: "s.ConditionCheck | None" = None) -> dict[str, Any]:
         """Record one sample and apply every rule's episode transition, the linked automatic draft and the
         announcement in ONE short transaction (no model call inside).
 
@@ -1010,6 +1117,14 @@ class Store:
                             announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
                                                             rule.clear_speech, now, announcement_ttl))
                         changed = True
+                for o in outcomes or ():
+                    step = self._rule_outcome(c, session, req, o, now, announcement_ttl, in_task_check)
+                    if step is not None:
+                        kind, alert_id, event_id = step
+                        (opened if kind == "opened" else cleared).append(alert_id)
+                        if event_id:
+                            announced.append(event_id)
+                        changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -1031,6 +1146,39 @@ class Store:
                  iso(now), req.provenance.model_dump_json() if req.provenance else None),
             )
             return result
+
+    def _rule_outcome(self, c: sqlite3.Connection, session: s.Session, req: s.TelemetryRequest, o: RuleOutcome,
+                      now: datetime, ttl: timedelta,
+                      in_task_check: "s.ConditionCheck | None") -> tuple[str, str, str | None] | None:
+        """Open or clear one C-family episode inside the observation transaction. Evidence is saved once, when the
+        episode opens; later samples never change it."""
+        sid = session.session_id
+        active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
+                           (sid, o.rule_id)).fetchone()
+        if o.held and active is None:
+            alert_id = "ALR-" + uuid.uuid4().hex[:12]
+            details = dict(o.details)
+            if o.family == "working_conditions" and in_task_check is not None:
+                details["check_id"] = Store.save_condition_check(c, session, in_task_check, "in_task")
+            evidence = s.AlertEvidence(event_id=req.event_id, observed_at=req.observed_at, readings=req.readings)
+            c.execute(
+                "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message, explanation,"
+                " trigger_readings_json, opened_by_event_id, started_at, policy_version, source_status, reason,"
+                " recommended_action, evidence_json, announced, details_json)"
+                " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                (alert_id, sid, o.rule_id, o.alert_type, o.severity, o.message, o.explanation,
+                 req.readings.model_dump_json(), req.event_id, iso(req.observed_at), o.policy_version, o.source_status,
+                 o.reason, o.recommended_action, evidence.model_dump_json(), json.dumps(details, default=str)))
+            return "opened", alert_id, self._announce(c, sid, alert_id, "alert_started", o.priority, o.start_speech,
+                                                      now, ttl)
+        if o.held is False and active is not None:
+            c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ? WHERE alert_id = ?",
+                      (iso(req.observed_at), req.event_id, active["alert_id"]))
+            event_id = None
+            if o.clear_speech:
+                event_id = self._announce(c, sid, active["alert_id"], "alert_cleared", "low", o.clear_speech, now, ttl)
+            return "cleared", active["alert_id"], event_id
+        return None
 
     @staticmethod
     def _announce(c: sqlite3.Connection, session_id: str, alert_id: str, kind: str, priority: str, speech: str,
@@ -1082,9 +1230,11 @@ class Store:
 
 # ---------------------------------------------------------------------- row mappers
 
-_TASK_SQL = ("SELECT t.*, z.name AS zone_name, si.utc_offset FROM task_assignments t"
+_TASK_SQL = ("SELECT t.*, z.name AS zone_name, z.outdoor AS zone_outdoor, si.utc_offset, cc.check_json AS start_check_json"
+             " FROM task_assignments t"
              " JOIN site_zones z ON z.site_zone_id = t.site_zone_id"
-             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id")
+             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id"
+             " LEFT JOIN condition_checks cc ON cc.check_id = t.start_check_id")
 
 
 def _local_hhmm(when: datetime, utc_offset: str) -> str:
@@ -1106,6 +1256,8 @@ def _assigned_task(r: sqlite3.Row) -> s.AssignedTask:
         weather=s.TaskConditions(source=weather["source"], summary=weather.get("summary"),
                                  temperature_c=weather.get("temperature_c")),
         duration=s.TaskDuration(minutes=r["duration_minutes"], source=r["duration_source"]),
+        outdoor=bool(r["zone_outdoor"]),
+        start_check=s.ConditionCheck.model_validate_json(r["start_check_json"]) if r["start_check_json"] else None,
     )
 
 
@@ -1305,7 +1457,8 @@ def _alert(r: sqlite3.Row) -> s.Alert:
                      recommended_action=r["recommended_action"], correlated_alert_id=r["correlated_alert_id"],
                      draft_incident_id=r["draft_incident_id"], announced=bool(r["announced"]),
                      training_assignment_id=r["training_assignment_id"] if "training_assignment_id" in keys else None,
-                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None)
+                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None,
+                     details=json.loads(r["details_json"]) if "details_json" in keys and r["details_json"] else None)
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],
         status=r["status"], message=r["message"], explanation=r["explanation"], simulated=True,

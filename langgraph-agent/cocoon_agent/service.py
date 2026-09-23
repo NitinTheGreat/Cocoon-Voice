@@ -27,8 +27,10 @@ from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
 from .rules import SafetyPolicy, load_policy
+from .conditions import Conditions, conditions_sentence
 from .store import (
-    Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
+    ConditionsGate, Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict,
+    utcnow,
 )
 
 log = logging.getLogger("cocoon_agent.service")
@@ -52,7 +54,8 @@ def thread_config(session_id: str) -> RunnableConfig:
 
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
-                 bindings: SessionBindings | None = None, catalog_issue: str | None = None):
+                 bindings: SessionBindings | None = None, catalog_issue: str | None = None,
+                 conditions: Conditions | None = None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -61,6 +64,7 @@ class CocoonService:
         self.bindings = bindings
         self.catalog_issue = catalog_issue
         self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
+        self.conditions = conditions
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
         self._telemetry_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -93,7 +97,10 @@ class CocoonService:
             est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
             parts.append(f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}. First: {first.title} in "
                          f"{first.zone_name} at {first.scheduled_start_local}{est}.")
-            if first.weather.summary:
+            if self.conditions is not None:
+                check = self.conditions.check(session, first)
+                parts.append(_briefing_conditions(check))
+            elif first.weather.summary:
                 parts.append(f"Conditions (synthetic demo value, not a forecast): {first.weather.summary}.")
         else:
             parts.append("You have no open tasks on this shift.")
@@ -166,7 +173,11 @@ class CocoonService:
                                     "payload": req.payload.model_dump(mode="json"),
                                     "expected_version": req.expected_version})
         if req.kind.startswith("task."):
-            mutate, noun = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version), "task"
+            gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
+                else None
+            mutate = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version, gate,
+                                           acknowledged=bool(req.payload.acknowledge_conditions))
+            noun = "task"
         else:
             edits = req.payload.model_dump(include={"description", "severity", "severity_unknown", "location_text",
                                                     "occurred_expression"}, exclude_none=True)
@@ -200,6 +211,16 @@ class CocoonService:
         except InvalidInput as exc:
             raise ApiError(422, "validation_error", str(exc), details=[
                 {"field": f"body.{exc.field}", "issue": exc.issue}]) from exc
+        except ConditionsGate as exc:
+            check = exc.check
+            details = [{"field": "conditions.level", "issue": check.level if check else "unknown"}]
+            details += [{"field": f"conditions.{f.variable}", "issue": f"{f.level}: {f.value} {f.unit}"}
+                        for f in (check.findings if check else []) if f.level in ("acknowledge", "block")]
+            if exc.reason == "conditions_need_acknowledgement":
+                details.append({"field": "body.payload.acknowledge_conditions",
+                                "issue": "required to start despite these findings"})
+            raise ApiError(409, "invalid_transition", f"task start stopped by working conditions ({exc.reason})",
+                           details=details) from exc
 
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
@@ -407,11 +428,19 @@ class CocoonService:
             latest_alert=self.store.latest_alert(session_id),
             pending_question=s.PendingQuestion.model_validate(pending) if pending else None,
             shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
-            assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
+            assigned_tasks=self.tasks_with_conditions(session),
+            site_conditions=self.conditions.check(session, None) if self.conditions and session.site_id else None,
             machine_state=self._machine_state(session_id),
             idle_reasons=self.store.list_idle_reasons(session_id),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
         )
+
+    def tasks_with_conditions(self, session: s.Session) -> list[s.AssignedTask]:
+        tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []
+        if self.conditions is None:
+            return tasks
+        return [t.model_copy(update={"conditions": self.conditions.check(session, t)}) if t.status != "completed"
+                else t for t in tasks]
 
     def _machine_state(self, session_id: str) -> s.MachineStateView:
         limit = self.settings.telemetry_stale_seconds
@@ -445,10 +474,16 @@ class CocoonService:
                     raise ApiError(409, "idempotency_conflict", "event_id was already used with a different payload")
                 return self._telemetry_result(session_id, prior[1], duplicate=True)
             machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+            outcomes, in_task_check = [], None
+            if self.conditions is not None:
+                worse, in_task_check = self.conditions.worsening(session, req.observed_at)
+                if worse is not None:
+                    outcomes.append(worse)
             outcome = self.store.apply_observation(
                 session, req, digest, self.policy, machine.category if machine else None,
                 timedelta(seconds=self.settings.announcement_ttl_seconds),
                 requires_engine_on=self.settings.seatbelt_rule_requires_engine_on,
+                outcomes=outcomes, in_task_check=in_task_check,
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
                 log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,
@@ -477,3 +512,9 @@ class CocoonService:
         log.info("delivery session=%s event=%s consumer=%s status=%s", session_id, event_id, report.consumer_id,
                  report.status)
         return record
+
+
+
+def _briefing_conditions(check: s.ConditionCheck) -> str:
+    sentence = conditions_sentence(check)
+    return "Conditions: " + sentence[0].lower() + sentence[1:]

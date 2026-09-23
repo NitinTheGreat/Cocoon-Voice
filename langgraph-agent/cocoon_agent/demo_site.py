@@ -109,6 +109,10 @@ def seed(store: Store, catalog: Catalog, doc: dict[str, Any], service_date: str,
                 t.get("work_quantity"), t.get("work_unit"), weather, t.get("duration_minutes"),
                 "demo_supplied_estimate", now, "synthetic_demo_fixture")))
     report = store.seed_demo_site(rows)
+    loc = site.get("location")
+    if loc:  # trusted coordinates for weather lookups, filled once and never overwritten with other values
+        report["site_location_added"] = store.set_site_location(site["site_id"], loc["latitude"], loc["longitude"],
+                                                                loc["basis"])
     report["bindings_file"] = str(bindings_path)
     report["bindings_added"] = _merge_bindings(bindings_path, catalog.manifest_sha256, bindings)
     report["service_date"] = service_date

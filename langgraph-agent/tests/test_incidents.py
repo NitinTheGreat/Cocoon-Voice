@@ -189,9 +189,9 @@ def test_unsupported_capabilities_are_reported_honestly(tmp_path):
     settings, _ = seeded_demo(tmp_path)
     with TestClient(create_app(settings)) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
-        out = say(c, sid, "t1", "what's the weather going to be like")
+        out = say(c, sid, "t1", "can you check my heart rate")
         assert out["branch"] == "general_assistance" and out["action_records"] == []
-        assert out["actions"] == [{"type": "capability_unavailable", "capability": "weather_forecast"}]
+        assert out["actions"] == [{"type": "capability_unavailable", "capability": "wellbeing_checks"}]
         assert "isn't available" in out["speech"]
         conn = sqlite3.connect(settings.db_path)
         saved = conn.execute("SELECT route_json FROM turns WHERE turn_id = 't1'").fetchone()[0]

@@ -274,7 +274,7 @@ def test_populated_v7_database_upgrades_and_old_drafts_keep_numbers(tmp_path):
         conn.execute("UPDATE incident_drafts SET draft_id = ? WHERE draft_number = ?", (f"DRF-000{n}", n))
     conn.close()
     store = Store(path)
-    assert store.init_schema() == ["applied:8"]
+    assert store.init_schema()[0] == "applied:8"  # then any later migrations
     session = store.get_session("ses_1")
     old = store.list_drafts("ses_1")
     assert [(d.draft_number, d.origin, d.missing) for d in old] == [(1, "auto_draft", []), (2, "auto_draft", [])]

@@ -8,7 +8,7 @@ regenerate the committed spec with `python scripts/export_openapi.py`.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -132,6 +132,78 @@ class TaskDuration(ContractModel):
         description="A supplied demo figure, not a calibrated prediction (the estimator is Batch C).")
 
 
+WeatherVariable = Literal["temperature_c", "relative_humidity_pct", "precipitation_rate_mm_h", "wind_speed_ms",
+                          "wind_gust_ms", "visibility_m"]
+
+
+class WeatherSnapshot(ContractModel):
+    """Numeric site conditions exactly as used by a check. Values are normalised to the units in `units`.
+
+    Open-Meteo values are weather-model output for the site's grid cell (`kind` modelled_current / modelled_forecast),
+    not a machine-mounted sensor. Instant variables apply at `valid_from`; precipitation is the provider's sum over
+    [`precipitation_window_start`, `precipitation_window_end`], also given as a rate. `issued_at` is only set when the
+    provider states a forecast issue time (Open-Meteo does not; retrieval time and generation time are not issue
+    times). Fixture values are synthetic and aligned to the site-local clock of the data time."""
+
+    record_id: str
+    provider: Literal["open_meteo", "fixture"]
+    kind: Literal["modelled_current", "modelled_forecast", "synthetic_fixture"]
+    site_id: str
+    latitude: float | None = Field(default=None, description="Provider grid-cell latitude (may differ from the site).")
+    longitude: float | None = None
+    valid_from: datetime
+    valid_to: datetime
+    precipitation_window_start: datetime | None = None
+    precipitation_window_end: datetime | None = None
+    temperature_c: float | None = None
+    relative_humidity_pct: float | None = None
+    precipitation_mm: float | None = None
+    precipitation_rate_mm_h: float | None = None
+    wind_speed_ms: float | None = None
+    wind_gust_ms: float | None = None
+    visibility_m: float | None = None
+    weather_code: int | None = Field(default=None, description="WMO weather code as reported by the provider.")
+    retrieved_at: datetime
+    issued_at: datetime | None = None
+    units: dict[str, str]
+    quality: Literal["complete", "partial"]
+    provenance: str
+
+
+ConditionLevel = Literal["clear", "advisory", "acknowledge", "block", "unknown"]
+
+
+class ConditionFinding(ContractModel):
+    variable: WeatherVariable
+    value: float | None = Field(description="Null = not supplied by the source (the level is then unknown).")
+    unit: str
+    level: ConditionLevel
+    threshold: float | None = Field(default=None, description="Policy limit that set this level.")
+    comparison: Literal["at_or_above", "below"]
+    basis: Literal["synthetic_demo_assumption", "site_configured", "published_guidance"]
+
+
+class ConditionCheck(ContractModel):
+    """A deterministic working-conditions check for an outdoor task under a versioned policy.
+
+    level: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting), block
+    (start refused), unknown (no usable weather: shown, never read as fine), not_applicable (indoor zone).
+    coverage: fresh / stale (cached value older than the freshness limit, labelled) / unavailable / misaligned (live
+    weather cannot describe a replay's data time) / not_applicable."""
+
+    check_id: str | None = Field(default=None, description="Set when the check was saved (task start, in-task).")
+    task_id: str | None = None
+    level: Literal["clear", "advisory", "acknowledge", "block", "unknown", "not_applicable"]
+    coverage: Literal["fresh", "stale", "unavailable", "misaligned", "not_applicable"]
+    reason: str | None = None
+    findings: list[ConditionFinding] = Field(default_factory=list)
+    weather: WeatherSnapshot | None = None
+    policy_version: str
+    data_time: datetime = Field(description="The session's data clock the conditions were matched to.")
+    checked_at: datetime
+    acknowledged: bool = Field(default=False, description="The operator confirmed starting despite the findings.")
+
+
 class AssignedTask(ContractModel):
     """A task assigned to the session's operator/machine for its trusted shift. Versioned for command concurrency."""
 
@@ -154,6 +226,11 @@ class AssignedTask(ContractModel):
     completed_at: datetime | None = None
     weather: TaskConditions
     duration: TaskDuration
+    outdoor: bool | None = Field(default=None, description="The task's zone is outdoors (working-condition checks).")
+    conditions: ConditionCheck | None = Field(
+        default=None, description="Current working-conditions check for this task (not saved; for display).")
+    start_check: ConditionCheck | None = Field(
+        default=None, description="The saved check the task started under; later weather never rewrites it.")
 
 
 class ShiftInfo(ContractModel):
@@ -331,7 +408,7 @@ class AlertEvidence(ContractModel):
 class Alert(ContractModel):
     alert_id: str
     rule_id: str
-    alert_type: Literal["seatbelt_unfastened", "prolonged_idle", "idle_unbelted"]
+    alert_type: Literal["seatbelt_unfastened", "prolonged_idle", "idle_unbelted", "working_conditions"]
     severity: Literal["warning", "critical"]
     status: Literal["active", "cleared"]
     message: str
@@ -353,6 +430,9 @@ class Alert(ContractModel):
     draft_incident_id: str | None = Field(default=None, description="Automatic incident draft linked to this episode.")
     training_assignment_id: str | None = Field(default=None, description="Lesson assignment linked to this episode.")
     announced: bool = Field(default=True, description="An alert_started announcement was created (not: heard).")
+    details: dict[str, Any] | None = Field(
+        default=None, description="Family-specific evidence saved when the episode opened (e.g. the condition check "
+                                  "of a working_conditions episode). Null for belt/idle episodes.")
 
 
 class MachineStateView(ContractModel):
@@ -375,8 +455,8 @@ class PendingQuestion(ContractModel):
     """The one question Cocoon is waiting on. For incident_severity / incident_time the report is already saved as
     `draft_id` (nothing is lost if the operator never answers)."""
 
-    kind: Literal["incident_description", "incident_severity", "incident_time"]
-    for_action: Literal["log_incident"]
+    kind: Literal["incident_description", "incident_severity", "incident_time", "task_start_ack"]
+    for_action: Literal["log_incident", "start_task"]
     asked_in_turn_id: str
     notify_supervisor: bool = Field(default=False, description="The report was asked to go to a supervisor too.")
     severity: Severity | None = None
@@ -386,6 +466,7 @@ class PendingQuestion(ContractModel):
     draft_id: str | None = None
     then_confirm: bool = Field(default=True, description="Answering also confirms the draft once nothing is missing "
                                                          "(false when the question came from an edit).")
+    task_id: str | None = Field(default=None, description="task_start_ack: the task waiting for confirmation.")
 
 
 # --------------------------------------------------------------------------- turns
@@ -468,7 +549,7 @@ class LessonContentAction(ContractModel):
 
 class PendingCancelledAction(ContractModel):
     type: Literal["pending_cancelled"]
-    cancelled: Literal["log_incident"] | None
+    cancelled: Literal["log_incident", "start_task"] | None
     kept_draft_number: int | None = Field(
         default=None, description="The report stays saved as this draft; cancelling a question never deletes it.")
 
@@ -487,6 +568,15 @@ class TaskTransitionAction(ContractModel):
     task: AssignedTask
     command_id: str
     created: bool = Field(description="False when this exact command was already committed (retry).")
+    conditions: ConditionCheck | None = Field(default=None, description="The saved start check (task_started).")
+
+
+class ConditionsReportAction(ContractModel):
+    """Answer to "what are the conditions?": the check for the next/current task (or the site when unbound)."""
+
+    type: Literal["conditions_report"]
+    check: ConditionCheck
+    task_title: str | None = None
 
 
 class IncidentDraftAction(ContractModel):
@@ -526,8 +616,12 @@ class TaskRejectedAction(ContractModel):
 
     type: Literal["task_rejected"]
     for_action: Literal["task.start", "task.complete"]
-    reason: Literal["no_shift", "no_eligible_task", "invalid_transition"]
+    reason: Literal["no_shift", "no_eligible_task", "invalid_transition", "conditions_block",
+                    "conditions_need_acknowledgement"]
     current_status: str | None = None
+    conditions: ConditionCheck | None = Field(default=None, description="The check that stopped the start.")
+    task_id: str | None = None
+    task_title: str | None = None
 
 
 ActionResult = Annotated[
@@ -546,6 +640,7 @@ ActionResult = Annotated[
         IncidentDraftsAction,
         IdleReasonRecordedAction,
         LessonContentAction,
+        ConditionsReportAction,
         EscalationRequestedAction,
         ClarificationAction,
         CapabilityUnavailableAction,
@@ -602,6 +697,8 @@ class SessionState(ContractModel):
     machine_state: MachineStateView | None = Field(default=None, description="Freshness of machine observations.")
     idle_reasons: list["IdleReason"] = Field(default_factory=list)
     shift_briefing: "ShiftBriefing | None" = None
+    site_conditions: ConditionCheck | None = Field(
+        default=None, description="Site conditions at the session's data clock (null when the session has no site).")
 
 
 class IdleReason(ContractModel):
@@ -769,6 +866,9 @@ class CommandPayload(ContractModel):
                     "against the command's first receipt time and the trusted site time zone.")
     occurred_at: AwareDatetime | None = Field(
         default=None, description="incident.edit: an exact occurrence time picked on the device.")
+    acknowledge_conditions: bool | None = Field(
+        default=None, description="task.start: the operator confirms starting despite findings that need "
+                                  "acknowledgement (never overrides a block).")
 
 
 class SessionCommand(ContractModel):

@@ -152,6 +152,13 @@ Valid new-session request against the development catalog:
 - `occurred_basis`: `time_of_report` (no time stated; the report time is not claimed as the occurrence time), `observation_time`, `operator_relative`, `operator_clock_time`, `operator_entered`, `unresolved`. `occurred_expression` is the operator's phrase verbatim and `occurred_reference_at` the persisted instant it was interpreted against.
 - Taps: `incident.edit` accepts `severity_unknown`, `occurred_expression` (interpreted at the command's first receipt; 422 if it cannot be) and `occurred_at`. `incident.confirm` is 409 `invalid_transition` with details `draft.severity` / `draft.occurred_time` while a fact is missing, and returns the pending `approval` when the draft asked for supervisor review.
 
+### Working conditions (C2)
+
+- `task.start` (voice or `POST .../commands`) runs one working-conditions check (`ConditionCheck`) for outdoor tasks under the versioned policy `policies/working_conditions_v1.json`. `block` → 409 `invalid_transition` (details `conditions.*`), never overridable; `acknowledge` → 409 unless `payload.acknowledge_conditions: true` (voice: "start anyway"). The check that let a task start is saved and returned as `AssignedTask.start_check`; `AssignedTask.conditions` and `/state.site_conditions` are current, unsaved checks.
+- `ConditionCheck.coverage`: `fresh`, `stale` (labelled cached value), `unavailable`, `misaligned` (live weather cannot describe a replay's data time), `not_applicable`. `level: unknown` means no usable weather; it is never "clear".
+- `WeatherSnapshot` values are normalised (°C, %, mm/h, m/s, m). Open-Meteo values are model output for a grid cell with `issued_at: null` (no issue time is provided); fixture values are synthetic.
+- A `working_conditions` alert episode (with `details` = the saved check) is announced when conditions worsen during an outdoor task in progress.
+
 ### Example requests
 
 Bash:

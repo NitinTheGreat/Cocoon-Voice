@@ -100,7 +100,7 @@ def test_voice_task_lifecycle_and_same_turn_retry(tmp_path):
         assert done["type"] == "task_completed" and done["task"]["status"] == "completed"
         again = say(c, sid, "t5", "I finished the task")["actions"][0]
         assert again == {"type": "task_rejected", "for_action": "task.complete", "reason": "no_eligible_task",
-                         "current_status": None}
+                         "current_status": None, "conditions": None, "task_id": None, "task_title": None}
         conn = sqlite3.connect(settings.db_path)
         assert conn.execute("SELECT COUNT(*) FROM command_log WHERE session_id = ?", (sid,)).fetchone()[0] == 2
         conn.close()

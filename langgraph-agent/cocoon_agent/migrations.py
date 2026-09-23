@@ -462,6 +462,43 @@ INCIDENT_CAPTURE: tuple[str, ...] = (
 )
 
 
+SITE_CONDITIONS: tuple[str, ...] = (
+    # Trusted site coordinates for weather lookups (server fixture only; never from a request). NULL = no location.
+    "ALTER TABLE sites ADD COLUMN latitude REAL",
+    "ALTER TABLE sites ADD COLUMN longitude REAL",
+    "ALTER TABLE sites ADD COLUMN location_basis TEXT",
+    # A weather value set exactly as used by a saved check or episode (evidence never changes afterwards).
+    """CREATE TABLE weather_records (
+    record_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK (provider IN ('open_meteo', 'fixture')),
+    kind TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL
+)""",
+    # One working-conditions check (task start, or an in-task re-check) with its findings and weather evidence.
+    """CREATE TABLE condition_checks (
+    check_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    task_id TEXT,
+    purpose TEXT NOT NULL CHECK (purpose IN ('task_start', 'in_task')),
+    level TEXT NOT NULL,
+    coverage TEXT NOT NULL,
+    check_json TEXT NOT NULL,
+    weather_record_id TEXT,
+    policy_version TEXT NOT NULL,
+    data_time TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+    created_at TEXT NOT NULL
+)""",
+    # The check that let a task start (kept even if the weather or policy changes later).
+    "ALTER TABLE task_assignments ADD COLUMN start_check_id TEXT",
+    # Family-specific evidence of an episode (e.g. the condition check behind a working-conditions warning), saved
+    # once when it opens. NULL for belt/idle episodes, whose evidence is in evidence_json.
+    "ALTER TABLE alerts ADD COLUMN details_json TEXT",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -478,6 +515,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(6, "machine_episodes", MACHINE_EPISODES),
     Migration(7, "operator_context", OPERATOR_CONTEXT),
     Migration(8, "incident_capture", INCIDENT_CAPTURE),
+    Migration(9, "site_conditions", SITE_CONDITIONS),
 )
 
 

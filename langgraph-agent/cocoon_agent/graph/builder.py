@@ -19,7 +19,7 @@ from langgraph.graph.message import add_messages
 
 from ..api import schemas as s
 from ..incident_time import interpret
-from ..store import InvalidTransition, NotFound, OccurrenceTime, Store, iso, utcnow
+from ..store import ConditionsGate, InvalidTransition, NotFound, OccurrenceTime, Store, iso, utcnow
 from .brain import Brain, TurnContext
 
 
@@ -56,7 +56,9 @@ def _history(state: CocoonState) -> list[tuple[str, str]]:
     return out
 
 
-def build_graph(store: Store, brain: Brain):
+def build_graph(store: Store, brain: Brain, conditions=None):
+    """`conditions` (cocoon_agent.conditions.Conditions) enables the working-conditions gate on task starts and the
+    conditions intent; without it task starts are ungated (as before Batch C)."""
     def _session(state: CocoonState) -> s.Session:
         session = store.get_session(state["session_id"])
         if session is None:
@@ -107,7 +109,7 @@ def build_graph(store: Store, brain: Brain):
         intent = state["route"]["intent"]
         if intent == "answer_pending":
             return "log_incident"  # the only pending question kind
-        if intent in ("next_task", "list_tasks", "start_task", "complete_task"):
+        if intent in ("next_task", "list_tasks", "start_task", "complete_task", "conditions"):
             return "tasks"
         if intent in ("review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm"):
             return "drafts"
@@ -120,6 +122,8 @@ def build_graph(store: Store, brain: Brain):
         shared demo queue for next_task. Writes go through the same command executor as the tap route."""
         session = _session(state)
         intent = state["route"]["intent"]
+        if intent == "conditions" and not session.shift_id:
+            return {"actions": [_conditions_report(session, None)]}
         if not session.shift_id:
             if intent == "next_task":
                 return {"actions": [s.NextTaskAction(type="next_task", task=store.next_task()).model_dump(mode="json")]}
@@ -130,6 +134,13 @@ def build_graph(store: Store, brain: Brain):
                                               for_action="task.start" if intent == "start_task" else "task.complete")
             return {"actions": [action.model_dump(mode="json")]}
         assigned = store.list_assigned_tasks(session.shift_id)
+        if conditions is not None:
+            assigned = [t.model_copy(update={"conditions": conditions.check(session, t)}) if t.status != "completed"
+                        else t for t in assigned]
+        if intent == "conditions":
+            current = next((t for t in assigned if t.status == "in_progress"), None) or \
+                next((t for t in assigned if t.status == "scheduled"), None)
+            return {"actions": [_conditions_report(session, current)]}
         if intent in ("next_task", "list_tasks"):
             if intent == "next_task":
                 in_progress = [t for t in assigned if t.status == "in_progress"]
@@ -139,7 +150,12 @@ def build_graph(store: Store, brain: Brain):
             action = s.AssignedTasksAction(type="assigned_tasks", scope="next" if intent == "next_task" else "all",
                                            tasks=chosen, shift_bound=True)
             return {"actions": [action.model_dump(mode="json")]}
-        kind = "task.start" if intent == "start_task" else "task.complete"
+        if intent == "start_task":
+            pending = state.get("pending") or {}
+            ack_for = pending.get("task_id") if pending.get("kind") == "task_start_ack" else None
+            ack = bool(state["route"].get("acknowledge_conditions")) and ack_for is not None
+            return _start(state, session, ack_for if ack else None, ack)
+        kind = "task.complete"
         command_id = f"{state['turn_id']}:{kind}"
         try:
             result, duplicate = _command(state, kind, f"{kind}:selector",
@@ -188,6 +204,45 @@ def build_graph(store: Store, brain: Brain):
             actions.append(s.EscalationRequestedAction(type="escalation_requested", approval=result["approval"],
                                                        created=not duplicate).model_dump(mode="json"))
         return actions
+
+    def _conditions_report(session: s.Session, task: s.AssignedTask | None) -> dict[str, Any]:
+        check = task.conditions if task is not None and task.conditions is not None else (
+            conditions.check(session, task) if conditions is not None else None)
+        if check is None:
+            action = s.CapabilityUnavailableAction(type="capability_unavailable", capability="weather_forecast")
+            return action.model_dump(mode="json")
+        return s.ConditionsReportAction(type="conditions_report", check=check,
+                                        task_title=task.title if task else None).model_dump(mode="json")
+
+    def _start(state: CocoonState, session: s.Session, task_id: str | None, ack: bool) -> CocoonState:
+        """Start the next scheduled task (or the one waiting for confirmation) through the same command and the same
+        working-conditions gate as a tap. A finding that needs acknowledgement leaves one pending question."""
+        kind = "task.start"
+        command_id = f"{state['turn_id']}:{kind}"
+        gate = conditions.gate_for(session) if conditions is not None else None
+        fingerprint = f"{kind}:selector" if task_id is None else f"{kind}:{task_id}:ack"
+        pending = state.get("pending")
+        keep = None if pending and pending.get("kind") == "task_start_ack" else pending
+        try:
+            result, duplicate = _command(state, kind, fingerprint,
+                                         Store.task_transition(session, kind, task_id, None, gate, acknowledged=ack))
+        except NotFound:
+            action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason="no_eligible_task")
+            return {"actions": [action.model_dump(mode="json")], "pending": keep}
+        except InvalidTransition as exc:
+            action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason="invalid_transition",
+                                          current_status=exc.current_status)
+            return {"actions": [action.model_dump(mode="json")], "pending": keep}
+        except ConditionsGate as exc:
+            action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason=exc.reason,
+                                          conditions=exc.check, task_id=exc.task.task_id, task_title=exc.task.title)
+            if exc.reason == "conditions_need_acknowledgement":
+                keep = s.PendingQuestion(kind="task_start_ack", for_action="start_task",
+                                         asked_in_turn_id=state["turn_id"], task_id=exc.task.task_id).model_dump()
+            return {"actions": [action.model_dump(mode="json")], "pending": keep}
+        action = s.TaskTransitionAction(type="task_started", task=result["task"], command_id=command_id,
+                                        created=not duplicate, conditions=result.get("conditions"))
+        return {"actions": [action.model_dump(mode="json")], "pending": keep}
 
     async def log_incident(state: CocoonState) -> CocoonState:
         """Ordered child actions: the report, then (if asked) a linked pending supervisor-review request. Each child
@@ -307,6 +362,13 @@ def build_graph(store: Store, brain: Brain):
                     else [_draft_action(kind, saved, created=False)]}
         open_drafts = store.list_drafts(state["session_id"])
         options = [f"draft number {d.draft_number}" for d in open_drafts]
+        if intent == "affirm" and pending.get("kind") == "task_start_ack":
+            if not open_drafts:  # the only thing waiting is the start confirmation
+                return _start(state, _session(state), pending.get("task_id"), True)
+            action = s.ClarificationAction(type="clarification_needed", for_action="affirm",
+                                           reason="several_candidates",
+                                           options=options + ["starting the task despite the conditions"])
+            return {"actions": [action.model_dump(mode="json")]}
         if intent == "affirm":
             if state.get("pending"):
                 if not open_drafts:  # "yes" is not an answer to "what happened?": ask again, keep the question
@@ -436,7 +498,10 @@ def build_graph(store: Store, brain: Brain):
         sid = state["session_id"]
         announced = store.announced_alerts(sid)  # newest announcement first
         hint = state["route"].get("alert_hint")
-        families = {"seatbelt": {"seatbelt_unfastened"}, "idle": {"prolonged_idle", "idle_unbelted"}}
+        families = {"seatbelt": {"seatbelt_unfastened"}, "idle": {"prolonged_idle", "idle_unbelted"},
+                    "weather": {"working_conditions"}, "proximity": {"proximity"},
+                    "motion": {"sudden_start", "sudden_stop"}, "slope": {"steep_slope"},
+                    "fuel": {"abnormal_fuel_per_cycle"}, "repeat": {"repeated_violations"}}
         if hint:
             # A linked combined episode (e.g. idle + unbelted) was covered by its parent's announcement; it is still
             # explainable on its own evidence when the operator names it.
@@ -451,7 +516,8 @@ def build_graph(store: Store, brain: Brain):
         if len(candidates) > 1:
             names = {"seatbelt_unfastened": "the seatbelt warning", "prolonged_idle": "the idling warning",
                      "idle_unbelted": "the idling warning"}
-            options = list(dict.fromkeys(names[x[0].alert_type] for x in candidates))
+            options = list(dict.fromkeys(names.get(x[0].alert_type, f"the {x[0].alert_type.replace('_', ' ')} warning")
+                                         for x in candidates))
             action = s.ClarificationAction(type="clarification_needed", for_action="explain_alert",
                                            reason="several_candidates", options=options)
             return {"actions": [action.model_dump(mode="json")]}

@@ -1,5 +1,6 @@
 """FastAPI application exposing the v1 contract."""
 
+import asyncio
 import logging
 import re
 import uuid
@@ -19,10 +20,12 @@ from .. import __version__
 from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
+from ..conditions import Conditions
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
 from ..store import Store
+from ..weather import OpenMeteoWeather, WeatherService, load_conditions_policy
 from . import schemas as s
 
 log = logging.getLogger("cocoon_agent.api")
@@ -58,11 +61,13 @@ def _error_response(status: int, code: str, message: str, retryable: bool, reque
 
 
 def create_app(settings: Settings | None = None, brain: Brain | None = None,
-               clock: Callable[[], datetime] | None = None) -> FastAPI:
+               clock: Callable[[], datetime] | None = None, weather: WeatherService | None = None) -> FastAPI:
     """`brain` overrides the configured router/composer (tests inject slow or failing brains).
-    `clock` overrides the wall clock used for token expiry (tests); it is never the data/replay clock."""
+    `clock` overrides the wall clock used for token expiry (tests); it is never the data/replay clock.
+    `weather` overrides the configured weather source (tests inject a live adapter with a fake transport)."""
     settings = settings or get_settings()
     injected_brain = brain
+    injected_weather = weather
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -88,10 +93,24 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
             catalog_issue = exc.issue
             log.error("catalog NOT loaded (issue=%s): %s; new sessions will be refused", exc.issue, exc.message)
         brain = injected_brain or build_brain(settings)
+        live = None
+        if settings.weather_mode == "live":
+            live = OpenMeteoWeather(timeout=settings.weather_timeout_seconds,
+                                    fresh_seconds=settings.weather_fresh_seconds,
+                                    stale_limit_seconds=settings.weather_stale_limit_seconds,
+                                    misalign_seconds=settings.weather_misalign_seconds)
+        weather = injected_weather or WeatherService(settings.weather_mode, fixture_path=settings.weather_fixture_path,
+                                                     live=live)
+        conditions = Conditions(store, weather, load_conditions_policy(settings.conditions_policy_path))
+        refresher = None
+        if weather.live is not None:  # bounded background refresh; lookups never wait for it
+            refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
+                                                              utcnow))
+        log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
-            graph = build_graph(store, brain).compile(checkpointer=saver)
+            graph = build_graph(store, brain, conditions=conditions).compile(checkpointer=saver)
             app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
-                                              catalog_issue=catalog_issue)
+                                              catalog_issue=catalog_issue, conditions=conditions)
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -99,6 +118,8 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
             try:
                 yield
             finally:
+                if refresher is not None:
+                    refresher.cancel()
                 if hasattr(brain, "aclose"):
                     await brain.aclose()
                 store.close()

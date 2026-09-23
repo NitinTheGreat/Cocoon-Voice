@@ -29,6 +29,8 @@ def make_settings(data_dir: Path, **overrides) -> Settings:
         "COCOON_DATA_DIR": str(data_dir),
         "COCOON_LLM_MODE": "mock",
         "COCOON_TURN_POLL_AFTER_MS": 50,
+        # Tests are independent of the wall-clock hour: weather is off unless a test selects the fixture/live source.
+        "COCOON_WEATHER_MODE": "off",
         "DATASET_ROOT": str(FIXTURE_CATALOG),
         "DATASET_MANIFEST_SHA256": FIXTURE_MANIFEST_SHA256,
         **overrides,
