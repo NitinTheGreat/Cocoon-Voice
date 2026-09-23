@@ -2,6 +2,37 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-24 — M9: Cartesia 401 root cause and fix (branch `voice`)
+
+- **Where the message came from:** `doctor.check_cartesia` mapped any 401/403 from `POST /tts/bytes` to "API key
+  rejected" and discarded the body. The 401 itself comes directly from Cartesia (JSON body "Invalid API key.",
+  `x-request-id` header); on the websocket it is a handshake 401.
+- **Key trace (booleans only):** no `CARTESIA_API_KEY` in the process environment before `load_dotenv`, nor in HKCU or
+  HKLM environment; `.env` (resolved `livekit-voice/.env`, no BOM) has one assignment, no inline comment; value length 29,
+  `sk_car_` prefix, `[A-Za-z0-9_-]` only, no whitespace/quotes/`Bearer`; `.env` value == settings `get_secret_value()`
+  == `cartesia.TTS._opts.api_key`; not the masked `**********`; doctor and worker share `get_settings()`/`build_tts()`.
+- **Provider matrix with the resolved key:**
+  - raw key → 401 "Invalid API key" on `/tts/bytes` (versions 2025-04-16, 2026-08-14; `X-API-Key` and Bearer) and
+    websocket handshake 401 (both versions, both headers) — identical to a fabricated `sk_car_` key;
+  - raw key → `GET /voices` 200 (a fabricated key gets 401 "You must be logged in"), `POST /access-token` 200;
+  - minted TTS access token → `/tts/bytes` 200 (with `X-API-Key` or Bearer, both versions) and websocket streaming
+    7–11 audio chunks per request (header or `access_token` query, both versions). Max token TTL is 3600 s
+    (provider 400 for larger values).
+- **Correction:** entries M7/M8 said `GET /voices` "does not validate keys". That was wrong: it validates keys; the
+  raw key is authentic but rejected specifically by the TTS endpoints.
+- **Fix:** `cocoon_voice/cartesia_auth.py` (`CARTESIA_AUTH=access_token` default): mint a TTS-granted token, give it to
+  the plugin, refresh 10 min before expiry and invalidate the plugin's websocket pool; worker, smoke and benchmark use
+  it; doctor reports raw-key HTTP (WARN with provider message + request_id), token mint, token HTTP and plugin
+  websocket streaming separately. `scripts/cartesia_key_check.py` tests a key from a hidden prompt.
+- **Checks run:** `pytest` → 143 passed, 1 skipped (6 new in `test_cartesia_auth.py`). Doctor: vertex PASS (2968 ms;
+  one earlier run took 45872 ms, not reproduced), assemblyai PASS, cartesia_raw_key WARN 401, cartesia_token PASS,
+  cartesia_http PASS, cartesia_stream PASS (first audio 288 / 355 ms), livekit PASS. Plugin `synthesize()`: raw key
+  401, token 2.19 s audio in 473 ms. Smoke: vertex PASS, cartesia PASS (first audio 229.9 ms, 7.5 s audio),
+  assemblyai PASS (transcript "CAT 320 excavator, unit E742. Check the hydraulic hose at 3,500 hours, then walk around
+  the machine."; WER 0.417 only from digits vs spelled numbers; final 762.6 ms after audio end).
+- **Remaining provider-side question:** why Cartesia rejects raw keys on TTS for these accounts is not explained by
+  their docs; request IDs are in this log for a support ticket. Next: Playground checklist.
+
 ## 2026-09-23 21:30 UTC — M8: livekit-wakeword acoustic mode; Cartesia key diagnosis (branch `voice`)
 
 - **Decision (user):** use `livekit-wakeword` instead of Porcupine (Picovoice needs a company email).

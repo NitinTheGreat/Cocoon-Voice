@@ -33,7 +33,8 @@ browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one 
 | Vertex latency | Measured through the real plugin: warm TTFT p50 668 ms / p95 695 ms (n=9, prewarmed). |
 | VAD against synthetic cab noise | 0 false speech detections; speech kept as one segment down to −5 dB SNR (offline, synthetic). |
 | AssemblyAI live | Verified: the local "Hey Cat, what should I check…" clip was transcribed exactly. |
-| **Dispatch, TTS, real speech in Playground** | **Not verified.** Cartesia rejects the configured key (HTTP 401 "Invalid API key"). |
+| Cartesia TTS | Works through minted access tokens (`CARTESIA_AUTH=access_token`): plugin HTTP synthesis and websocket streaming verified live, first audio 230–355 ms. The raw key is rejected by Cartesia's TTS endpoints (see below). |
+| **Dispatch and real speech in Playground** | **Not verified yet** (next step). |
 | **Krisp noise filtering** | **Not verified.** It constructs on native Windows; filtering happens only inside a LiveKit Cloud session. |
 | **Acoustic wake (livekit-wakeword)** | Implemented and verified offline with LiveKit's real `hey_livekit` model (detection, rejection, threaded routing). **"Hey Cat" model not trained yet** (`wakeword/README.md`). |
 
@@ -79,7 +80,7 @@ With uv instead: `uv venv --python 3.11 .venv`, then `uv pip sync requirements-d
 |---|---|---|
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Worker, dispatch helper | LiveKit Cloud project → Settings → API keys. The browser (Console or Playground) must use this **same project**. |
 | `ASSEMBLYAI_API_KEY` | Worker (STT), smoke, benchmark `--stt` | https://www.assemblyai.com/app/api-keys |
-| `CARTESIA_API_KEY` | Worker (TTS), smoke, benchmark | https://play.cartesia.ai/keys |
+| `CARTESIA_API_KEY` | Worker (TTS), smoke, benchmark | https://play.cartesia.ai/keys (used to mint TTS access tokens; `CARTESIA_AUTH`) |
 | Vertex AI | Worker (brain), doctor, smoke, benchmark | **No key.** Uses existing Application Default Credentials (`gcloud auth application-default login`) with `GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, `GOOGLE_GENAI_USE_VERTEXAI=true`. `GOOGLE_API_KEY` and `GEMINI_API_KEY` are rejected. Nothing here reads the ADC file. |
 | `LIVEKIT_WAKEWORD_MODEL_PATH` | `WAKE_MODE=livekit_wakeword` only | No key. A `.onnx` you train (`wakeword/README.md`) |
 | `PICOVOICE_ACCESS_KEY`, `PORCUPINE_KEYWORD_PATH` | `WAKE_MODE=porcupine` only | Picovoice Console (needs a company email) |
@@ -88,6 +89,28 @@ With uv instead: `uv venv --python 3.11 .venv`, then `uv pip sync requirements-d
 The settings are typed and validated. The worker refuses to start and lists the **names** of missing or invalid settings. `VOICE_PROFILE=production` rejects transcript wake mode, degraded audio, preemptive generation, transcript logging and recording.
 
 `COCOON_AGENT_NAME` is a deprecated alias of `LIVEKIT_AGENT_NAME`; they must not disagree. These phase-0 names are ignored with a warning: `COCOON_STT_MODEL`, `COCOON_TTS_MODEL`, `COCOON_TTS_VOICE`, `COCOON_STT_LANGUAGE` and `COCOON_GREETING`.
+
+### Cartesia authentication (why tokens)
+
+Evidence from 2026-09-24:
+- For our Cartesia keys, **every** synthesis path rejects the raw API key with `401 "Invalid API key"`. That covers `/tts/bytes` and `/tts/websocket`, `Cartesia-Version` 2025-04-16 and 2026-08-14, and both the `X-API-Key` and `Authorization: Bearer` headers.
+- The same key authenticates `GET /voices` (a fake key gets 401 there) and `POST /access-token`.
+- A TTS-granted access token minted from it synthesizes over HTTP and streams over the websocket, including when sent in the `X-API-Key` header the LiveKit plugin uses.
+
+So with `CARTESIA_AUTH=access_token` (default), each session:
+1. Mints a 1-hour token.
+2. Hands the token to the plugin.
+3. Refreshes it 10 minutes before expiry and recycles pooled websocket connections.
+
+The raw key only goes to `/access-token` and is never logged. What happened was checked and ruled out:
+- A stale variable in the process or Windows environment.
+- A masked `SecretStr`.
+- Whitespace, quotes or a `Bearer` prefix.
+- A header mix-up.
+
+The cause is on Cartesia's side, and our key tracing cannot explain it further.
+
+To check any key without putting it in `.env` or a command line, run `python scripts\cartesia_key_check.py`. It uses a hidden prompt and reports each path separately.
 
 ## Commands (from `livekit-voice/`, venv active)
 

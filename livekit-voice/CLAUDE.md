@@ -130,7 +130,8 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Worker registration | DONE | `python -m cocoon_voice.agent start` registered `cocoon-voice` (2026-09-23). |
 | Wake gate, turn policy, streaming guard, Porcupine plumbing, metrics | DONE (offline) | 127 tests incl. real `AgentSession` runs; see `docs/work-log.md`. |
 | Latency | PARTIAL | Vertex measured (warm TTFT p50 668 ms, n=9); STT/TTS/playout unmeasured. `docs/voice-latency-report.md`. |
-| Live dispatch + speech in Playground | BLOCKED | AssemblyAI verified live; Cartesia returns 401 "Invalid API key" for the configured key. |
+| Cartesia TTS | DONE (live) | Raw key rejected by Cartesia /tts/* (401); minted TTS access tokens work for plugin HTTP + websocket streaming (`cartesia_auth.py`). |
+| Live dispatch + speech in Playground | TODO | All providers pass doctor + smoke; run the README Playground checklist. |
 | Acoustic wake | IN_PROGRESS | Decision: livekit-wakeword (Porcupine needs a company email). Implemented + verified with real `hey_livekit` model; `Hey Cat` model must be trained (`wakeword/README.md`). |
 | Krisp effect | BLOCKED | Needs a live LiveKit Cloud session. |
 
