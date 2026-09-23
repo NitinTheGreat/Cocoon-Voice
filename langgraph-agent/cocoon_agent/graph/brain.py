@@ -1,4 +1,4 @@
-"""Routing and response wording: one live provider (Claude) and an explicit mock.
+"""Routing and response wording: live Gemini on Vertex AI (selected), legacy Claude, and an explicit mock.
 
 The brain only classifies and words responses. Business mutations happen in the
 graph's action nodes through validated Store methods, never in model output.
@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 import anthropic
+import httpx
 from pydantic import BaseModel, Field
 
 from ..api.schemas import Alert, Lesson
@@ -155,7 +157,7 @@ def _template(a: dict[str, Any]) -> str:
     raise ValueError(f"unknown action type {kind}")
 
 
-# ---------------------------------------------------------------------- live (Claude)
+# ---------------------------------------------------------------------- shared live prompts + legacy Claude
 
 ROUTER_SYSTEM = """You route utterances from a construction equipment operator to Cocoon, a voice assistant in the cab.
 Choose exactly one intent:
@@ -240,5 +242,109 @@ class AnthropicBrain:
         return resp.parsed_output
 
 
+# ---------------------------------------------------------------------- live (Gemini on Vertex AI)
+
+
+_VERTEX_DECLINED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
+
+
+class VertexBrain:
+    """Gemini on Vertex AI through the google-genai SDK and Application Default Credentials.
+
+    Same contract as the other brains: classify and word only, with schema-validated structured output. Every
+    provider failure becomes LLMUnavailable (turn fails with retryable 503); there is never a fallback to mock."""
+
+    mode: Literal["live", "mock"] = "live"
+
+    def __init__(self, settings: Settings, client: Any = None):
+        from google import genai
+        from google.genai import types
+
+        self._settings = settings
+        self._types = types
+        if client is None:
+            # Vertex is explicit: a GOOGLE_API_KEY in the environment can never switch this to the Developer API.
+            client = genai.Client(
+                vertexai=True, project=settings.google_cloud_project, location=settings.google_cloud_location,
+                http_options=types.HttpOptions(timeout=int(settings.llm_timeout_seconds * 1000)),
+            )
+        self._client = client
+
+    async def aclose(self) -> None:
+        aclose = getattr(self._client.aio, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    async def route(self, ctx: TurnContext) -> RouteDecision:
+        payload = {
+            "pending_question": ctx.pending,
+            "latest_alert": ctx.latest_alert.model_dump(mode="json", include={"message", "status", "started_at"})
+            if ctx.latest_alert else None,
+            "lesson_catalog": [{"lesson_id": l.lesson_id, "title": l.title} for l in ctx.lessons],
+            "recent_conversation": [{"role": r, "text": t} for r, t in ctx.history[-6:]],
+            "utterance": ctx.text,
+        }
+        return await self._parse(ROUTER_SYSTEM, json.dumps(payload), RouteDecision)
+
+    async def compose(self, ctx: TurnContext, actions: list[dict[str, Any]]) -> str:
+        payload = {"operator_said": ctx.text, "ACTION_RESULTS": actions}
+        out = await self._parse(COMPOSER_SYSTEM, json.dumps(payload, default=str), ComposedSpeech)
+        return clean_speech(out.speech)
+
+    def _config(self, system: str, schema: type[BaseModel]):
+        t = self._types
+        level = self._settings.vertex_thinking_level
+        return t.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            response_schema=schema,
+            max_output_tokens=self._settings.vertex_max_output_tokens,
+            temperature=0.2,
+            thinking_config=None if level == "model_default" else t.ThinkingConfig(thinking_level=level),
+            automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
+        )
+
+    async def _parse(self, system: str, content: str, schema: type[BaseModel]) -> Any:
+        from google.auth import exceptions as auth_errors
+        from google.genai import errors as genai_errors
+
+        try:
+            resp = await self._client.aio.models.generate_content(
+                model=self._settings.vertex_model, contents=content, config=self._config(system, schema))
+        except auth_errors.GoogleAuthError as exc:
+            raise LLMUnavailable("Vertex AI credentials are not available") from exc
+        except genai_errors.APIError as exc:
+            code = getattr(exc, "code", None)
+            if code in (401, 403):
+                raise LLMUnavailable("Vertex AI rejected the credentials or project access") from exc
+            if code == 429:
+                raise LLMUnavailable("Vertex AI quota is exhausted; retry shortly") from exc
+            raise LLMUnavailable(f"Vertex AI returned HTTP {code}") from exc
+        except (httpx.HTTPError, TimeoutError, OSError) as exc:
+            raise LLMUnavailable("could not reach Vertex AI") from exc
+        candidate = resp.candidates[0] if resp.candidates else None
+        reason = str(getattr(getattr(candidate, "finish_reason", None), "name", "") or "")
+        if reason in _VERTEX_DECLINED:
+            raise LLMUnavailable("the model declined this request")
+        parsed = resp.parsed
+        if reason == "MAX_TOKENS" or not isinstance(parsed, schema):
+            raise LLMUnavailable("the model did not return a complete structured answer")
+        log.info("llm call ok provider=vertex model=%s finish=%s", self._settings.vertex_model, reason or "?")
+        return parsed
+
+
 def build_brain(settings: Settings) -> Brain:
-    return AnthropicBrain(settings) if settings.llm_mode == "live" else MockBrain()
+    if settings.llm_mode != "live":
+        return MockBrain()
+    if settings.llm_provider == "anthropic":
+        return AnthropicBrain(settings)
+    if settings.google_application_credentials is not None and "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+        if not settings.google_application_credentials.is_file():
+            raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS does not point to a file")
+        # Standard ADC discovery reads this variable; the backend itself never opens the file.
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(settings.google_application_credentials)
+    try:
+        return VertexBrain(settings)
+    except Exception as exc:  # e.g. google.auth DefaultCredentialsError: no usable ADC
+        raise RuntimeError(f"live Vertex mode cannot start: {type(exc).__name__} "
+                           "(check GOOGLE_APPLICATION_CREDENTIALS / gcloud ADC and GOOGLE_CLOUD_PROJECT)") from exc

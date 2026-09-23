@@ -5,6 +5,7 @@ langgraph
 langgraph-checkpoint-sqlite
 langchain-core
 anthropic
+google-genai
 pydantic
 pydantic-settings
 python-dotenv

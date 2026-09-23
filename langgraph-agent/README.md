@@ -10,7 +10,7 @@ cocoon_agent/
   api/app.py       routes, bearer auth, X-Request-ID, error envelope, /healthz /readyz
   service.py       per-session ordering, turn idempotency (200/202/409), telemetry episodes
   graph/builder.py typed StateGraph: load_context -> route -> {next_task | log_incident | training | explain_alert | cancel_pending} -> compose
-  graph/brain.py   live router/wording (Claude via the Anthropic SDK) and the explicit MockBrain
+  graph/brain.py   live router/wording (Gemini on Vertex AI; legacy Claude option) and the explicit MockBrain
   store.py         SQLite repositories, demo seed, idempotent writes (unique keys on turn_id / event_id)
   migrations.py    versioned cocoon.db migrations (schema_migrations ledger); see docs/MIGRATIONS.md
   catalog.py       verified read-only machine/operator catalog + trusted site/shift bindings
@@ -72,9 +72,12 @@ The server binds to `127.0.0.1`. To let a voice worker on another machine reach 
 | `COCOON_LLM_MODE` | Behaviour | Needs |
 |---|---|---|
 | `mock` (default) | Deterministic keyword router and templated wording that run **through the same graph and tools**. Reported as `llm_mode: "mock"` in `/readyz`, every turn result and the state, and logged at startup. | nothing |
-| `live` | Claude (`COCOON_LLM_MODEL`, default `claude-opus-5`, effort `low`) routes with structured output and words the reply from the saved action results. Server-side refusal fallbacks are on by default (`COCOON_LLM_FALLBACKS=default`). | `ANTHROPIC_API_KEY` |
+| `live` (`COCOON_LLM_PROVIDER=vertex`, default) | Gemini on Vertex AI (`VERTEX_MODEL`, default `gemini-3.8-flash`, `VERTEX_THINKING_LEVEL=low`) routes with schema-validated JSON output and words the reply from the saved action results. Uses Application Default Credentials through the Google SDK; the backend never opens the credential file. | `GOOGLE_CLOUD_PROJECT` (+ `GOOGLE_CLOUD_LOCATION`, default `global`) and ADC: gcloud's default location, or `GOOGLE_APPLICATION_CREDENTIALS=<path>` |
+| `live` (`COCOON_LLM_PROVIDER=anthropic`, legacy) | Claude (`COCOON_LLM_MODEL`, default `claude-opus-5`, effort `low`). | `ANTHROPIC_API_KEY` |
 
 Live mode **never** falls back to mock answers. If the provider fails, refuses or returns unusable output, the turn fails with `503 llm_unavailable` (retryable), and the voice worker tells the operator it cannot confirm yet. The model only classifies and words replies. Every mutation happens in validated Python functions in `store.py`, and the reply is composed only after the record is saved.
+
+**Vertex quota (observed 2026-09-24):** project `orbit-507316` currently allows only about 2 `gemini-3.8-flash` calls in quick succession before returning 429. Each turn makes 2 calls (route, then compose), so a live turn often ends in retryable `503 llm_unavailable` ("Vertex AI quota is exhausted"). Single calls took about 2–15 s. Ask for a quota increase, or set `VERTEX_MODEL` to another listed model, before a live voice demo.
 
 ## Develop without audio
 
@@ -187,4 +190,4 @@ The tests cover:
 
 ## Environment variables
 
-Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live` and `ANTHROPIC_API_KEY`. Everything else has a default; see `.env.example`.
+Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live`, `GOOGLE_CLOUD_PROJECT` and ADC (see "LLM modes"). Everything else has a default; see `.env.example`.
