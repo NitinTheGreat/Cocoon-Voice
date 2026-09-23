@@ -86,11 +86,11 @@ This returns `processing`, `completed` (the same body as above) or `failed` (wit
 | 404 `not_found` | Unknown session or turn | Re-create or retrieve the session by key |
 | 409 `session_conflict` / `idempotency_conflict` | Key or `turn_id` reused with different data | Client bug, no retry |
 | 422 `unknown_machine` / `unknown_operator` / `validation_error` | Bad IDs or body | Configuration error, no retry |
-| 503 `llm_unavailable`, `retryable: true` | The model could not answer: capacity (429), a deadline or a provider error. **No record was created by the failed attempt.** | Retry the same `turn_id` a limited number of times (the worker's `COCOON_BACKEND_MAX_ATTEMPTS`), then say "I can't confirm that right now". Never claim success or failure. |
+| 503 `llm_unavailable`, `retryable: true` | The model could not answer: capacity (429), a deadline or a provider error. Usually raised while routing, before any write; but if the error `details` list `action_records` (also on `GET .../turns/{id}`), those writes were committed and are kept. | Retry the same `turn_id` a limited number of times (the worker's `COCOON_BACKEND_MAX_ATTEMPTS`), then say "I can't confirm that right now". Never claim success or failure. |
 | 503 `catalog_unavailable` | The backend has no verified catalog (new sessions only) | Stop; the backend must be fixed |
 | 503 `auth_unavailable` (retryable) / 500 `internal_error` (retryable) | Transient backend fault | Retry with backoff, same IDs |
 
-With the default `COCOON_LLM_COMPOSE=template`, the reply is worded from the saved action, so a turn that saved an incident cannot then fail while wording the answer. A 503 means nothing was saved by that attempt, and the same `turn_id` can safely be retried.
+With the default `COCOON_LLM_COMPOSE=template`, the reply is worded from the saved action, so a turn that saved an incident cannot then fail while wording the answer. Do **not** read a 503 as "nothing was saved": a turn deadline or a model-worded reply (`COCOON_LLM_COMPOSE=model`) can fail after writes committed. Every failed turn lists its committed writes in `action_records` (and in the error `details`), and retrying the same `turn_id` reuses them instead of repeating them (C1).
 
 ### 5. Announcements: `GET /v1/sessions/{session_id}/events?after={cursor}&limit=20`
 

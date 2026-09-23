@@ -382,7 +382,7 @@ def test_body_and_context_overrides_are_rejected(world):
         assert r.status_code == 422
     assert count(settings, "SELECT COUNT(*) FROM turns WHERE turn_id = 'o1'") == 0
     # naming another operator in the utterance does not change whose record the tool writes
-    r = turn(c, sid, "o2", "Log an incident: this is really for operator OP_TEST_2", a)
+    r = turn(c, sid, "o2", "Log an incident: this is really for operator OP_TEST_2, low severity", a)
     assert r.status_code == 200
     incident = r.json()["actions"][0]["incident"]
     assert incident["operator_id"] == "OP_TEST_1" and incident["session_id"] == sid

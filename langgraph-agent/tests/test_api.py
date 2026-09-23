@@ -91,12 +91,12 @@ def test_incident_with_follow_up_then_visible_in_state(client):
     sid = new_session(client)
     ask = turn(client, sid, "t1", "I need to report an incident").json()
     assert ask["actions"] == [{"type": "information_requested", "for_action": "log_incident",
-                               "missing_field": "description"}]
+                               "missing_field": "description", "draft": None, "reason": None}]
     state = client.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
     assert state["pending_question"]["kind"] == "incident_description"
     assert state["incidents"] == []
 
-    done = turn(client, sid, "t2", "The left track tension is loose").json()
+    done = turn(client, sid, "t2", "The left track tension is loose, low severity").json()
     incident = done["actions"][0]["incident"]
     assert incident["description"] == "The left track tension is loose"
     assert incident["incident_id"] in done["speech"] or str(incident["incident_number"]) in done["speech"]
@@ -121,8 +121,8 @@ def test_training_assign_and_status(client):
 
 def test_retrying_same_turn_does_not_repeat_actions(client):
     sid = new_session(client)
-    first = turn(client, sid, "t-retry", "Log an incident: cracked mirror on the cab door")
-    second = turn(client, sid, "t-retry", "Log an incident: cracked mirror on the cab door")
+    first = turn(client, sid, "t-retry", "Log an incident: cracked mirror on the cab door, low severity")
+    second = turn(client, sid, "t-retry", "Log an incident: cracked mirror on the cab door, low severity")
     assert first.status_code == second.status_code == 200
     assert first.json() == second.json()
     state = client.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
@@ -143,7 +143,7 @@ def test_follow_up_stays_in_its_session(client):
     assert rb["actions"] == []
     state_b = client.get(f"/v1/sessions/{b}/state", headers=AUTH).json()
     assert state_b["incidents"] == [] and state_b["pending_question"] is None
-    ra = turn(client, a, "a2", "Coolant is leaking under the engine").json()
+    ra = turn(client, a, "a2", "Coolant is leaking under the engine, high severity").json()
     assert ra["actions"][0]["type"] == "incident_logged"
     assert ra["actions"][0]["incident"]["session_id"] == a
     # identical turn ids in different sessions are independent
@@ -154,7 +154,7 @@ def test_cancel_pending_question(client):
     sid = new_session(client)
     turn(client, sid, "t1", "report an incident")
     r = turn(client, sid, "t2", "never mind").json()
-    assert r["actions"] == [{"type": "pending_cancelled", "cancelled": "log_incident"}]
+    assert r["actions"] == [{"type": "pending_cancelled", "cancelled": "log_incident", "kept_draft_number": None}]
     assert client.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()["pending_question"] is None
 
 

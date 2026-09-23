@@ -21,20 +21,21 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..api.schemas import Alert, IncidentDraft, Lesson
 from ..config import Settings
+from ..incident_time import find_expression
 
 log = logging.getLogger("cocoon_agent.brain")
 
 Intent = Literal[
     "next_task", "list_tasks", "start_task", "complete_task",
-    "log_incident", "review_drafts", "confirm_draft", "dismiss_draft", "affirm",
+    "log_incident", "review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm",
     "training", "explain_alert", "record_idle_reason", "answer_pending", "cancel_pending", "unsupported", "smalltalk",
 ]
 Branch = Literal["tasks", "safety_incidents", "training", "general_assistance"]
 BRANCH_OF: dict[str, str] = {
     "next_task": "tasks", "list_tasks": "tasks", "start_task": "tasks", "complete_task": "tasks",
     "log_incident": "safety_incidents", "review_drafts": "safety_incidents", "confirm_draft": "safety_incidents",
-    "dismiss_draft": "safety_incidents", "explain_alert": "safety_incidents", "answer_pending": "safety_incidents",
-    "record_idle_reason": "safety_incidents",
+    "dismiss_draft": "safety_incidents", "edit_draft": "safety_incidents", "explain_alert": "safety_incidents",
+    "answer_pending": "safety_incidents", "record_idle_reason": "safety_incidents",
     "training": "training",
     "affirm": "general_assistance", "cancel_pending": "general_assistance", "unsupported": "general_assistance",
     "smalltalk": "general_assistance",
@@ -63,7 +64,12 @@ class RouteDecision(BaseModel):
     )
     incident_severity: Literal["low", "medium", "high", "critical"] | None = Field(
         default=None, description="Only if the operator stated a severity.")
+    severity_unknown: bool = Field(default=False, description="The operator said they do not know the severity.")
     incident_location: str | None = Field(default=None, description="Where it happened, only if stated.")
+    incident_time_expression: str | None = Field(
+        default=None, description="The operator's own words for when it happened (e.g. 'ten minutes ago'), verbatim; "
+                                  "never a computed timestamp.")
+    time_unknown: bool = Field(default=False, description="The operator said they do not know when it happened.")
     notify_supervisor: bool = Field(default=False, description="The operator asked to tell/escalate to a supervisor.")
     incident_number: int | None = Field(default=None, description="A draft number the operator named.")
     unsupported_capability: UnsupportedCapability | None = None
@@ -163,6 +169,12 @@ _LESSON_WORDS = {
     "L3": re.compile(r"\b(lesson (3|three)|hydraulic|leak)\b"),
 }
 _FILLER = re.compile(r"^(?:[\s:,\-]+|(?:an?|that|about|for|of|where|incident|please|it)\b)+", re.I)
+_SEVERITY_UNKNOWN_PHRASE = re.compile(r"[\s,]*\b(?:severity (?:is )?unknown|unknown severity|not sure how (?:bad|serious)"
+                                      r"(?: it is)?|don'?t know how (?:bad|serious)(?: it is)?)\b", re.I)
+_BARE_SEVERITY = re.compile(r"\b(critical|high|medium|low)\b", re.I)
+_DONT_KNOW = re.compile(r"\b(don'?t know|do not know|not sure|unknown|no idea|can'?t say|unsure|no clue)\b", re.I)
+_DRAFT_EDIT = re.compile(r"\b(change|set|update|edit|correct)\b.*\b(draft|report|severity|location|time|happened)\b")
+_TO_SEVERITY = re.compile(r"\b(?:to|as|is)\s+(critical|high|medium|low)\b", re.I)
 
 
 def _mock_description(text: str) -> str | None:
@@ -173,15 +185,39 @@ def _mock_description(text: str) -> str | None:
     return rest if len(rest.split()) >= 2 else None
 
 
+def _tidy(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", re.sub(r"\s*,\s*(,\s*)+", ", ", text)).strip(" ,.")
+
+
 def _mock_incident_fields(text: str) -> dict[str, Any]:
-    """Severity, location and "tell my supervisor" are pulled out; the description keeps what happened."""
+    """Severity (a stated level or an explicit "unknown"), the time phrase, location and "tell my supervisor" are
+    pulled out; the description keeps what happened. Nothing is inferred from alarming wording."""
     notify = bool(_NOTIFY.search(text))
     sev = _SEVERITY.search(text)
+    unknown = bool(_SEVERITY_UNKNOWN_PHRASE.search(text))
     loc = _LOCATION.search(text)
-    core = _SEVERITY.sub("", _NOTIFY.sub("", text))
-    core = re.sub(r"\s{2,}", " ", re.sub(r"\s*,\s*(,\s*)+", ", ", core)).strip(" ,.")
+    when = find_expression(text)
+    core = _SEVERITY_UNKNOWN_PHRASE.sub("", _SEVERITY.sub("", _NOTIFY.sub("", text)))
+    if when:
+        core = re.sub(r"[\s,]*" + re.escape(when), "", core, count=1, flags=re.I)
     return {"notify_supervisor": notify, "incident_severity": (sev.group(1) or sev.group(2)).lower() if sev else None,
-            "incident_location": loc.group(1).lower() if loc else None, "core": core}
+            "severity_unknown": unknown and not sev, "incident_location": loc.group(1).lower() if loc else None,
+            "incident_time_expression": when, "core": _tidy(core)}
+
+
+def _mock_pending_answer(ctx: "TurnContext") -> "RouteDecision":
+    """An utterance that answers the one pending incident question (description, severity or time)."""
+    kind = (ctx.pending or {}).get("kind")
+    text = ctx.text.strip()
+    if kind == "incident_severity":
+        level = _BARE_SEVERITY.search(text)
+        return RouteDecision(intent="answer_pending", incident_severity=level.group(1).lower() if level else None,
+                             severity_unknown=bool(_DONT_KNOW.search(text)) and not level)
+    if kind == "incident_time":
+        return RouteDecision(intent="answer_pending", incident_time_expression=find_expression(text),
+                             time_unknown=bool(_DONT_KNOW.search(text)))
+    f = _mock_incident_fields(text)
+    return RouteDecision(intent="answer_pending", incident_description=f.pop("core") or text, **f)
 
 
 class MockBrain:
@@ -202,6 +238,14 @@ class MockBrain:
             return RouteDecision(intent="affirm")
         number = _INCIDENT_NUMBER.search(t)
         ref = int(number.group(1)) if number else None
+        if _DRAFT_EDIT.search(t):
+            level = _TO_SEVERITY.search(t)
+            loc = _LOCATION.search(ctx.text)
+            return RouteDecision(intent="edit_draft", incident_number=ref,
+                                 incident_severity=level.group(1).lower() if level else None,
+                                 severity_unknown=bool(re.search(r"\bseverity\b", t) and _DONT_KNOW.search(t)),
+                                 incident_location=loc.group(1).lower() if loc else None,
+                                 incident_time_expression=find_expression(ctx.text))
         if _DRAFT_DISMISS.search(t):
             return RouteDecision(intent="dismiss_draft", incident_number=ref)
         if _DRAFT_CONFIRM.search(t):
@@ -227,8 +271,7 @@ class MockBrain:
         if _NEXT_TASK.search(t):
             return RouteDecision(intent="next_task")
         if ctx.pending:
-            f = _mock_incident_fields(ctx.text)
-            return RouteDecision(intent="answer_pending", incident_description=f.pop("core") or ctx.text.strip(), **f)
+            return _mock_pending_answer(ctx)
         return RouteDecision(intent="smalltalk")
 
     async def compose(self, ctx: TurnContext, actions: list[dict[str, Any]]) -> str:
@@ -249,15 +292,22 @@ def _template(a: dict[str, Any]) -> str:
         return f"Your next task is {task['title']}. {task['details']}" if task else "You have no pending tasks right now."
     if kind == "incident_logged":
         inc = a["incident"]
-        return f"I've logged incident number {inc['incident_number']}: {inc['description']}."
+        return f"I've logged incident number {inc['incident_number']}: {inc['description']}.{_facts_speech(inc)}"
     if kind == "information_requested":
-        return "Okay, I'll log an incident. What happened?"
+        return _question_speech(a)
     if kind == "escalation_requested":
         return ("I've requested supervisor review of that report. It's pending; I can't message your supervisor "
                 "directly yet.")
     if kind == "incident_confirmed":
         inc = a["incident"]
-        return f"Confirmed. It's saved as incident number {inc['incident_number']}: {inc['description']}."
+        text = f"Confirmed. It's saved as incident number {inc['incident_number']}: {inc['description']}."
+        if inc.get("severity_basis") == "rule_default":
+            text += f" Its {inc['severity']} severity is the warning rule's default, not your assessment."
+        return text + _facts_speech(inc, severity=inc.get("severity_basis") != "rule_default")
+    if kind == "incident_draft_edited":
+        d = a["draft"]
+        missing = " and ".join("its severity" if m == "severity" else "when it happened" for m in d["missing"])
+        return f"Updated draft number {d['draft_number']}." + (f" It still needs {missing}." if missing else "")
     if kind == "incident_dismissed":
         return f"Dismissed draft number {a['draft']['draft_number']}."
     if kind == "incident_drafts":
@@ -269,6 +319,8 @@ def _template(a: dict[str, Any]) -> str:
                 + ". Say confirm or dismiss.")
     if kind == "clarification_needed":
         options = " and ".join(a["options"])
+        if a["reason"] == "nothing_to_change":
+            return "What should I change on the draft: its severity, where, or when it happened?"
         if a["reason"] == "several_candidates":
             if a["for_action"] == "affirm":
                 return f"I'm not sure what you're saying yes to: {options}. Please say which one."
@@ -302,6 +354,10 @@ def _template(a: dict[str, Any]) -> str:
             text += f" {alert['recommended_action']}"
         if alert["status"] == "cleared":
             text += " That warning has since cleared."
+        for rel in a.get("related_alerts") or []:
+            what = (rel.get("message") or rel["alert_type"]).replace(" (simulated)", "").rstrip(".")
+            state = "still active" if rel["status"] == "active" else "now cleared"
+            text += f" It is linked to a combined episode, {what[0].lower()}{what[1:]}, {state}."
         return text
     if kind == "idle_reason_recorded":
         text = f"Noted: {a['reason_text'].rstrip('.')}."
@@ -315,6 +371,9 @@ def _template(a: dict[str, Any]) -> str:
         return (f"{lesson['content_text']} Reading this lesson does not mark it complete; quizzes and completion "
                 "tracking aren't available yet.")
     if kind == "pending_cancelled":
+        if a.get("kept_draft_number"):
+            return (f"Okay, I'll stop asking. Your report stays saved as draft number {a['kept_draft_number']}; "
+                    "you can finish, confirm or dismiss it later.")
         return "Okay, I've dropped that." if a["cancelled"] else "There was nothing to cancel."
     if kind == "assigned_tasks":
         return _tasks_speech(a)
@@ -331,6 +390,31 @@ def _template(a: dict[str, Any]) -> str:
                     else "You don't have a task in progress to complete.")
         return f"I can't do that: the task is {a.get('current_status') or 'in another state'}."
     raise ValueError(f"unknown action type {kind}")
+
+
+def _question_speech(a: dict[str, Any]) -> str:
+    field = a["missing_field"]
+    if field == "description":
+        return "Okay, I'll log an incident. What happened?"
+    draft = a.get("draft") or {}
+    saved = f"I've saved it as draft report number {draft['draft_number']}. " if draft else ""
+    if field == "severity":
+        return (f"{saved}How serious is it: low, medium, high or critical? You can also say you don't know.")
+    reason = a.get("reason")
+    said = draft.get("occurred_expression")
+    lead = f"I couldn't pin down '{said}' as a time ({reason}). " if said and reason else ""
+    return f"{saved}{lead}When did it happen? For example, ten minutes ago, or at 9:30."
+
+
+def _facts_speech(inc: dict[str, Any], severity: bool = True) -> str:
+    """Only what was actually stated: an explicit unknown severity and the interpreted occurrence time."""
+    parts = []
+    if severity and inc.get("severity_basis") == "stated_unknown":
+        parts.append("Severity is recorded as unknown")
+    if inc.get("occurred_basis") in ("operator_relative", "operator_clock_time") and inc.get("occurred_expression"):
+        parts.append(f"recorded as happening {inc['occurred_expression'].strip()}")
+    text = ", ".join(parts)
+    return f" {text[0].upper()}{text[1:]}." if text else ""
 
 
 def _tasks_speech(a: dict[str, Any]) -> str:
@@ -358,14 +442,15 @@ Choose exactly one intent:
 - list_tasks: the operator asks for all of today's tasks.
 - start_task: the operator says they are starting the next task (or "it").
 - complete_task: the operator says they finished the current task.
-- log_incident: the operator wants to report or log an incident, damage, hazard or near miss. Fill incident_description only if they actually described what happened; otherwise leave it null. Fill incident_severity and incident_location only if stated. Set notify_supervisor when they also ask to tell or escalate to a supervisor.
+- log_incident: the operator wants to report or log an incident, damage, hazard or near miss. Fill incident_description only if they actually described what happened; otherwise leave it null. Fill incident_severity only if they stated a level (low, medium, high, critical); never infer it from how alarming the event sounds. Set severity_unknown if they say they do not know the severity. Copy any phrase saying when it happened ("ten minutes ago", "at 9:30", "this morning") verbatim into incident_time_expression; never compute a timestamp. Fill incident_location only if stated. Set notify_supervisor when they also ask to tell or escalate to a supervisor.
 - review_drafts: the operator asks to hear their draft (unconfirmed) incident reports.
 - confirm_draft / dismiss_draft: the operator confirms or discards a draft report. Set incident_number if they name one.
+- edit_draft: the operator changes a draft report's severity, location or time ("set draft 2 to high", "it happened at 9:30"). Set incident_number if named and fill only the fields they changed (incident_severity, severity_unknown, incident_location, incident_time_expression).
 - affirm: a bare yes/okay/go ahead. Never guess what it confirms.
 - training: the operator asks about training or lessons. training_action is "assign" when they want a lesson assigned or started, "read" when they want to hear or read a lesson's content, "status" when they ask what is assigned. Set lesson_id only if a catalog lesson is identifiable.
 - explain_alert: the operator asks why Cocoon warned them or about the latest alert, including a bare "why?" right after a warning. Set alert_hint to seatbelt or idle only if they said which warning.
 - record_idle_reason: the operator explains why they are idling or waiting (for example "I'm waiting for a truck"). Put their words in idle_reason.
-- answer_pending: a pending question exists and this utterance answers it. Put the answer in incident_description.
+- answer_pending: a pending question exists and this utterance answers it. For pending kind incident_description put the answer in incident_description; for incident_severity fill incident_severity with the level they said, or severity_unknown if they do not know; for incident_time copy their time phrase into incident_time_expression, or set time_unknown if they do not know.
 - cancel_pending: a pending question exists and the operator wants to drop it.
 - unsupported: a capability that does not exist yet (weather forecasts, video lessons, quizzes or scores, skill levels, messaging a supervisor without an incident, wellbeing checks, proximity detection). Set unsupported_capability.
 - smalltalk: anything else.

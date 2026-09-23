@@ -855,7 +855,9 @@ components:
           - type: string
           - type: 'null'
           title: Correlated Alert Id
-          description: Episode this one overlaps (same physical situation); it is not announced again.
+          description: 'Parent episode this one overlaps (same physical situation). A linked combined episode keeps
+            its own rule identity and evidence but is deliberately not announced or drafted again; `announced: false`
+            is expected, not a defect.'
         draft_incident_id:
           anyOf:
           - type: string
@@ -954,6 +956,13 @@ components:
           type: array
           title: Deliveries
           description: Playback reports for that announcement. Played is not acknowledgement.
+        related_alerts:
+          items:
+            $ref: '#/components/schemas/Alert'
+          type: array
+          title: Related Alerts
+          description: Linked episodes of the same situation (e.g. the combined idle + unbelted episode under a
+            seatbelt warning), each with its own saved evidence.
       additionalProperties: false
       type: object
       required:
@@ -1206,6 +1215,7 @@ components:
           enum:
           - confirm_draft
           - dismiss_draft
+          - edit_draft
           - explain_alert
           - affirm
           - read_lesson
@@ -1215,6 +1225,8 @@ components:
           enum:
           - several_candidates
           - nothing_pending
+          - missing_facts
+          - nothing_to_change
           title: Reason
         options:
           items:
@@ -1265,12 +1277,34 @@ components:
             - critical
           - type: 'null'
           title: Severity
+        severity_unknown:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Severity Unknown
+          description: 'incident.edit: the operator states the severity is unknown (not a guess).'
         location_text:
           anyOf:
           - type: string
             maxLength: 300
           - type: 'null'
           title: Location Text
+        occurred_expression:
+          anyOf:
+          - type: string
+            maxLength: 120
+            minLength: 1
+          - type: 'null'
+          title: Occurred Expression
+          description: 'incident.edit: a spoken/typed time phrase (e.g. ''ten minutes ago''), interpreted server-side
+            against the command''s first receipt time and the trusted site time zone.'
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+          description: 'incident.edit: an exact occurrence time picked on the device.'
       additionalProperties: false
       type: object
       title: CommandPayload
@@ -1571,6 +1605,7 @@ components:
           - type: string
             enum:
             - reported
+            - stated_unknown
             - rule_default
           - type: 'null'
           title: Severity Basis
@@ -1609,8 +1644,26 @@ components:
             enum:
             - time_of_report
             - observation_time
+            - operator_relative
+            - operator_clock_time
+            - operator_entered
+            - unresolved
           - type: 'null'
           title: Occurred Basis
+        occurred_expression:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Occurred Expression
+          description: The operator's own time phrase, verbatim.
+        occurred_reference_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred Reference At
+          description: Persisted instant the phrase was interpreted against (first receipt of the turn or command);
+            retries reuse it, so the occurrence time never moves forward.
         episode_id:
           anyOf:
           - type: string
@@ -1646,7 +1699,12 @@ components:
 
         value came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks
 
-        invented.'
+        invented. `severity` is never inferred from wording: null with basis `stated_unknown` means the operator
+        said
+
+        they do not know; null with no basis is a report saved before severity was asked for. A `rule_default` severity
+
+        is the warning rule''s configured value, not an operator assessment of the incident.'
     IncidentDraft:
       properties:
         draft_id:
@@ -1666,7 +1724,9 @@ components:
           title: Machine Id
         origin:
           type: string
-          const: auto_draft
+          enum:
+          - auto_draft
+          - operator_report
           title: Origin
         status:
           type: string
@@ -1693,6 +1753,7 @@ components:
           - type: string
             enum:
             - reported
+            - stated_unknown
             - rule_default
           - type: 'null'
           title: Severity Basis
@@ -1731,8 +1792,23 @@ components:
             enum:
             - time_of_report
             - observation_time
+            - operator_relative
+            - operator_clock_time
+            - operator_entered
+            - unresolved
           - type: 'null'
           title: Occurred Basis
+        occurred_expression:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Occurred Expression
+        occurred_reference_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred Reference At
         episode_id:
           anyOf:
           - type: string
@@ -1763,6 +1839,20 @@ components:
             format: date-time
           - type: 'null'
           title: Dismissed At
+        notify_supervisor:
+          type: boolean
+          title: Notify Supervisor
+          description: Confirming also requests supervisor review.
+          default: false
+        missing:
+          items:
+            type: string
+            enum:
+            - severity
+            - occurred_time
+          type: array
+          title: Missing
+          description: Facts still needed before confirmation.
       additionalProperties: false
       type: object
       required:
@@ -1777,10 +1867,12 @@ components:
       - version
       - created_at
       title: IncidentDraft
-      description: 'An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates
-        the real
+      description: 'An unconfirmed report: an automatic draft from a safety episode, or an operator''s report that
+        still misses a
 
-        incident ID once (`incident_id`).'
+        fact (`missing`). Not an incident until confirmed; confirming allocates the real incident ID once
+
+        (`incident_id`). A draft with missing facts cannot be confirmed until each is stated or explicitly unknown.'
     IncidentDraftAction:
       properties:
         type:
@@ -1788,6 +1880,7 @@ components:
           enum:
           - incident_confirmed
           - incident_dismissed
+          - incident_draft_edited
           title: Type
         draft:
           $ref: '#/components/schemas/IncidentDraft'
@@ -1854,8 +1947,22 @@ components:
           title: For Action
         missing_field:
           type: string
-          const: description
+          enum:
+          - description
+          - severity
+          - occurred_time
           title: Missing Field
+        draft:
+          anyOf:
+          - $ref: '#/components/schemas/IncidentDraft'
+          - type: 'null'
+          description: The saved draft the answer will complete (severity / time questions).
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+          description: Why a stated time could not be used, when relevant.
       additionalProperties: false
       type: object
       required:
@@ -2085,6 +2192,12 @@ components:
             const: log_incident
           - type: 'null'
           title: Cancelled
+        kept_draft_number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Kept Draft Number
+          description: The report stays saved as this draft; cancelling a question never deletes it.
       additionalProperties: false
       type: object
       required:
@@ -2095,7 +2208,10 @@ components:
       properties:
         kind:
           type: string
-          const: incident_description
+          enum:
+          - incident_description
+          - incident_severity
+          - incident_time
           title: Kind
         for_action:
           type: string
@@ -2119,11 +2235,31 @@ components:
             - critical
           - type: 'null'
           title: Severity
+        severity_unknown:
+          type: boolean
+          title: Severity Unknown
+          default: false
         location_text:
           anyOf:
           - type: string
           - type: 'null'
           title: Location Text
+        time_expression:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Time Expression
+        draft_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Draft Id
+        then_confirm:
+          type: boolean
+          title: Then Confirm
+          description: Answering also confirms the draft once nothing is missing (false when the question came from
+            an edit).
+          default: true
       additionalProperties: false
       type: object
       required:
@@ -2131,6 +2267,10 @@ components:
       - for_action
       - asked_in_turn_id
       title: PendingQuestion
+      description: 'The one question Cocoon is waiting on. For incident_severity / incident_time the report is already
+        saved as
+
+        `draft_id` (nothing is lost if the operator never answers).'
     ReadyResponse:
       properties:
         status:
@@ -2395,6 +2535,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Incident'
           - type: 'null'
+        approval:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalRequest'
+          - type: 'null'
+          description: Pending supervisor-review request created with a confirmation (not a notification).
         created_at:
           type: string
           format: date-time
@@ -3089,6 +3234,7 @@ components:
                 idle_reason_recorded: '#/components/schemas/IdleReasonRecordedAction'
                 incident_confirmed: '#/components/schemas/IncidentDraftAction'
                 incident_dismissed: '#/components/schemas/IncidentDraftAction'
+                incident_draft_edited: '#/components/schemas/IncidentDraftAction'
                 incident_drafts: '#/components/schemas/IncidentDraftsAction'
                 incident_logged: '#/components/schemas/IncidentLoggedAction'
                 information_requested: '#/components/schemas/InformationRequestedAction'

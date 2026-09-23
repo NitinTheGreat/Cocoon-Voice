@@ -28,7 +28,7 @@ from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
 from .rules import SafetyPolicy, load_policy
 from .store import (
-    Conflict, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
+    Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
 )
 
 log = logging.getLogger("cocoon_agent.service")
@@ -168,7 +168,10 @@ class CocoonService:
         if req.kind.startswith("task."):
             mutate, noun = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version), "task"
         else:
-            edits = req.payload.model_dump(include={"description", "severity", "location_text"}, exclude_none=True)
+            edits = req.payload.model_dump(include={"description", "severity", "severity_unknown", "location_text",
+                                                    "occurred_expression"}, exclude_none=True)
+            if req.payload.occurred_at is not None:
+                edits["occurred_at"] = req.payload.occurred_at
             mutate = Store.incident_transition(session, req.kind, req.payload.incident_id, req.expected_version, edits)
             noun = "incident"
         result, duplicate = self.run_domain_command(
@@ -191,8 +194,12 @@ class CocoonService:
             raise ApiError(409, "version_conflict", str(exc), details=[
                 {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
         except InvalidTransition as exc:
-            raise ApiError(409, "invalid_transition", str(exc), details=[
-                {"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]) from exc
+            details = [{"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]
+            details += [{"field": f"draft.{m}", "issue": "not stated yet"} for m in exc.missing]
+            raise ApiError(409, "invalid_transition", str(exc), details=details) from exc
+        except InvalidInput as exc:
+            raise ApiError(422, "validation_error", str(exc), details=[
+                {"field": f"body.{exc.field}", "issue": exc.issue}]) from exc
 
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)

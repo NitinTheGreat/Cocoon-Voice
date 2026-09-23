@@ -18,7 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from ..api import schemas as s
-from ..store import InvalidTransition, NotFound, Store
+from ..incident_time import interpret
+from ..store import InvalidTransition, NotFound, OccurrenceTime, Store, iso, utcnow
 from .brain import Brain, TurnContext
 
 
@@ -108,7 +109,7 @@ def build_graph(store: Store, brain: Brain):
             return "log_incident"  # the only pending question kind
         if intent in ("next_task", "list_tasks", "start_task", "complete_task"):
             return "tasks"
-        if intent in ("review_drafts", "confirm_draft", "dismiss_draft", "affirm"):
+        if intent in ("review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm"):
             return "drafts"
         if intent == "smalltalk":
             return "compose"
@@ -154,28 +155,78 @@ def build_graph(store: Store, brain: Brain):
                                         task=result["task"], command_id=command_id, created=not duplicate)
         return {"actions": [action.model_dump(mode="json")]}
 
+    def _reference(state: CocoonState):
+        """Persisted first-receipt time of this turn: relative phrases are interpreted against it, so a retry of the
+        same turn can never move an occurrence time."""
+        row = store.get_turn(state["session_id"], state["turn_id"])
+        return row.created_at if row is not None else utcnow()
+
+    def _occurrence(expression: str | None, reference, offset) -> tuple[OccurrenceTime, str | None]:
+        got = interpret(expression, reference, offset)
+        if got.status == "none":
+            return OccurrenceTime.of_report(reference), None
+        if got.status == "resolved":
+            return OccurrenceTime(got.occurred_at, got.basis, got.expression, reference), None
+        return OccurrenceTime(None, "unresolved", got.expression, reference), got.reason
+
+    def _ask(state: CocoonState, draft: s.IncidentDraft, reason: str | None = None,
+             confirm: bool = True) -> CocoonState:
+        """Ask for the first fact the saved draft still misses (one question at a time)."""
+        field = draft.missing[0]
+        pending = s.PendingQuestion(
+            kind="incident_severity" if field == "severity" else "incident_time", for_action="log_incident",
+            asked_in_turn_id=state["turn_id"], notify_supervisor=draft.notify_supervisor, draft_id=draft.draft_id,
+            then_confirm=confirm)
+        action = s.InformationRequestedAction(type="information_requested", for_action="log_incident",
+                                              missing_field=field, draft=draft,
+                                              reason=reason if field == "occurred_time" else None)
+        return {"actions": [action.model_dump(mode="json")], "pending": pending.model_dump()}
+
+    def _confirmed(result: dict[str, Any], duplicate: bool) -> list[dict[str, Any]]:
+        actions = [_draft_action("incident.confirm", result, created=not duplicate)]
+        if result.get("approval"):
+            actions.append(s.EscalationRequestedAction(type="escalation_requested", approval=result["approval"],
+                                                       created=not duplicate).model_dump(mode="json"))
+        return actions
+
     async def log_incident(state: CocoonState) -> CocoonState:
         """Ordered child actions: the report, then (if asked) a linked pending supervisor-review request. Each child
-        commits with its action record; a failure after the first keeps it and a retry does not repeat it."""
+        commits with its action record; a failure after the first keeps it and a retry does not repeat it.
+
+        A report needs what happened, a severity (a stated level or an explicit "don't know"; never inferred) and a
+        usable time (an interpreted phrase, or the labelled time of the report when none was given). With a fact
+        missing, the report is saved as a draft first and the operator is asked, so nothing is lost meanwhile."""
         r = state["route"]
         prior = state.get("pending") if r["intent"] == "answer_pending" else None
+        if prior and prior.get("kind") in ("incident_severity", "incident_time"):
+            return await _answer_draft_question(state, prior)
         prior = prior or {}
         description = (r.get("incident_description") or "").strip()
         notify = bool(r.get("notify_supervisor") or prior.get("notify_supervisor"))
         severity = r.get("incident_severity") or prior.get("severity")
+        severity_unknown = bool(not severity and (r.get("severity_unknown") or prior.get("severity_unknown")))
         location = (r.get("incident_location") or prior.get("location_text") or "").strip()[:300] or None
+        time_expression = r.get("incident_time_expression") or prior.get("time_expression")
         if not description:
             action = s.InformationRequestedAction(
                 type="information_requested", for_action="log_incident", missing_field="description"
             )
             pending = s.PendingQuestion(
                 kind="incident_description", for_action="log_incident", asked_in_turn_id=state["turn_id"],
-                notify_supervisor=notify, severity=severity, location_text=location,
+                notify_supervisor=notify, severity=severity, severity_unknown=severity_unknown,
+                location_text=location, time_expression=time_expression,
             )
             return {"actions": [action.model_dump(mode="json")], "pending": pending.model_dump()}
         session = _session(state)
+        when, reason = _occurrence(time_expression, _reference(state), store.site_offset(session))
+        severity_basis = "reported" if severity else ("stated_unknown" if severity_unknown else None)
+        if severity_basis is None or when.basis == "unresolved":
+            result, _ = _command(state, "incident.draft", "incident.draft", Store.operator_draft(
+                session, state["turn_id"], description[:1000], severity, severity_basis, location, when, notify))
+            return _ask(state, s.IncidentDraft.model_validate(result["draft"]), reason)
         result, duplicate = _command(state, "incident.log", "incident.log", Store.incident_report(
-            session, state["turn_id"], description[:1000], severity, location))
+            session, state["turn_id"], description[:1000], severity, location, severity_basis=severity_basis,
+            when=when))
         actions = [s.IncidentLoggedAction(type="incident_logged", incident=result["incident"],
                                           created=not duplicate and not result.get("reused")).model_dump(mode="json")]
         if notify:
@@ -186,6 +237,54 @@ def build_graph(store: Store, brain: Brain):
                                                        created=not esc_dup).model_dump(mode="json"))
         return {"actions": actions, "pending": None}
 
+    async def _answer_draft_question(state: CocoonState, pending: dict[str, Any]) -> CocoonState:
+        """Complete the saved draft with the operator's answer, then confirm it once nothing is missing. A non-answer
+        repeats the question; the draft is never lost."""
+        r = state["route"]
+        session = _session(state)
+        draft = store.get_draft(session.session_id, pending.get("draft_id") or "")
+        if draft is None or draft.status != "draft":
+            action = s.ClarificationAction(type="clarification_needed", for_action="edit_draft",
+                                           reason="nothing_pending")
+            return {"actions": [action.model_dump(mode="json")], "pending": None}
+        edits: dict[str, Any] = {}
+        reason = None
+        if pending["kind"] == "incident_severity":
+            if r.get("incident_severity"):
+                edits["severity"] = r["incident_severity"]
+            elif r.get("severity_unknown"):
+                edits["severity_unknown"] = True
+        elif r.get("incident_time_expression"):
+            when, reason = _occurrence(r["incident_time_expression"], _reference(state), store.site_offset(session))
+            if when.basis != "unresolved":
+                edits["when"] = when
+        elif r.get("time_unknown"):  # no time known: keep the report time, labelled as such, with the original phrase
+            edits["when"] = OccurrenceTime.of_report(draft.occurred_reference_at or draft.created_at,
+                                                     draft.occurred_expression)
+        confirm = pending.get("then_confirm", True)
+        if not edits:
+            if reason:
+                draft = draft.model_copy(update={"occurred_expression": r.get("incident_time_expression"),
+                                                 "missing": ["occurred_time"]})
+            elif pending["kind"] == "incident_time":
+                draft = draft.model_copy(update={"missing": ["occurred_time"]})
+            return _ask(state, draft, reason, confirm=confirm)
+        return _edit_then_confirm(state, session, draft, edits, confirm)
+
+    def _edit_then_confirm(state: CocoonState, session: s.Session, draft: s.IncidentDraft,
+                           edits: dict[str, Any], confirm: bool = True) -> CocoonState:
+        fingerprint = "incident.edit:" + draft.draft_id + ":" + json.dumps(_edit_key(edits), sort_keys=True)
+        edited, duplicate = _command(state, "incident.edit", fingerprint,
+                                     Store.incident_transition(session, "incident.edit", draft.draft_id, None, edits))
+        updated = s.IncidentDraft.model_validate(edited["draft"])
+        if not confirm:
+            return {"actions": [_draft_action("incident.edit", edited, created=not duplicate)], "pending": None}
+        if updated.status == "draft" and updated.missing:
+            return _ask(state, updated)
+        result, duplicate = _command(state, "incident.confirm", f"incident.confirm:{draft.draft_id}",
+                                     Store.incident_transition(session, "incident.confirm", draft.draft_id, None))
+        return {"actions": _confirmed(result, duplicate), "pending": None}
+
     async def drafts(state: CocoonState) -> CocoonState:
         """Read / confirm / dismiss this session's draft reports. A bare "yes" confirms only when exactly one
         workflow is waiting; otherwise nothing changes and the operator is asked which one."""
@@ -194,10 +293,18 @@ def build_graph(store: Store, brain: Brain):
         if intent == "review_drafts":
             action = s.IncidentDraftsAction(type="incident_drafts", drafts=store.list_drafts(state["session_id"]))
             return {"actions": [action.model_dump(mode="json")]}
+        if intent == "edit_draft":
+            return _edit_draft(state)
+        pending = state.get("pending") or {}
+        if intent == "affirm" and pending.get("kind") in ("incident_severity", "incident_time"):
+            draft = store.get_draft(state["session_id"], pending.get("draft_id") or "")
+            if draft is not None and draft.status == "draft" and draft.missing:
+                return _ask(state, draft)  # "yes" is not a severity or a time: ask the same question again
         kind = "incident.dismiss" if intent == "dismiss_draft" else "incident.confirm"
         saved = _saved(state, kind)
         if saved is not None:  # retry of a turn that already committed this
-            return {"actions": [_draft_action(kind, saved, created=False)]}
+            return {"actions": _confirmed(saved, True) if kind == "incident.confirm"
+                    else [_draft_action(kind, saved, created=False)]}
         open_drafts = store.list_drafts(state["session_id"])
         options = [f"draft number {d.draft_number}" for d in open_drafts]
         if intent == "affirm":
@@ -223,6 +330,8 @@ def build_graph(store: Store, brain: Brain):
                                                options=options)
                 return {"actions": [action.model_dump(mode="json")]}
             target = matches[0]
+        if kind == "incident.confirm" and target.missing:
+            return _ask(state, target)  # a confirmation needs every fact: ask for the first missing one
         try:
             result, duplicate = _command(state, kind, f"{kind}:{target.draft_id}", Store.incident_transition(
                 _session(state), kind, target.draft_id, None))
@@ -230,7 +339,59 @@ def build_graph(store: Store, brain: Brain):
             action = s.ClarificationAction(type="clarification_needed", reason="nothing_pending", options=[],
                                            for_action="dismiss_draft" if kind == "incident.dismiss" else "confirm_draft")
             return {"actions": [action.model_dump(mode="json")]}
-        return {"actions": [_draft_action(kind, result, created=not duplicate)]}
+        if kind == "incident.confirm":
+            return {"actions": _confirmed(result, duplicate), "pending": _pending_after(state, target.draft_id)}
+        return {"actions": [_draft_action(kind, result, created=not duplicate)],
+                "pending": _pending_after(state, target.draft_id)}
+
+    def _pending_after(state: CocoonState, draft_id: str) -> dict[str, Any] | None:
+        """A question about a draft that was just confirmed/dismissed is no longer open."""
+        pending = state.get("pending")
+        return None if pending and pending.get("draft_id") == draft_id else pending
+
+    def _edit_draft(state: CocoonState) -> CocoonState:
+        """Voice edit of a draft through the same incident.edit command as a tap (version-checked there)."""
+        r = state["route"]
+        saved = _saved(state, "incident.edit")
+        if saved is not None:
+            return {"actions": [_draft_action("incident.edit", saved, created=False)]}
+        open_drafts = store.list_drafts(state["session_id"])
+        ref = r.get("incident_number")
+        matches = [d for d in open_drafts if ref is None or d.draft_number == ref]
+        if len(matches) != 1:
+            action = s.ClarificationAction(
+                type="clarification_needed", for_action="edit_draft",
+                reason="several_candidates" if len(matches) > 1 else "nothing_pending",
+                options=[f"draft number {d.draft_number}" for d in open_drafts])
+            return {"actions": [action.model_dump(mode="json")]}
+        target = matches[0]
+        session = _session(state)
+        edits: dict[str, Any] = {}
+        if r.get("incident_severity"):
+            edits["severity"] = r["incident_severity"]
+        elif r.get("severity_unknown"):
+            edits["severity_unknown"] = True
+        if r.get("incident_location"):
+            edits["location_text"] = r["incident_location"][:300]
+        if r.get("incident_time_expression"):
+            when, reason = _occurrence(r["incident_time_expression"], _reference(state), store.site_offset(session))
+            if when.basis == "unresolved":  # ask again; answering only edits (it does not confirm the draft)
+                return _ask(state, target.model_copy(update={"occurred_expression": when.expression,
+                                                             "missing": ["occurred_time"]}), reason, confirm=False)
+            edits["when"] = when
+        if not edits:
+            action = s.ClarificationAction(type="clarification_needed", for_action="edit_draft",
+                                           reason="nothing_to_change")
+            return {"actions": [action.model_dump(mode="json")]}
+        fingerprint = "incident.edit:" + target.draft_id + ":" + json.dumps(_edit_key(edits), sort_keys=True)
+        try:
+            result, duplicate = _command(state, "incident.edit", fingerprint, Store.incident_transition(
+                session, "incident.edit", target.draft_id, None, edits))
+        except (InvalidTransition, NotFound):
+            action = s.ClarificationAction(type="clarification_needed", for_action="edit_draft",
+                                           reason="nothing_pending")
+            return {"actions": [action.model_dump(mode="json")]}
+        return {"actions": [_draft_action("incident.edit", result, created=not duplicate)]}
 
     async def unsupported(state: CocoonState) -> CocoonState:
         capability = state["route"].get("unsupported_capability") or "requested_capability"
@@ -277,7 +438,9 @@ def build_graph(store: Store, brain: Brain):
         hint = state["route"].get("alert_hint")
         families = {"seatbelt": {"seatbelt_unfastened"}, "idle": {"prolonged_idle", "idle_unbelted"}}
         if hint:
-            pool = [x for x in announced if x[0].alert_type in families[hint]]
+            # A linked combined episode (e.g. idle + unbelted) was covered by its parent's announcement; it is still
+            # explainable on its own evidence when the operator names it.
+            pool = [x for x in announced + store.linked_alerts(sid) if x[0].alert_type in families[hint]]
             active = [x for x in pool if x[0].status == "active"]
             candidates = (active or pool)[:1]
         else:
@@ -297,7 +460,8 @@ def build_graph(store: Store, brain: Brain):
             return {"actions": [action.model_dump(mode="json")]}
         alert, event_id, _ = candidates[0]
         action = s.AlertExplainedAction(type="alert_explained", alert=alert, announcement_event_id=event_id,
-                                        deliveries=store.deliveries(event_id))
+                                        deliveries=store.deliveries(event_id),
+                                        related_alerts=store.related_alerts(alert.alert_id))
         return {"actions": [action.model_dump(mode="json")], "latest_alert": alert.model_dump(mode="json")}
 
     async def record_idle_reason(state: CocoonState) -> CocoonState:
@@ -312,8 +476,12 @@ def build_graph(store: Store, brain: Brain):
         return {"actions": [action.model_dump(mode="json")]}
 
     async def cancel_pending(state: CocoonState) -> CocoonState:
+        """Stop asking. A report already saved as a draft stays saved (it can be finished or dismissed later)."""
         pending = state.get("pending")
-        action = s.PendingCancelledAction(type="pending_cancelled", cancelled=pending["for_action"] if pending else None)
+        kept = store.get_draft(state["session_id"], pending["draft_id"]) if pending and pending.get("draft_id") else None
+        action = s.PendingCancelledAction(
+            type="pending_cancelled", cancelled=pending["for_action"] if pending else None,
+            kept_draft_number=kept.draft_number if kept is not None and kept.status == "draft" else None)
         return {"actions": [action.model_dump(mode="json")], "pending": None}
 
     async def compose(state: CocoonState) -> CocoonState:
@@ -342,7 +510,20 @@ def build_graph(store: Store, brain: Brain):
     return g
 
 
+_DRAFT_ACTION_TYPES = {"incident.confirm": "incident_confirmed", "incident.dismiss": "incident_dismissed",
+                       "incident.edit": "incident_draft_edited"}
+
+
 def _draft_action(kind: str, result: dict[str, Any], created: bool) -> dict[str, Any]:
-    return s.IncidentDraftAction(type="incident_confirmed" if kind == "incident.confirm" else "incident_dismissed",
-                                 draft=result["draft"], incident=result.get("incident"),
+    return s.IncidentDraftAction(type=_DRAFT_ACTION_TYPES[kind], draft=result["draft"], incident=result.get("incident"),
                                  created=created).model_dump(mode="json")
+
+
+def _edit_key(edits: dict[str, Any]) -> dict[str, Any]:
+    """Stable fingerprint form of a draft edit (an interpreted time is compared by its stored values)."""
+    out: dict[str, Any] = {}
+    for key, value in edits.items():
+        if isinstance(value, OccurrenceTime):
+            value = [iso(value.occurred_at), value.basis, value.expression, iso(value.reference_at)]
+        out[key] = value
+    return out

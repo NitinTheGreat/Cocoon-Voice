@@ -164,7 +164,8 @@ def test_missing_credentials_file_is_refused_without_reading_anything(tmp_path, 
 def test_http_turn_uses_one_model_call_and_same_turn_retry_is_safe(tmp_path):
     """Through the real app: one model call per turn, record saved once, capacity failure is a retryable 503 that
     leaves nothing behind, and the same turn_id succeeds later without a second record."""
-    decision = RouteDecision(intent="log_incident", incident_description="hydraulic hose leaking on the boom")
+    decision = RouteDecision(intent="log_incident", incident_description="hydraulic hose leaking on the boom",
+                             incident_severity="high")
     brain, models, _ = _brain(tmp_path, CAPACITY)
     with TestClient(create_app(make_settings(tmp_path), brain=brain)) as c:
         sid = new_session(c)

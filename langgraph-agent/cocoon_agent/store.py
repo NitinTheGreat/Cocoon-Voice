@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .api import schemas as s
 from .catalog import Catalog, CatalogError
+from .incident_time import interpret, offset_timezone
 from .migrations import migrate
 
 if TYPE_CHECKING:
@@ -79,9 +80,24 @@ class VersionConflict(Exception):
 
 
 class InvalidTransition(Exception):
-    def __init__(self, current_status: str, message: str):
+    def __init__(self, current_status: str, message: str, missing: list[str] | None = None):
         super().__init__(message)
         self.current_status = current_status
+        self.missing = missing or []
+
+
+@dataclass(frozen=True)
+class OccurrenceTime:
+    """How a report's occurrence time was established (see incident_time.py and schemas.OccurredBasis)."""
+
+    occurred_at: datetime | None
+    basis: str
+    expression: str | None
+    reference_at: datetime | None
+
+    @staticmethod
+    def of_report(reference: datetime, expression: str | None = None) -> "OccurrenceTime":
+        return OccurrenceTime(reference, "time_of_report", expression, reference)
 
 
 @dataclass(frozen=True)
@@ -485,31 +501,67 @@ class Store:
 
     @staticmethod
     def incident_report(session: s.Session, turn_id: str, description: str, severity: str | None,
-                        location_text: str | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
-        """Mutation for an operator's report: a new confirmed incident per turn (matching text never merges two
-        intentional reports). Identity comes from the session; "where" is the stated place, else the active task's
-        zone, each with its basis; "when" is the time of the report unless stated otherwise; severity only if stated."""
+                        location_text: str | None, *, severity_basis: str | None = None,
+                        when: OccurrenceTime | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's complete report: a new confirmed incident per turn (matching text never merges
+        two intentional reports). Identity comes from the session; "where" is the stated place, else the active
+        task's zone, each with its basis; "when" is the interpreted phrase, else the (labelled) time of the report;
+        severity only as stated (a level, or explicitly unknown)."""
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
             row = c.execute("SELECT * FROM incidents WHERE session_id = ? AND source_turn_id = ?",
                             (session.session_id, turn_id)).fetchone()
             reused = row is not None  # written before the command log existed (pre-v5 retry)
             if row is None:
-                now = iso(utcnow())
+                now = utcnow()
+                t = when or OccurrenceTime.of_report(now)
                 zone, zone_basis = _resolve_zone(c, session, location_text)
+                basis = severity_basis or ("reported" if severity else None)
                 number = c.execute(
                     "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
                     " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
-                    " occurred_at, occurred_basis, confirmed_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
-                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, now, severity,
-                     "reported" if severity else None, session.site_id, zone, zone_basis, location_text, now, now),
+                    " occurred_at, occurred_basis, occurred_expression, occurred_reference_at, confirmed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, iso(now),
+                     severity, basis, session.site_id, zone, zone_basis, location_text, iso(t.occurred_at), t.basis,
+                     t.expression, iso(t.reference_at), iso(now)),
                 ).lastrowid
                 c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (f"INC-{number:04d}", number))
                 row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
             inc = _incident(row)
             return {"record_type": "incident", "record_id": inc.incident_id, "reused": reused,
                     "summary": f"Logged incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+
+        return mutate
+
+    @staticmethod
+    def operator_draft(session: s.Session, turn_id: str, description: str, severity: str | None,
+                       severity_basis: str | None, location_text: str | None, when: OccurrenceTime,
+                       notify_supervisor: bool) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's report that still misses a fact: it is saved as a draft (own DRF numbering, no
+        incident ID yet) so nothing is lost while the operator is asked. One draft per reporting turn."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incident_drafts WHERE session_id = ? AND source_turn_id = ?",
+                            (session.session_id, turn_id)).fetchone()
+            if row is None:
+                zone, zone_basis = _resolve_zone(c, session, location_text)
+                number = c.execute(
+                    "INSERT INTO incident_drafts(session_id, operator_id, machine_id, origin, description, severity,"
+                    " severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at, occurred_basis,"
+                    " occurred_expression, occurred_reference_at, source_turn_id, notify_supervisor, created_at)"
+                    " VALUES (?, ?, ?, 'operator_report', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, severity,
+                     severity_basis, session.site_id, zone, zone_basis, location_text, iso(when.occurred_at),
+                     when.basis, when.expression, iso(when.reference_at), turn_id, int(notify_supervisor),
+                     iso(utcnow())),
+                ).lastrowid
+                c.execute("UPDATE incident_drafts SET draft_id = ? WHERE draft_number = ?", (f"DRF-{number:04d}", number))
+                row = c.execute("SELECT * FROM incident_drafts WHERE draft_number = ?", (number,)).fetchone()
+            draft = _draft(row)
+            return {"record_type": "incident_draft", "record_id": draft.draft_id,
+                    "summary": f"Saved report as draft {draft.draft_number} (missing: {', '.join(draft.missing)}).",
+                    "draft": draft.model_dump(mode="json")}
 
         return mutate
 
@@ -536,7 +588,13 @@ class Store:
     def incident_transition(session: s.Session, kind: str, draft_id: str, expected_version: int | None,
                             edits: dict[str, Any] | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
         """Mutation for incident.edit / incident.confirm / incident.dismiss on this session's open drafts. Confirming
-        allocates the incident (and its real ID) exactly once; a confirmed or dismissed draft is final."""
+        allocates the incident (and its real ID) exactly once and needs every fact stated (severity as a level or
+        explicitly unknown, a usable occurrence time); a confirmed or dismissed draft is final. A draft saved with
+        `notify_supervisor` gets its pending supervisor-review request in the same transaction as the confirmation.
+
+        Edits: description, severity, severity_unknown, location_text, and the occurrence time as `when` (already
+        interpreted by the graph), `occurred_expression` (interpreted here against this first execution's time and
+        the trusted site offset) or an exact `occurred_at`."""
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
             row = c.execute("SELECT * FROM incident_drafts WHERE draft_id = ? AND session_id = ?",
@@ -548,15 +606,20 @@ class Store:
             if row["status"] != "draft":
                 raise InvalidTransition(row["status"], f"draft is {row['status']}; {kind} needs an open draft")
             now = iso(utcnow())
-            incident = None
+            incident = approval = None
             if kind == "incident.confirm":
+                missing = _draft_missing(row)
+                if missing:
+                    raise InvalidTransition("draft", f"the draft still needs: {', '.join(missing)}", missing)
                 number = c.execute(
                     "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
                     " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
-                    " occurred_basis, episode_id, draft_id, confirmed_at)"
-                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?, origin,"
+                    " occurred_basis, occurred_expression, occurred_reference_at, episode_id, draft_id, confirmed_at)"
+                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?,"
+                    " CASE origin WHEN 'operator_report' THEN 'operator_reported' ELSE origin END,"
                     " severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
-                    " occurred_basis, episode_id, draft_id, ? FROM incident_drafts WHERE draft_id = ?",
+                    " occurred_basis, occurred_expression, occurred_reference_at, episode_id, draft_id, ?"
+                    " FROM incident_drafts WHERE draft_id = ?",
                     (now, now, draft_id)).lastrowid
                 incident_id = f"INC-{number:04d}"
                 c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
@@ -565,26 +628,15 @@ class Store:
                 incident = _incident(c.execute("SELECT * FROM incidents WHERE incident_number = ?",
                                                (number,)).fetchone())
                 summary = f"Confirmed draft {row['draft_number']} as incident {number}."
+                if row["notify_supervisor"]:
+                    approval = Store.escalation_request(session, incident_id)(c)["approval"]
+                    summary += " Supervisor review requested (pending)."
             elif kind == "incident.dismiss":
                 c.execute("UPDATE incident_drafts SET status = 'dismissed', dismissed_at = ?, version = version + 1"
                           " WHERE draft_id = ?", (now, draft_id))
                 summary = f"Dismissed draft {row['draft_number']}."
             else:
-                e = edits or {}
-                sets, args = [], []
-                if e.get("description"):
-                    sets.append("description = ?")
-                    args.append(e["description"])
-                if e.get("severity"):
-                    sets += ["severity = ?", "severity_basis = 'reported'"]
-                    args.append(e["severity"])
-                if e.get("location_text"):
-                    zone, basis = _resolve_zone(c, session, e["location_text"])
-                    sets.append("location_text = ?")
-                    args.append(e["location_text"])
-                    if basis == "reported":
-                        sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
-                        args.append(zone)
+                sets, args = _draft_edits(c, session, edits or {})
                 if not sets:
                     raise InvalidTransition(row["status"], "incident.edit needs at least one field to change")
                 c.execute(f"UPDATE incident_drafts SET {', '.join(sets)}, version = version + 1 WHERE draft_id = ?",
@@ -596,6 +648,8 @@ class Store:
                    "draft": draft.model_dump(mode="json")}
             if incident is not None:
                 out["incident"] = incident.model_dump(mode="json")
+            if approval is not None:
+                out["approval"] = approval
             return out
 
         return mutate
@@ -760,6 +814,29 @@ class Store:
                          " JOIN announcements n ON n.alert_id = a.alert_id AND n.type = 'alert_started'"
                          " WHERE a.session_id = ? ORDER BY n.sequence DESC", (session_id,))
         return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+
+    def linked_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
+        """Correlated (combined-condition) episodes that were not announced themselves, paired with the announcement
+        of the parent episode that covered them, newest first."""
+        rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
+                         " JOIN announcements n ON n.alert_id = a.correlated_alert_id AND n.type = 'alert_started'"
+                         " WHERE a.session_id = ? AND a.announced = 0 ORDER BY a.started_at DESC", (session_id,))
+        return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+
+    def related_alerts(self, alert_id: str) -> list[s.Alert]:
+        """Episodes linked to this one: its correlated children, and the parent if it is itself a child."""
+        rows = self._all("SELECT * FROM alerts WHERE correlated_alert_id = ? OR alert_id ="
+                         " (SELECT correlated_alert_id FROM alerts WHERE alert_id = ?) ORDER BY started_at",
+                         (alert_id, alert_id))
+        return [_alert(r) for r in rows if r["alert_id"] != alert_id]
+
+    def get_draft(self, session_id: str, draft_id: str) -> s.IncidentDraft | None:
+        row = self._one("SELECT * FROM incident_drafts WHERE session_id = ? AND draft_id = ?", (session_id, draft_id))
+        return _draft(row) if row else None
+
+    def site_offset(self, session: s.Session) -> timezone | None:
+        with self._lock:
+            return session_offset(self._conn, session)
 
     def deliveries(self, event_id: str) -> list[s.DeliveryRecord]:
         return [_delivery(d) for d in self._all("SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id",
@@ -1078,14 +1155,16 @@ def _task(r: sqlite3.Row) -> s.Task:
 
 
 _INCIDENT_V5 = ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
-                "occurred_basis", "episode_id", "draft_id")
+                "occurred_basis", "episode_id", "draft_id", "occurred_expression")
 
 
 def _incident(r: sqlite3.Row) -> s.Incident:
-    # Rows read before migration 5 (only during an upgrade) lack the structured columns: model defaults apply.
+    # Rows read before migration 5/8 (only during an upgrade) lack the structured columns: model defaults apply.
     extra = {k: r[k] for k in _INCIDENT_V5 if k in r.keys()}
     if "occurred_at" in r.keys():
         extra.update(occurred_at=parse_dt(r["occurred_at"]), confirmed_at=parse_dt(r["confirmed_at"]))
+    if "occurred_reference_at" in r.keys():
+        extra["occurred_reference_at"] = parse_dt(r["occurred_reference_at"])
     return s.Incident(
         incident_id=r["incident_id"], incident_number=r["incident_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], description=r["description"],
@@ -1094,6 +1173,12 @@ def _incident(r: sqlite3.Row) -> s.Incident:
 
 
 def _draft(r: sqlite3.Row) -> s.IncidentDraft:
+    keys = r.keys()
+    extra = {}
+    if "notify_supervisor" in keys:  # absent only while reading a pre-v8 row during an upgrade
+        extra = dict(occurred_expression=r["occurred_expression"],
+                     occurred_reference_at=parse_dt(r["occurred_reference_at"]),
+                     notify_supervisor=bool(r["notify_supervisor"]))
     return s.IncidentDraft(
         draft_id=r["draft_id"], draft_number=r["draft_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], origin=r["origin"], status=r["status"],
@@ -1102,7 +1187,74 @@ def _draft(r: sqlite3.Row) -> s.IncidentDraft:
         occurred_at=parse_dt(r["occurred_at"]), occurred_basis=r["occurred_basis"], episode_id=r["episode_id"],
         version=r["version"], incident_id=r["incident_id"], created_at=parse_dt(r["created_at"]),
         confirmed_at=parse_dt(r["confirmed_at"]), dismissed_at=parse_dt(r["dismissed_at"]),
+        missing=_draft_missing(r) if r["status"] == "draft" else [], **extra,
     )
+
+
+def _draft_missing(r: sqlite3.Row) -> list[str]:
+    """Facts a draft still needs before it can be confirmed (a rule default or 'unknown' counts as stated)."""
+    missing = []
+    if r["severity_basis"] is None:
+        missing.append("severity")
+    if r["occurred_at"] is None or r["occurred_basis"] in (None, "unresolved"):
+        missing.append("occurred_time")
+    return missing
+
+
+class InvalidInput(Exception):
+    """A request value that is well-formed but cannot be used (e.g. an uninterpretable time phrase). Changes nothing."""
+
+    def __init__(self, field: str, issue: str):
+        super().__init__(f"{field}: {issue}")
+        self.field, self.issue = field, issue
+
+
+def session_offset(c: sqlite3.Connection, session: s.Session) -> timezone | None:
+    """Trusted site UTC offset of the session's seeded shift (None when unbound)."""
+    if not session.shift_id:
+        return None
+    row = c.execute("SELECT si.utc_offset FROM shifts sh JOIN sites si USING (site_id) WHERE sh.shift_id = ?",
+                    (session.shift_id,)).fetchone()
+    return offset_timezone(row["utc_offset"]) if row else None
+
+
+def _draft_edits(c: sqlite3.Connection, session: s.Session, e: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    sets: list[str] = []
+    args: list[Any] = []
+    if e.get("description"):
+        sets.append("description = ?")
+        args.append(e["description"])
+    if e.get("severity") and e.get("severity_unknown"):
+        raise InvalidInput("payload.severity", "give a severity level or severity_unknown, not both")
+    if e.get("severity"):
+        sets += ["severity = ?", "severity_basis = 'reported'"]
+        args.append(e["severity"])
+    elif e.get("severity_unknown"):
+        sets += ["severity = NULL", "severity_basis = 'stated_unknown'"]
+    if e.get("location_text"):
+        zone, basis = _resolve_zone(c, session, e["location_text"])
+        sets.append("location_text = ?")
+        args.append(e["location_text"])
+        if basis == "reported":
+            sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
+            args.append(zone)
+    when: OccurrenceTime | None = e.get("when")
+    if when is None and e.get("occurred_at") is not None:
+        at = e["occurred_at"]
+        now = utcnow()
+        if at > now + timedelta(minutes=5):
+            raise InvalidInput("payload.occurred_at", "is in the future")
+        when = OccurrenceTime(at.astimezone(timezone.utc), "operator_entered", None, now)
+    elif when is None and e.get("occurred_expression"):
+        now = utcnow()
+        got = interpret(e["occurred_expression"], now, session_offset(c, session))
+        if got.status != "resolved":
+            raise InvalidInput("payload.occurred_expression", got.reason or "not a supported time expression")
+        when = OccurrenceTime(got.occurred_at, got.basis, got.expression, now)
+    if when is not None:
+        sets += ["occurred_at = ?", "occurred_basis = ?", "occurred_expression = ?", "occurred_reference_at = ?"]
+        args += [iso(when.occurred_at), when.basis, when.expression, iso(when.reference_at)]
+    return sets, args
 
 
 def _approval(r: sqlite3.Row) -> s.ApprovalRequest:

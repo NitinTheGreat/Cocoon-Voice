@@ -70,10 +70,11 @@ def test_incident_with_supervisor_request_is_structured_pending_and_recorded_onc
         again = say(c, sid, "t3", text)
         assert again["actions"][0]["incident"]["incident_number"] == inc["incident_number"] + 1
 
-        # no stated place or severity: zone from the task in progress (labelled), severity left unknown
-        plain = say(c, sid, "t4", "report an incident: the rear camera stopped working")["actions"][0]["incident"]
+        # no stated place: zone from the task in progress (labelled); severity explicitly unknown, never guessed
+        plain = say(c, sid, "t4", "report an incident: the rear camera stopped working, severity unknown")
+        plain = plain["actions"][0]["incident"]
         assert (plain["site_zone_id"], plain["zone_basis"]) == ("ZONE_N_PIT", "active_task")
-        assert plain["severity"] is None and plain["severity_basis"] is None
+        assert plain["severity"] is None and plain["severity_basis"] == "stated_unknown"
 
         state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
         assert len(state["incidents"]) == 3 and state["incident_drafts"] == []
@@ -90,7 +91,7 @@ def test_missing_description_is_asked_for_and_escalation_carries_over(tmp_path):
         # a bare "yes" is not a description: nothing is written and the question stays open
         yes = say(c, sid, "t2", "yes")
         assert [a["type"] for a in yes["actions"]] == ["information_requested"] and yes["action_records"] == []
-        done = say(c, sid, "t3", "a rock fell off the bench onto the haul road")
+        done = say(c, sid, "t3", "a rock fell off the bench onto the haul road, high severity")
         assert [a["type"] for a in done["actions"]] == ["incident_logged", "escalation_requested"]
         assert done["actions"][0]["incident"]["site_zone_id"] == "ZONE_N_HAUL"
         assert c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()["pending_question"] is None
@@ -107,7 +108,7 @@ def test_failure_after_a_committed_action_keeps_it_and_retry_does_not_repeat_it(
 
     with TestClient(create_app(settings), raise_server_exceptions=False) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
-        text = "log an incident: fuel smell near the north pit and notify my supervisor"
+        text = "log an incident: fuel smell near the north pit, medium severity, and notify my supervisor"
         monkeypatch.setattr(Store, "escalation_request", staticmethod(broken))
         r = c.post(f"/v1/sessions/{sid}/turns", headers=AUTH, json={"turn_id": "t1", "text": text, "source": "voice"})
         assert r.status_code == 500
@@ -132,7 +133,7 @@ def test_drafts_are_separate_and_confirmed_or_dismissed_once_by_voice_or_tap(tmp
     with TestClient(create_app(settings)) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
         other = session_for(c, "DOZ_DEMO_001")["session_id"]
-        say(c, sid, "t0", "log an incident: loose step on the cab ladder")  # INC-0001, a normal report
+        say(c, sid, "t0", "log an incident: loose step on the cab ladder, low severity")  # INC-0001, a normal report
         d1 = make_draft(settings, sid, "EP-1", "Seatbelt unfastened while the engine was running")
         d2 = make_draft(settings, sid, "EP-2", "Prolonged idling")
         assert make_draft(settings, sid, "EP-1", "same episode again") == d1  # one draft per episode

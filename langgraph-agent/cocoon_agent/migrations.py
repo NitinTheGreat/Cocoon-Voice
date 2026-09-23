@@ -408,6 +408,60 @@ OPERATOR_CONTEXT: tuple[str, ...] = (
 )
 
 
+_DRAFT_V5_COLUMNS = ("draft_number, draft_id, session_id, operator_id, machine_id, origin, status, description, severity,"
+                     " severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at, occurred_basis,"
+                     " episode_id, version, incident_id, created_at, confirmed_at, dismissed_at")
+
+INCIDENT_CAPTURE: tuple[str, ...] = (
+    # How the occurrence time was derived: the operator's original phrase and the persisted reference instant it was
+    # interpreted against (so a retry can never move it). Existing rows keep NULL (their basis is unchanged).
+    "ALTER TABLE incidents ADD COLUMN occurred_expression TEXT",
+    "ALTER TABLE incidents ADD COLUMN occurred_reference_at TEXT",
+    # An operator's report that still misses a fact (severity or time) is kept as a draft while it is clarified.
+    # SQLite cannot widen a CHECK constraint in place, so the draft table is rebuilt: every row is copied with its
+    # original draft_number (explicit values keep the AUTOINCREMENT sequence), nothing is renumbered.
+    """CREATE TABLE incident_drafts_v8 (
+    draft_number INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id TEXT UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('auto_draft', 'operator_report')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'dismissed')),
+    description TEXT NOT NULL,
+    severity TEXT CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    severity_basis TEXT,
+    site_id TEXT,
+    site_zone_id TEXT,
+    zone_basis TEXT,
+    location_text TEXT,
+    occurred_at TEXT,
+    occurred_basis TEXT,
+    episode_id TEXT UNIQUE,
+    version INTEGER NOT NULL DEFAULT 1,
+    incident_id TEXT,
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    dismissed_at TEXT,
+    occurred_expression TEXT,
+    occurred_reference_at TEXT,
+    source_turn_id TEXT,
+    notify_supervisor INTEGER NOT NULL DEFAULT 0 CHECK (notify_supervisor IN (0, 1))
+)""",
+    f"INSERT INTO incident_drafts_v8({_DRAFT_V5_COLUMNS}) SELECT {_DRAFT_V5_COLUMNS} FROM incident_drafts",
+    # Carry the old AUTOINCREMENT high-water mark too, so a number is never handed out twice.
+    "INSERT INTO sqlite_sequence(name, seq) SELECT 'incident_drafts_v8', seq FROM sqlite_sequence"
+    " WHERE name = 'incident_drafts' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'incident_drafts_v8')",
+    "UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'incident_drafts'))"
+    " WHERE name = 'incident_drafts_v8' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'incident_drafts')",
+    "DROP TABLE incident_drafts",
+    "ALTER TABLE incident_drafts_v8 RENAME TO incident_drafts",
+    # One operator draft per reporting turn (the command log already makes the write exactly-once).
+    "CREATE UNIQUE INDEX one_draft_per_report_turn ON incident_drafts(session_id, source_turn_id)"
+    " WHERE source_turn_id IS NOT NULL",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -423,6 +477,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "structured_incidents", STRUCTURED_INCIDENTS),
     Migration(6, "machine_episodes", MACHINE_EPISODES),
     Migration(7, "operator_context", OPERATOR_CONTEXT),
+    Migration(8, "incident_capture", INCIDENT_CAPTURE),
 )
 
 

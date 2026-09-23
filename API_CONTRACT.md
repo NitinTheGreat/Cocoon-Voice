@@ -144,6 +144,13 @@ Valid new-session request against the development catalog:
   A re-run returns the saved record with `created: false` instead of inserting another one.
 - **This is not exactly-once.** Suppose the backend dies after saving an incident but before storing the turn result. The next retry re-runs the graph, finds the incident by `turn_id` and reports it. The graph message IDs derive from `turn_id`, so the utterance is not duplicated in memory either. But if the model routes the re-run differently, the operator may hear different wording. A turn that `failed` in the wording step after an action was saved has still saved that action. That is why the worker never tells the operator an action failed or was cancelled when the outcome is unknown. It says it cannot confirm yet.
 - Updates for one session are processed in order: turns and telemetry share a per-session lock. This relies on running **one Uvicorn worker**.
+- **A failed turn is not "nothing saved".** `action_records` on the turn (and the error `details`) list every write that committed before the failure; a retry of the same `turn_id` reuses them.
+
+### Incident capture (C1)
+
+- A spoken report becomes an incident only with a description, a severity (a stated `low`/`medium`/`high`/`critical`, or explicitly unknown: `severity: null`, `severity_basis: "stated_unknown"`) and a usable time. Otherwise it is saved as an `IncidentDraft` with `origin: "operator_report"` and `missing: [...]`, and the turn asks one question (`information_requested`, `missing_field` `severity` or `occurred_time`, with the `draft`). The pending question (`kind` `incident_severity` / `incident_time`, `draft_id`) is in `/state`.
+- `occurred_basis`: `time_of_report` (no time stated; the report time is not claimed as the occurrence time), `observation_time`, `operator_relative`, `operator_clock_time`, `operator_entered`, `unresolved`. `occurred_expression` is the operator's phrase verbatim and `occurred_reference_at` the persisted instant it was interpreted against.
+- Taps: `incident.edit` accepts `severity_unknown`, `occurred_expression` (interpreted at the command's first receipt; 422 if it cannot be) and `occurred_at`. `incident.confirm` is 409 `invalid_transition` with details `draft.severity` / `draft.occurred_time` while a fact is missing, and returns the pending `approval` when the draft asked for supervisor review.
 
 ### Example requests
 

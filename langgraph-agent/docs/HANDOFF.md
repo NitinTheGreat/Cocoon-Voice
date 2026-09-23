@@ -2,6 +2,20 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## C1: incident severity, occurrence time and draft handling
+
+- **Recorded:** 2026-09-24, branch `ayush-backend` (fast-forwarded from `origin/backend` `1625202`; B1–B4 and merge `e1f34f5` preserved). Git identity: Ayush Raj (the user's configured identity, as instructed; not Naif).
+- **Schema v8 (`incident_capture`):** `incidents.occurred_expression`/`occurred_reference_at`; `incident_drafts` rebuilt (SQLite cannot widen a CHECK) to allow `origin = 'operator_report'` plus `source_turn_id`, `notify_supervisor` and the two time columns. Rows are copied with their original `draft_number`, and the old AUTOINCREMENT high-water mark is carried over, so no number is reused. v1–v7 are unchanged.
+- **Behaviour:**
+  - Severity is a stated level or an explicit "don't know" (`severity_basis: stated_unknown`); wording is never scored. A report missing severity, or with a time phrase that cannot be interpreted, is saved as an operator draft (`incident.draft` action record) and one question is asked; the answer runs `incident.edit` then `incident.confirm` (the real `INC-` ID only then; a pending supervisor review is created in the confirming transaction when asked for). "Never mind" stops asking and keeps the draft.
+  - Time phrases (documented set in `cocoon_agent/incident_time.py`: "N minutes/hours ago", "half an hour ago", "just now", "at 9:30 / 2 pm / 23:10") are interpreted against the persisted first receipt of the turn (voice) or command (tap) and the trusted site offset; vague phrases ("this morning", "a few minutes ago") are clarified; a 12-hour time without am/pm resolves only within the same site-local day. No phrase = labelled `time_of_report`.
+  - Drafts are edited by voice ("set draft 1 severity to low") and tap (`incident.edit` gains `severity_unknown`, `occurred_expression`, `occurred_at`); confirmation is refused (409 `invalid_transition`, details `draft.<fact>`) while a fact is missing. An uninterpretable tap phrase is 422.
+  - "Why?" returns linked combined episodes in `related_alerts`; "why ... idling?" explains an unannounced idle+unbelted episode from its own evidence under the parent announcement.
+  - A failed turn after committed writes names them; `VOICE_INTEGRATION.md` no longer says a 503 means nothing was saved.
+- **Compatibility:** response models gained optional fields and enum values only. Existing tests that logged incidents without a severity now state one in their input (e.g. ", low severity"), because the report behaviour changed as C1 requires; their assertions are unchanged except for the two new null keys in two exact-dict comparisons.
+- **Checks:** `tests/test_incident_capture.py` 24 passed (15-case time table, severity question/unknown, retry-stable relative time after a crash, ambiguous and unknown time, voice/tap edits with versions, cancel keeps the draft, combined-episode explanations, populated v7 → v8 upgrade, 503 after committed actions). Affected existing files pass; both contract drift checks regenerated and pass.
+- **Not observed:** live Vertex extraction of `incident_time_expression` / `severity_unknown`, audio, Android.
+
 ## B4: explanations, idle reasons, shift briefing, training link and the HTTP demo
 
 - **Schema v7:** `idle_reasons`, `shift_briefings`, lesson `version`/`content_text`/`content_status`,

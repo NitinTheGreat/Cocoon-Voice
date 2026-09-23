@@ -3186,7 +3186,7 @@
               }
             ],
             "title": "Correlated Alert Id",
-            "description": "Episode this one overlaps (same physical situation); it is not announced again."
+            "description": "Parent episode this one overlaps (same physical situation). A linked combined episode keeps its own rule identity and evidence but is deliberately not announced or drafted again; `announced: false` is expected, not a defect."
           },
           "draft_incident_id": {
             "anyOf": [
@@ -3470,6 +3470,14 @@
             "type": "array",
             "title": "Deliveries",
             "description": "Playback reports for that announcement. Played is not acknowledgement."
+          },
+          "related_alerts": {
+            "items": {
+              "$ref": "#/components/schemas/Alert"
+            },
+            "type": "array",
+            "title": "Related Alerts",
+            "description": "Linked episodes of the same situation (e.g. the combined idle + unbelted episode under a seatbelt warning), each with its own saved evidence."
           }
         },
         "additionalProperties": false,
@@ -4899,6 +4907,7 @@
             "enum": [
               "confirm_draft",
               "dismiss_draft",
+              "edit_draft",
               "explain_alert",
               "affirm",
               "read_lesson"
@@ -4909,7 +4918,9 @@
             "type": "string",
             "enum": [
               "several_candidates",
-              "nothing_pending"
+              "nothing_pending",
+              "missing_facts",
+              "nothing_to_change"
             ],
             "title": "Reason"
           },
@@ -5230,6 +5241,18 @@
             ],
             "title": "Severity"
           },
+          "severity_unknown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Unknown",
+            "description": "incident.edit: the operator states the severity is unknown (not a guess)."
+          },
           "location_text": {
             "anyOf": [
               {
@@ -5241,6 +5264,33 @@
               }
             ],
             "title": "Location Text"
+          },
+          "occurred_expression": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Expression",
+            "description": "incident.edit: a spoken/typed time phrase (e.g. 'ten minutes ago'), interpreted server-side against the command's first receipt time and the trusted site time zone."
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At",
+            "description": "incident.edit: an exact occurrence time picked on the device."
           }
         },
         "additionalProperties": false,
@@ -7692,6 +7742,7 @@
                 "type": "string",
                 "enum": [
                   "reported",
+                  "stated_unknown",
                   "rule_default"
                 ]
               },
@@ -7767,7 +7818,11 @@
                 "type": "string",
                 "enum": [
                   "time_of_report",
-                  "observation_time"
+                  "observation_time",
+                  "operator_relative",
+                  "operator_clock_time",
+                  "operator_entered",
+                  "unresolved"
                 ]
               },
               {
@@ -7775,6 +7830,31 @@
               }
             ],
             "title": "Occurred Basis"
+          },
+          "occurred_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Expression",
+            "description": "The operator's own time phrase, verbatim."
+          },
+          "occurred_reference_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Reference At",
+            "description": "Persisted instant the phrase was interpreted against (first receipt of the turn or command); retries reuse it, so the occurrence time never moves forward."
           },
           "episode_id": {
             "anyOf": [
@@ -7826,7 +7906,7 @@
           "created_at"
         ],
         "title": "Incident",
-        "description": "A confirmed report. `description` is the \"what\". Structured fields are additive; each `*_basis` says where a\nvalue came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks\ninvented."
+        "description": "A confirmed report. `description` is the \"what\". Structured fields are additive; each `*_basis` says where a\nvalue came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks\ninvented. `severity` is never inferred from wording: null with basis `stated_unknown` means the operator said\nthey do not know; null with no basis is a report saved before severity was asked for. A `rule_default` severity\nis the warning rule's configured value, not an operator assessment of the incident."
       },
       "IncidentActionDetails": {
         "additionalProperties": false,
@@ -8091,7 +8171,10 @@
           },
           "origin": {
             "type": "string",
-            "const": "auto_draft",
+            "enum": [
+              "auto_draft",
+              "operator_report"
+            ],
             "title": "Origin"
           },
           "status": {
@@ -8130,6 +8213,7 @@
                 "type": "string",
                 "enum": [
                   "reported",
+                  "stated_unknown",
                   "rule_default"
                 ]
               },
@@ -8205,7 +8289,11 @@
                 "type": "string",
                 "enum": [
                   "time_of_report",
-                  "observation_time"
+                  "observation_time",
+                  "operator_relative",
+                  "operator_clock_time",
+                  "operator_entered",
+                  "unresolved"
                 ]
               },
               {
@@ -8213,6 +8301,29 @@
               }
             ],
             "title": "Occurred Basis"
+          },
+          "occurred_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Expression"
+          },
+          "occurred_reference_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Reference At"
           },
           "episode_id": {
             "anyOf": [
@@ -8269,6 +8380,24 @@
               }
             ],
             "title": "Dismissed At"
+          },
+          "notify_supervisor": {
+            "type": "boolean",
+            "title": "Notify Supervisor",
+            "description": "Confirming also requests supervisor review.",
+            "default": false
+          },
+          "missing": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "severity",
+                "occurred_time"
+              ]
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "Facts still needed before confirmation."
           }
         },
         "additionalProperties": false,
@@ -8286,7 +8415,7 @@
           "created_at"
         ],
         "title": "IncidentDraft",
-        "description": "An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates the real\nincident ID once (`incident_id`)."
+        "description": "An unconfirmed report: an automatic draft from a safety episode, or an operator's report that still misses a\nfact (`missing`). Not an incident until confirmed; confirming allocates the real incident ID once\n(`incident_id`). A draft with missing facts cannot be confirmed until each is stated or explicitly unknown."
       },
       "IncidentDraftAction": {
         "properties": {
@@ -8294,7 +8423,8 @@
             "type": "string",
             "enum": [
               "incident_confirmed",
-              "incident_dismissed"
+              "incident_dismissed",
+              "incident_draft_edited"
             ],
             "title": "Type"
           },
@@ -8852,8 +8982,35 @@
           },
           "missing_field": {
             "type": "string",
-            "const": "description",
+            "enum": [
+              "description",
+              "severity",
+              "occurred_time"
+            ],
             "title": "Missing Field"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IncidentDraft"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The saved draft the answer will complete (severity / time questions)."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why a stated time could not be used, when relevant."
           }
         },
         "additionalProperties": false,
@@ -10484,6 +10641,18 @@
               }
             ],
             "title": "Cancelled"
+          },
+          "kept_draft_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kept Draft Number",
+            "description": "The report stays saved as this draft; cancelling a question never deletes it."
           }
         },
         "additionalProperties": false,
@@ -10498,7 +10667,11 @@
         "properties": {
           "kind": {
             "type": "string",
-            "const": "incident_description",
+            "enum": [
+              "incident_description",
+              "incident_severity",
+              "incident_time"
+            ],
             "title": "Kind"
           },
           "for_action": {
@@ -10533,6 +10706,11 @@
             ],
             "title": "Severity"
           },
+          "severity_unknown": {
+            "type": "boolean",
+            "title": "Severity Unknown",
+            "default": false
+          },
           "location_text": {
             "anyOf": [
               {
@@ -10543,6 +10721,34 @@
               }
             ],
             "title": "Location Text"
+          },
+          "time_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Expression"
+          },
+          "draft_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Id"
+          },
+          "then_confirm": {
+            "type": "boolean",
+            "title": "Then Confirm",
+            "description": "Answering also confirms the draft once nothing is missing (false when the question came from an edit).",
+            "default": true
           }
         },
         "additionalProperties": false,
@@ -10552,7 +10758,8 @@
           "for_action",
           "asked_in_turn_id"
         ],
-        "title": "PendingQuestion"
+        "title": "PendingQuestion",
+        "description": "The one question Cocoon is waiting on. For incident_severity / incident_time the report is already saved as\n`draft_id` (nothing is lost if the operator never answers)."
       },
       "PresenceRecord": {
         "additionalProperties": false,
@@ -12408,6 +12615,17 @@
                 "type": "null"
               }
             ]
+          },
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pending supervisor-review request created with a confirmation (not a notification)."
           },
           "created_at": {
             "type": "string",
@@ -16664,6 +16882,7 @@
                   "idle_reason_recorded": "#/components/schemas/IdleReasonRecordedAction",
                   "incident_confirmed": "#/components/schemas/IncidentDraftAction",
                   "incident_dismissed": "#/components/schemas/IncidentDraftAction",
+                  "incident_draft_edited": "#/components/schemas/IncidentDraftAction",
                   "incident_drafts": "#/components/schemas/IncidentDraftsAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",
@@ -16841,6 +17060,7 @@
                   "idle_reason_recorded": "#/components/schemas/IdleReasonRecordedAction",
                   "incident_confirmed": "#/components/schemas/IncidentDraftAction",
                   "incident_dismissed": "#/components/schemas/IncidentDraftAction",
+                  "incident_draft_edited": "#/components/schemas/IncidentDraftAction",
                   "incident_drafts": "#/components/schemas/IncidentDraftsAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",

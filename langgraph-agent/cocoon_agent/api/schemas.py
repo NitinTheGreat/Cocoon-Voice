@@ -179,12 +179,21 @@ Severity = Literal["low", "medium", "high", "critical"]
 
 
 ZoneBasis = Literal["reported", "active_task"]
+SeverityBasis = Literal["reported", "stated_unknown", "rule_default"]
+# time_of_report: no occurrence time was stated, so the report time is recorded AS the report time (not a known
+# occurrence time). observation_time: the triggering telemetry sample. operator_relative / operator_clock_time: the
+# operator's phrase (`occurred_expression`) interpreted against `occurred_reference_at`. operator_entered: an exact
+# time entered on a device. unresolved: a phrase was given but could not be interpreted; `occurred_at` is null.
+OccurredBasis = Literal["time_of_report", "observation_time", "operator_relative", "operator_clock_time",
+                        "operator_entered", "unresolved"]
 
 
 class Incident(ContractModel):
     """A confirmed report. `description` is the "what". Structured fields are additive; each `*_basis` says where a
     value came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks
-    invented."""
+    invented. `severity` is never inferred from wording: null with basis `stated_unknown` means the operator said
+    they do not know; null with no basis is a report saved before severity was asked for. A `rule_default` severity
+    is the warning rule's configured value, not an operator assessment of the incident."""
 
     incident_id: str
     incident_number: int
@@ -197,44 +206,56 @@ class Incident(ContractModel):
     status: Literal["confirmed"] = Field(default="confirmed", description="Unconfirmed drafts are IncidentDraft.")
     origin: Literal["operator_reported", "auto_draft"] = "operator_reported"
     severity: Severity | None = Field(default=None, description="Null = not stated (never guessed).")
-    severity_basis: Literal["reported", "rule_default"] | None = None
+    severity_basis: SeverityBasis | None = None
     site_id: str | None = None
     site_zone_id: str | None = None
     zone_basis: ZoneBasis | None = None
     location_text: str | None = None
     occurred_at: datetime | None = None
-    occurred_basis: Literal["time_of_report", "observation_time"] | None = None
+    occurred_basis: OccurredBasis | None = None
+    occurred_expression: str | None = Field(default=None, description="The operator's own time phrase, verbatim.")
+    occurred_reference_at: datetime | None = Field(
+        default=None, description="Persisted instant the phrase was interpreted against (first receipt of the turn "
+                                  "or command); retries reuse it, so the occurrence time never moves forward.")
     episode_id: str | None = Field(default=None, description="Alert episode behind a confirmed automatic draft.")
     draft_id: str | None = Field(default=None, description="The draft this incident was confirmed from.")
     confirmed_at: datetime | None = None
 
 
+DraftFact = Literal["severity", "occurred_time"]
+
+
 class IncidentDraft(ContractModel):
-    """An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates the real
-    incident ID once (`incident_id`)."""
+    """An unconfirmed report: an automatic draft from a safety episode, or an operator's report that still misses a
+    fact (`missing`). Not an incident until confirmed; confirming allocates the real incident ID once
+    (`incident_id`). A draft with missing facts cannot be confirmed until each is stated or explicitly unknown."""
 
     draft_id: str
     draft_number: int
     session_id: str
     operator_id: str
     machine_id: str
-    origin: Literal["auto_draft"]
+    origin: Literal["auto_draft", "operator_report"]
     status: Literal["draft", "confirmed", "dismissed"]
     description: str
     severity: Severity | None = None
-    severity_basis: Literal["reported", "rule_default"] | None = None
+    severity_basis: SeverityBasis | None = None
     site_id: str | None = None
     site_zone_id: str | None = None
     zone_basis: ZoneBasis | None = None
     location_text: str | None = None
     occurred_at: datetime | None = None
-    occurred_basis: Literal["time_of_report", "observation_time"] | None = None
+    occurred_basis: OccurredBasis | None = None
+    occurred_expression: str | None = None
+    occurred_reference_at: datetime | None = None
     episode_id: str | None = None
     version: int
     incident_id: str | None = Field(default=None, description="Set once, when the draft is confirmed.")
     created_at: datetime
     confirmed_at: datetime | None = None
     dismissed_at: datetime | None = None
+    notify_supervisor: bool = Field(default=False, description="Confirming also requests supervisor review.")
+    missing: list[DraftFact] = Field(default_factory=list, description="Facts still needed before confirmation.")
 
 
 class ApprovalRequest(ContractModel):
@@ -326,7 +347,9 @@ class Alert(ContractModel):
     recommended_action: str | None = None
     evidence: AlertEvidence | None = None
     correlated_alert_id: str | None = Field(
-        default=None, description="Episode this one overlaps (same physical situation); it is not announced again.")
+        default=None, description="Parent episode this one overlaps (same physical situation). A linked combined "
+                                  "episode keeps its own rule identity and evidence but is deliberately not announced "
+                                  "or drafted again; `announced: false` is expected, not a defect.")
     draft_incident_id: str | None = Field(default=None, description="Automatic incident draft linked to this episode.")
     training_assignment_id: str | None = Field(default=None, description="Lesson assignment linked to this episode.")
     announced: bool = Field(default=True, description="An alert_started announcement was created (not: heard).")
@@ -349,12 +372,20 @@ class MachineStateView(ContractModel):
 
 
 class PendingQuestion(ContractModel):
-    kind: Literal["incident_description"]
+    """The one question Cocoon is waiting on. For incident_severity / incident_time the report is already saved as
+    `draft_id` (nothing is lost if the operator never answers)."""
+
+    kind: Literal["incident_description", "incident_severity", "incident_time"]
     for_action: Literal["log_incident"]
     asked_in_turn_id: str
     notify_supervisor: bool = Field(default=False, description="The report was asked to go to a supervisor too.")
     severity: Severity | None = None
+    severity_unknown: bool = False
     location_text: str | None = None
+    time_expression: str | None = None
+    draft_id: str | None = None
+    then_confirm: bool = Field(default=True, description="Answering also confirms the draft once nothing is missing "
+                                                         "(false when the question came from an edit).")
 
 
 # --------------------------------------------------------------------------- turns
@@ -387,7 +418,10 @@ class IncidentLoggedAction(ContractModel):
 class InformationRequestedAction(ContractModel):
     type: Literal["information_requested"]
     for_action: Literal["log_incident"]
-    missing_field: Literal["description"]
+    missing_field: Literal["description", "severity", "occurred_time"]
+    draft: "IncidentDraft | None" = Field(
+        default=None, description="The saved draft the answer will complete (severity / time questions).")
+    reason: str | None = Field(default=None, description="Why a stated time could not be used, when relevant.")
 
 
 class TrainingAssignedAction(ContractModel):
@@ -410,6 +444,9 @@ class AlertExplainedAction(ContractModel):
     announcement_event_id: str | None = Field(default=None, description="The announcement that raised this alert.")
     deliveries: list["DeliveryRecord"] = Field(
         default_factory=list, description="Playback reports for that announcement. Played is not acknowledgement.")
+    related_alerts: list[Alert] = Field(
+        default_factory=list, description="Linked episodes of the same situation (e.g. the combined idle + unbelted "
+                                          "episode under a seatbelt warning), each with its own saved evidence.")
 
 
 class IdleReasonRecordedAction(ContractModel):
@@ -432,6 +469,8 @@ class LessonContentAction(ContractModel):
 class PendingCancelledAction(ContractModel):
     type: Literal["pending_cancelled"]
     cancelled: Literal["log_incident"] | None
+    kept_draft_number: int | None = Field(
+        default=None, description="The report stays saved as this draft; cancelling a question never deletes it.")
 
 
 class AssignedTasksAction(ContractModel):
@@ -451,7 +490,7 @@ class TaskTransitionAction(ContractModel):
 
 
 class IncidentDraftAction(ContractModel):
-    type: Literal["incident_confirmed", "incident_dismissed"]
+    type: Literal["incident_confirmed", "incident_dismissed", "incident_draft_edited"]
     draft: IncidentDraft
     incident: Incident | None = Field(default=None, description="The incident created by confirming (confirm only).")
     created: bool
@@ -472,8 +511,8 @@ class ClarificationAction(ContractModel):
     """Nothing was changed: several workflows could match, or there is nothing to act on."""
 
     type: Literal["clarification_needed"]
-    for_action: Literal["confirm_draft", "dismiss_draft", "explain_alert", "affirm", "read_lesson"]
-    reason: Literal["several_candidates", "nothing_pending"]
+    for_action: Literal["confirm_draft", "dismiss_draft", "edit_draft", "explain_alert", "affirm", "read_lesson"]
+    reason: Literal["several_candidates", "nothing_pending", "missing_facts", "nothing_to_change"]
     options: list[str] = Field(default_factory=list)
 
 
@@ -721,7 +760,15 @@ class CommandPayload(ContractModel):
     incident_id: StableId | None = Field(default=None, description="incident.* commands: the draft ID (DRF-…).")
     description: str | None = Field(default=None, min_length=1, max_length=1000)
     severity: Severity | None = None
+    severity_unknown: bool | None = Field(
+        default=None, description="incident.edit: the operator states the severity is unknown (not a guess).")
     location_text: str | None = Field(default=None, max_length=300)
+    occurred_expression: str | None = Field(
+        default=None, min_length=1, max_length=120,
+        description="incident.edit: a spoken/typed time phrase (e.g. 'ten minutes ago'), interpreted server-side "
+                    "against the command's first receipt time and the trusted site time zone.")
+    occurred_at: AwareDatetime | None = Field(
+        default=None, description="incident.edit: an exact occurrence time picked on the device.")
 
 
 class SessionCommand(ContractModel):
@@ -756,6 +803,8 @@ class SessionCommandResult(ContractModel):
     task: AssignedTask | None = None
     draft: IncidentDraft | None = None
     incident: Incident | None = None
+    approval: ApprovalRequest | None = Field(
+        default=None, description="Pending supervisor-review request created with a confirmation (not a notification).")
     created_at: datetime
 
 
