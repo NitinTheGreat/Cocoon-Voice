@@ -2,6 +2,36 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-24 — M11: wake gating, Krisp isolation and STT diagnosis (branch `voice`)
+
+**User's run:** `wake decision=ignore reason=armed: no wake phrase state=ARMED chars=29`; `outcome=gated:ignore`
+with STT timings; AssemblyAI "no messages received for 15s / 30s"; event-loop blocking inside
+`livekit.plugins.krisp.viva_filter` → `krisp_internal._ffi`; loop lag up to 315 ms.
+
+**Code-level findings:**
+- **Wake gate.** In `WAKE_MODE=transcript` a final turn that does not start with the wake phrase is dropped while
+  ARMED, by design (`WakeGate.on_utterance`). The 29-character turn was dropped this way. The log had no text, so
+  it is unknown whether "Hey Cat" was said or recognised; no misrecognition is claimed.
+- **Audio path.** STT receives room audio continuously in transcript mode, including while ARMED. Nothing in the
+  worker resets the gate apart from the inactivity timer (busy states exempt) and the sleep command.
+- **Krisp.** One VIVA filter is built per session and passed to the SDK room input. It runs through
+  `rtc.AudioStream.from_track` per frame on the event loop, with no second worker filter and no per-frame
+  construction. Startup validation built an extra, unused native filter in the main process. The M10 executor
+  offload of the credential update was unverified cross-thread use of the native object.
+- **AssemblyAI.** The plugin (1.8.2) warns every 15 s without provider messages and does not reconnect. It warns
+  separately ("no audio frames sent") only when audio stops reaching it.
+- **Logging.** `main()` added a plain-text root handler, and LiveKit's CLI adds its own (JSON for `start`), so
+  every record printed twice.
+
+**Changes:** `WAKE_MODE=off`; normalised whole-word phrase matching; routing line per turn; "not answered" for
+gated turns; playback lines; `stt input:` diagnosis; startup lines for wake mode, enhancement and transcript
+logging; Krisp offload removed; startup check builds no filter; one log handler. Versions inspected:
+livekit-agents 1.8.2, livekit 1.1.18, livekit-plugins-krisp 0.4.2, krisp-internal 0.2.0,
+livekit-plugins-assemblyai 1.8.2.
+
+**Checks run:** none by request (syntax compile only). The removed Krisp-offload test covered deleted code.
+**Next:** the user's Playground run in continuous-listening mode (README), then re-enable Krisp separately.
+
 ## 2026-09-23 19:40–20:10 UTC — M10: interruptions, recovery and conversational delivery (branch `voice`)
 
 Commits: `6c872b2` (input, interruption ownership, recovery, diagnostics), `d7fb547` (spoken style, cue), and this

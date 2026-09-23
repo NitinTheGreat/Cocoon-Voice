@@ -142,9 +142,42 @@ A worker that starts has already passed settings validation, since startup refus
 
 1. **Worker registered.** The log shows `registered worker … agent_name=cocoon-voice`, and `GET 127.0.0.1:8081/worker` shows the name. *Verified 2026-09-23.*
 2. **Agent dispatched into a room.** The log shows `starting session room=… participant=… noise=… wake=…`.
-3. **Real speech connected.** You hear the greeting "Hi, I'm Cat, your Cocoon assistant." Then "Hey Cat, can you hear me?" produces `wake decision=respond` and a spoken answer.
+3. **Real speech connected.** You hear the greeting "Hi, I'm Cat, your Cocoon assistant." Then "Hey Cat, can you hear me?" produces `turn route=accepted` and a spoken answer.
 
 **Common trap:** because the worker registers with an explicit `agent_name`, LiveKit does **not** auto-dispatch it. A registered worker receives no job unless something dispatches exactly `cocoon-voice` in the **same project**. The usual causes are a name mismatch or the browser being on another project. A token-embedded dispatch fires only when the join *creates* the room.
+
+### Continuous-listening Playground mode (no wake phrase, worker enhancement off)
+
+A local diagnostic mode: every final transcript goes to the agent, and worker-side Krisp is disabled to isolate
+event-loop stalls. Set these in `livekit-voice/.env`:
+
+```
+WAKE_MODE=off
+NOISE_CANCELLATION=none
+ALLOW_DEGRADED_AUDIO=true
+LOG_TRANSCRIPTS=true
+```
+
+Then, from `livekit-voice/`: `.\.venv\Scripts\python.exe -m cocoon_voice.agent dev` (plain-text logs, one line per
+record; `start` prints the same records as JSON).
+
+- **Startup lines to expect:**
+  - `effective wake mode: off (...)`
+  - `worker-side enhancement: OFF (NOISE_CANCELLATION=none)`
+  - `transcript logging: ON (local only)`
+  - Per session: `AUDIO DEGRADED: DEGRADED:none (...)`
+- **Per final turn:**
+  - `final transcript: '...'` (before any wake filtering).
+  - One `turn route=accepted|wake-gated|empty|command:<stop/sleep/ack>|cancelled reason=...`.
+  - `generation epoch=N outcome=...`, then `playback completed|interrupted`.
+- **When STT is quiet for 15 s:** a `stt input: ...` line says whether no audio arrived, the audio was silent, or
+  speech-level audio got no transcripts. AssemblyAI's own "no messages received" warning alone is normal while
+  you are silent.
+- **To restore Hey Cat:** set `WAKE_MODE=transcript` (the gate starts ARMED; "Hey Cat" may be followed by the
+  request; follow-ups need no phrase for `WAKE_ACTIVE_TIMEOUT_SECONDS`).
+- **To restore Krisp:** set `NOISE_CANCELLATION=krisp` and `ALLOW_DEGRADED_AUDIO=false`.
+- **To stop logging transcripts:** set `LOG_TRANSCRIPTS=false`.
+- **Rules:** keep browser noise filtering off, so enhancement is never stacked. Restart the worker after editing `.env`.
 
 ### Connecting (pick one)
 
@@ -164,7 +197,7 @@ A worker that starts has already passed settings validation, since startup refus
 ### Manual checklist (record results in `docs/work-log.md`)
 
 1. Join: expect exactly one greeting. Reconnect within 90 s: expect no second greeting and a `reconnected` log line.
-2. Say something without the wake phrase ("did you see the game"): no reply, and the log shows `decision=ignore reason=armed`.
+2. Say something without the wake phrase ("did you see the game"): no reply, and the log shows `turn route=wake-gated reason=armed: no wake phrase`.
 3. "Hey Cat." gives a short "Hey, I'm here. What do you need?" with no LLM call.
 4. "Hey Cat, can you hear me?" gives one answer, and no acknowledgment over it.
 5. Follow-ups without "Hey Cat": short yes/no answers, a long question, and a question with a mid-sentence pause ("what should I… check on the tracks"). It must not be cut off at the pause.
