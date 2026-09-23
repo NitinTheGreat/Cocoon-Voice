@@ -1,0 +1,4 @@
+# Extra packages for the optional insights add-on (python -m cocoon_agent.insights), on top of requirements.txt.
+# Install: uv pip install -r requirements-insights.txt   (or: pip install -r requirements-insights.txt)
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
