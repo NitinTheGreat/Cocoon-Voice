@@ -1,0 +1,1 @@
+﻿hey_livekit.onnx: example wake-word classifier from https://github.com/livekit/livekit-wakeword (examples/resources, commit 95448a7), Apache License 2.0. Used only as a test fixture to validate the acoustic wake path with a real model; Cocoon's own 'Hey Cat' model must be trained separately (see livekit-voice/wakeword/).

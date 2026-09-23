@@ -47,7 +47,11 @@ class MockState:
 
 
 def create_mock_app(token: str | None = None) -> FastAPI:
-    token = token or get_settings().service_token.get_secret_value()
+    if token is None:
+        configured = get_settings().service_token
+        if configured is None:
+            raise SystemExit("COCOON_SERVICE_TOKEN is not set (future-only; needed only for the mock backend tools)")
+        token = configured.get_secret_value()
     app = FastAPI(title="Cocoon MOCK backend (livekit-voice)", version="1.0.0-mock")
     st = MockState()
     app.state.mock = st

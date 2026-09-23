@@ -1,0 +1,77 @@
+# livekit-wakeword training config for Cocoon's "Hey Cat" (livekit-wakeword 0.2.1).
+# Based on upstream configs/prod.yaml, reduced to fit a free Colab T4 or a 4 GB RTX 3050.
+# Train with:  livekit-wakeword setup --config hey_cat.yaml   then   livekit-wakeword run hey_cat.yaml
+# Output:      output/hey_cat/hey_cat.onnx  -> copy to livekit-voice/keywords/hey_cat.onnx
+
+model_name: hey_cat
+
+target_phrases: ["hey cat"]
+
+# ---------------------------------------------------------------- data generation (Piper VITS, English-US)
+n_samples: 10000          # upstream prod uses 25000; raise if false accepts are too high
+n_samples_val: 2000
+n_background_samples: 2000
+n_background_samples_val: 500
+tts_batch_size: 16        # 50 needs ~8 GB VRAM; 16 fits 4 GB
+
+# Phonetically close phrases that must NOT wake Cat (operators, radio chatter, CAT product names)
+custom_negative_phrases:
+  - "cat"
+  - "hey"
+  - "hey cap"
+  - "hey cab"
+  - "hey cats"
+  - "hey catch"
+  - "hey cast"
+  - "hey kate"
+  - "hey katie"
+  - "hey kit"
+  - "hey cut"
+  - "hey hat"
+  - "hey that"
+  - "hay cat"
+  - "they cat"
+  - "okay cat"
+  - "a cat"
+  - "the cat"
+  - "hey caterpillar"
+  - "caterpillar"
+  - "cat three twenty"
+  - "hey count"
+  - "hey man"
+
+noise_scales: [0.98]
+noise_scale_ws: [0.98]
+length_scales: [0.75, 1.0, 1.25]
+slerp_weights: [0.2, 0.35, 0.5, 0.65, 0.8]
+
+# ---------------------------------------------------------------- paths
+data_dir: ./data
+output_dir: ./output
+
+# ---------------------------------------------------------------- augmentation
+augmentation:
+  clip_duration: 2.0
+  batch_size: 16
+  rounds: 2
+  background_paths: [./data/backgrounds]
+  rir_paths: [./data/rirs]
+
+# ---------------------------------------------------------------- model
+model:
+  model_type: conv_attention   # upstream's best false-positive behaviour
+  model_size: small            # server-side inference cost; "medium" if accuracy is short
+
+# ---------------------------------------------------------------- training
+steps: 40000
+learning_rate: 0.0001
+weight_decay: 0.01
+label_smoothing: 0.05
+max_negative_weight: 3000
+target_fp_per_hour: 0.5        # prototype target; lower for production
+
+batch_n_per_class:
+  positive: 50
+  adversarial_negative: 50
+  ACAV100M_sample: 1024        # ignored (weight 0) if setup ran with --skip-acav
+  background_noise: 50

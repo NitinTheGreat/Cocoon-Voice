@@ -26,6 +26,8 @@ from cocoon_voice.config import get_settings  # noqa: E402
 
 async def run(texts: list[str], base_url: str | None) -> None:
     settings = get_settings()
+    if settings.service_token is None:
+        raise SystemExit("COCOON_SERVICE_TOKEN is not set (future-only remote bridge tooling)")
     client = BackendClient(base_url or settings.backend_url, settings.service_token.get_secret_value())
     try:
         run_id = uuid.uuid4().hex[:6]
