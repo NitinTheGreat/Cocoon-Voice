@@ -88,9 +88,9 @@ class VoiceSettings(BaseSettings):
     vertex_thinking: Literal["minimal", "model_default"] = Field(default="minimal", alias="VERTEX_THINKING")
     vertex_temperature: float = Field(default=0.6, alias="VERTEX_TEMPERATURE", ge=0.0, le=2.0)
     vertex_max_output_tokens: int = Field(default=220, alias="VERTEX_MAX_OUTPUT_TOKENS", ge=32, le=2048)
-    llm_first_chunk_timeout_s: float = Field(default=6.0, alias="LLM_FIRST_CHUNK_TIMEOUT_SECONDS", gt=0, le=60)
+    llm_first_chunk_timeout_s: float = Field(default=3.5, alias="LLM_FIRST_CHUNK_TIMEOUT_SECONDS", gt=0, le=60)
     llm_stall_timeout_s: float = Field(default=5.0, alias="LLM_STALL_TIMEOUT_SECONDS", gt=0, le=60)
-    llm_max_attempts: int = Field(default=2, alias="LLM_MAX_ATTEMPTS", ge=1, le=4)
+    llm_max_attempts: int = Field(default=3, alias="LLM_MAX_ATTEMPTS", ge=1, le=4)
     max_context_turns: int = Field(default=8, alias="MAX_CONTEXT_TURNS", ge=1, le=40)
 
     # ---------------------------------------------------------------- brain / profile
@@ -124,9 +124,17 @@ class VoiceSettings(BaseSettings):
     krisp_suppression_level: int = Field(default=75, alias="KRISP_SUPPRESSION_LEVEL", ge=0, le=100)
     allow_degraded_audio: bool = Field(default=False, alias="ALLOW_DEGRADED_AUDIO")
     preemptive_generation: bool = Field(default=False, alias="PREEMPTIVE_GENERATION")
-    interruption_min_duration_s: float = Field(default=0.4, alias="INTERRUPTION_MIN_DURATION_SECONDS", ge=0.1,
+    # adaptive = LiveKit's barge-in model (rejects backchannels/noise; needs LiveKit Cloud or dev mode and an STT
+    # with aligned transcripts); vad = voice activity only
+    interruption_mode: Literal["adaptive", "vad"] = Field(default="adaptive", alias="INTERRUPTION_MODE")
+    interruption_min_duration_s: float = Field(default=0.5, alias="INTERRUPTION_MIN_DURATION_SECONDS", ge=0.1,
                                                le=2.0)
-    false_interruption_timeout_s: float = Field(default=1.5, alias="FALSE_INTERRUPTION_TIMEOUT_SECONDS", ge=0.3,
+    interruption_min_words: int = Field(default=0, alias="INTERRUPTION_MIN_WORDS", ge=0, le=3)
+    # seconds of detected speech without any transcript before Cat asks the user to repeat (0 = off)
+    transcription_timeout_s: float = Field(default=3.0, alias="TRANSCRIPTION_TIMEOUT_SECONDS", ge=0, le=15)
+    # only speech at least this long (VAD) earns a "could you say that again?" (shorter blips are treated as noise)
+    clarify_min_speech_s: float = Field(default=0.8, alias="CLARIFY_MIN_SPEECH_SECONDS", ge=0.2, le=5)
+    false_interruption_timeout_s: float = Field(default=2.0, alias="FALSE_INTERRUPTION_TIMEOUT_SECONDS", ge=0.3,
                                                 le=5.0)
     thinking_cue_enabled: bool = Field(default=True, alias="THINKING_CUE_ENABLED")
     thinking_cue_delay_ms: int = Field(default=1200, alias="THINKING_CUE_DELAY_MS", ge=300, le=10000)

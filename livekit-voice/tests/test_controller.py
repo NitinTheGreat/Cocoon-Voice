@@ -117,3 +117,109 @@ async def test_context_is_bounded():
     bounded = sp.bounded_context(ctx, c.s.max_context_turns)
     texts = [i.text_content for i in bounded.items]
     assert texts[0] == sp.INSTRUCTIONS and texts[-1] == "a9" and len(texts) <= 6
+
+
+class _Ev:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+async def test_false_interruption_event_records_only_and_never_generates():
+    c, session, _ = controller()
+    c.gate.on_acoustic_wake()
+    c.interruption_pending = True
+    c._on_false_interruption(_Ev(resumed=True))
+    c._on_false_interruption(_Ev(resumed=False))
+    assert session.said == [] and c.interruption_pending is False
+    assert c.false_interruptions == {"resumed": 1, "not_resumed": 1}
+
+
+async def test_missed_speech_asks_to_repeat_once_but_not_for_blips_or_after_a_turn():
+    import asyncio
+
+    c, session, _ = controller()
+    c.gate.on_acoustic_wake()  # ACTIVE
+    c._on_transcription_timeout(_Ev(speech_duration=0.3))  # short blip: treated as noise
+    await asyncio.sleep(0.4)
+    assert session.said == []
+    c._on_transcription_timeout(_Ev(speech_duration=1.5))
+    await asyncio.sleep(0.4)
+    assert [s["text"] for s in session.said] == [sp.CLARIFY]
+    c._on_transcription_timeout(_Ev(speech_duration=1.5))
+    await c.on_user_turn(msg("what about the tracks"))  # a (late) transcript arrived: no stale prompt
+    await asyncio.sleep(0.4)
+    assert [s["text"] for s in session.said] == [sp.CLARIFY]
+
+
+async def test_wake_window_never_expires_during_a_pending_interruption():
+    c, _, _ = controller()
+    c.gate.on_acoustic_wake()
+    c.interruption_pending = True
+    assert c.is_busy()
+    c.interruption_pending = False
+    assert not c.is_busy()
+
+
+async def test_krisp_credential_rotation_runs_off_the_event_loop():
+    import asyncio
+    import threading
+    import time
+
+    from cocoon_voice.providers import offload_krisp_credential_updates
+
+    calls = []
+
+    class Proc:
+        def _on_credentials_updated(self, *, token, url):
+            time.sleep(0.3)  # the measured native call blocked the loop for 105-339 ms
+            calls.append((token, url, threading.current_thread() is threading.main_thread()))
+
+    proc = Proc()
+    offload_krisp_credential_updates(proc)
+    t0 = time.perf_counter()
+    proc._on_credentials_updated(token="jwt", url="wss://x")
+    assert time.perf_counter() - t0 < 0.05  # returns immediately
+    await asyncio.sleep(0.5)
+    assert calls == [("jwt", "wss://x", False)]
+
+
+async def test_interruption_mode_is_sampled_per_turn_and_a_downgrade_is_reported(caplog):
+    c, session, _ = controller()
+    c.gate.on_acoustic_wake()
+
+    class Activity:
+        _interruption_detection_enabled = True
+
+    session._activity = Activity()
+    await c.on_user_turn(msg("what about the tracks"))
+    Activity._interruption_detection_enabled = False  # SDK _fallback_to_vad_interruption
+    with caplog.at_level("WARNING"):
+        await c.on_user_turn(msg("and the boom"))
+    assert c.interruption_by_turn == {"adaptive(active)": 1, "vad(configured=adaptive)": 1}
+    assert "downgraded" in caplog.text
+
+
+async def test_overlap_verdicts_are_counted_without_generating():
+    c, session, _ = controller()
+    c._on_overlap_verdict(_Ev(agent_ended=False, is_interruption=False, probability=0.1, detection_delay=0.3))
+    c._on_overlap_verdict(_Ev(agent_ended=False, is_interruption=True, probability=0.9, detection_delay=0.4))
+    c._on_overlap_verdict(_Ev(agent_ended=True, is_interruption=False, probability=0.0, detection_delay=0.0))
+    assert c.overlap_verdicts == {"interruption": 1, "backchannel": 1, "agent_ended": 1} and session.said == []
+
+
+async def test_payment_required_from_tts_is_reported_plainly(caplog):
+    c, _, _ = controller()
+
+    class ApiErr(Exception):
+        status_code = 402
+
+    class TTSError(Exception):
+        recoverable = False
+        error = ApiErr()
+
+    class CartesiaTTS:
+        pass
+
+    with caplog.at_level("ERROR"):
+        c._on_error(_Ev(error=TTSError(), source=CartesiaTTS()))
+    assert "HTTP 402 payment_required" in caplog.text and "credits" in caplog.text

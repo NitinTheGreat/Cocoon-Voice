@@ -17,14 +17,15 @@ How to speak:
 - Never describe your internal reasoning.
 - If asked what you can do: in this trial you can talk through general questions about operating and caring for CAT equipment; business features like tasks, incidents and machine data will be connected later."""
 
-WAKE_ACK = "I'm listening."
+WAKE_ACK = "Hey, I'm here. What do you need?"
+CLARIFY = "I missed the last part. Could you say that again?"
 SLEEP_ACK = "Okay, going quiet."
 THINKING_CUE = "One moment."
 LLM_FAILED = "Sorry, I couldn't get an answer just now. Please ask me again."
 EMPTY_REPLY = "Sorry, I didn't catch that. Could you say it again?"
 
 # Fixed, non-personal phrases whose audio is cached per provider/model/voice/language.
-CACHED_PHRASES = (WAKE_ACK, SLEEP_ACK, LLM_FAILED)
+CACHED_PHRASES = (WAKE_ACK, SLEEP_ACK, LLM_FAILED, CLARIFY)
 
 
 def bounded_context(chat_ctx: llm.ChatContext, max_turns: int) -> llm.ChatContext:

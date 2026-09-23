@@ -7,6 +7,8 @@ which brain is in use, and the LiveKit session's chat context is the only conver
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -120,6 +122,37 @@ class NoiseSetup:
     degraded: bool
 
 
+def offload_krisp_credential_updates(processor) -> None:
+    """Run Krisp VIVA credential rotation on a worker thread.
+
+    Measured (docs/work-log.md M10): LiveKit's periodic room-token refresh calls the processor's
+    `_on_credentials_updated`, a synchronous native (uniffi) call, directly on the audio event loop,
+    blocking it for 105-339 ms mid-conversation. The update is moved to the default executor; frame
+    processing stays where the SDK runs it.
+    """
+    original = processor._on_credentials_updated
+
+    def offloaded(*, token: str, url: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            original(token=token, url=url)
+            return
+        future = loop.run_in_executor(None, functools.partial(original, token=token, url=url))
+        future.add_done_callback(
+            lambda f: f.exception() and log.warning("krisp credential update failed: %s", type(f.exception()).__name__))
+
+    processor._on_credentials_updated = offloaded
+
+
+def krisp_filter_active(processor) -> bool | None:
+    """True once Krisp VIVA has credentials and a live filter (it passes audio through unfiltered before that)."""
+    inner = getattr(processor, "_inner", None)
+    if inner is None:
+        return None
+    return getattr(inner, "_credentials", None) is not None and getattr(inner, "_filter", None) is not None
+
+
 def build_noise_cancellation(settings: VoiceSettings) -> NoiseSetup:
     """Krisp through LiveKit Cloud. Never silently disabled: failure raises unless degraded mode is allowed."""
     if settings.noise_cancellation == "none":
@@ -131,6 +164,7 @@ def build_noise_cancellation(settings: VoiceSettings) -> NoiseSetup:
             raise _NOISE_IMPORT_ERROR
         if settings.noise_profile == "voice_isolation":
             processor = krisp.voice_isolation(noise_suppression_level=settings.krisp_suppression_level)
+            offload_krisp_credential_updates(processor)
             return NoiseSetup(processor, f"krisp_viva_voice_isolation(level={settings.krisp_suppression_level})",
                               False)
         return NoiseSetup(noise_cancellation.NC(), "krisp_nc_noise_suppression", False)

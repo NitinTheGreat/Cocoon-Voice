@@ -30,11 +30,10 @@ Action = Literal["ignore", "ack", "respond", "stop", "sleep"]
 _WORD = re.compile(r"[a-z0-9']+")
 
 STOP_COMMANDS = {"stop", "stop talking", "stop please", "please stop", "stop it", "cat stop", "okay stop",
-                 "ok stop", "that's enough", "be quiet", "quiet"}
+                 "ok stop", "that's enough", "be quiet", "quiet", "wait", "wait wait", "hold on", "hang on",
+                 "wait a second", "wait a sec", "no stop", "no no stop"}
 SLEEP_COMMANDS = {"go to sleep", "cat go to sleep", "go to sleep cat", "sleep now", "go to sleep now",
                   "goodbye cat", "bye cat"}
-BACKCHANNELS = {"yeah", "yes", "yep", "ok", "okay", "uh huh", "mm hmm", "mhm", "mm", "right", "sure", "got it",
-                "alright", "all right", "i see"}
 
 
 def normalize(text: str) -> str:
@@ -156,9 +155,14 @@ class WakeGate:
         norm = normalize(text)
         if not norm:
             return Decision("ignore", reason="empty")
-        if self._last_utterance and self._last_utterance[0] == norm and now - self._last_utterance[1] < 1.5:
-            return Decision("ignore", reason="duplicate final transcript")
+        duplicate = bool(self._last_utterance and self._last_utterance[0] == norm
+                         and now - self._last_utterance[1] < 1.5)
         self._last_utterance = (norm, now)
+        if duplicate and self.state == WakeState.ARMED:
+            return Decision("ignore", reason="duplicate final transcript")
+        # While ACTIVE a committed turn has already interrupted the previous reply inside the SDK, so
+        # dropping it here would leave silence. Backchannels are classified before this point by adaptive
+        # interruption; anything that still arrives as a turn is answered once (older replies are superseded).
 
         woke, rest = self.matcher.split(text)
         rest_norm = normalize(rest)
@@ -183,11 +187,10 @@ class WakeGate:
                 self._last_activation = now
                 return Decision("ack", reason="wake phrase while active")
             return self._command_or_request(rest, rest_norm, activated=False)
-        if overlapped_agent_speech and norm in BACKCHANNELS:
-            return Decision("ignore", reason="backchannel during assistant speech")
-        return self._command_or_request(text.strip(), norm, activated=False)
+        return self._command_or_request(text.strip(), norm, activated=False,
+                                        reason="duplicate final transcript (answered once)" if duplicate else "request")
 
-    def _command_or_request(self, text: str, norm: str, *, activated: bool) -> Decision:
+    def _command_or_request(self, text: str, norm: str, *, activated: bool, reason: str = "request") -> Decision:
         if not norm:
             return Decision("ack", reason="wake only", activated=activated)
         if norm in STOP_COMMANDS:
@@ -195,4 +198,4 @@ class WakeGate:
         if norm in SLEEP_COMMANDS:
             self._set(WakeState.ARMED, "sleep command")
             return Decision("sleep", reason="sleep command", activated=activated)
-        return Decision("respond", text=text, reason="request", activated=activated)
+        return Decision("respond", text=text, reason=reason, activated=activated)
