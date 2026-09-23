@@ -3,9 +3,11 @@
 Turn semantics implemented here:
   200 completed -> return the result.
   202 processing -> poll GET .../turns/{turn_id} after retry_after_ms.
-  409 -> BackendRejected (turn_id reused with different payload: a client bug).
+  409 -> BackendRejected (turn_id reused with different payload: a client bug; never re-IDed).
+  401/403, 422 unknown_machine/unknown_operator, 503 catalog_unavailable -> BackendConfigError (no retry).
   other 4xx -> BackendRejected (nothing was executed).
-  5xx/429/timeout/network -> retry with the SAME turn_id, bounded by attempts and a deadline.
+  5xx/429/timeout/network -> retry with the SAME turn_id, bounded by attempts and a deadline,
+  waiting at least Retry-After when the backend sends it.
 After a timeout the outcome is unknown, so the client first asks for the turn's status.
 If the deadline passes without a definitive answer -> TurnOutcomeUnknown (never "failed").
 """
@@ -28,13 +30,21 @@ log = logging.getLogger("cocoon_voice.backend")
 
 class BackendError(Exception):
     def __init__(self, message: str, *, status: int | None = None, code: str | None = None,
-                 retryable: bool = False, request_id: str | None = None):
+                 retryable: bool = False, request_id: str | None = None, retry_after: float | None = None):
         super().__init__(message)
         self.status, self.code, self.retryable, self.request_id = status, code, retryable, request_id
+        self.retry_after = retry_after
 
 
 class BackendRejected(BackendError):
     """Definitive 4xx: the backend refused the request and did not execute it."""
+
+
+class BackendConfigError(BackendRejected):
+    """Worker/backend configuration problem (token, catalog IDs, missing catalog): retrying cannot help."""
+
+
+CONFIG_CODES = {"unauthorized", "forbidden", "unknown_machine", "unknown_operator", "catalog_unavailable"}
 
 
 class BackendUnavailable(BackendError):
@@ -64,12 +74,20 @@ def _error_from(resp: httpx.Response) -> BackendError:
         code, msg, retryable, rid = None, resp.text[:200], resp.status_code >= 500, resp.headers.get("X-Request-ID")
     if resp.status_code == 404 and code == "not_found" and "session" in msg:
         cls: type[BackendError] = SessionNotFound
+    elif code in CONFIG_CODES or resp.status_code in (401, 403):
+        cls, retryable = BackendConfigError, False
     elif 400 <= resp.status_code < 500 and resp.status_code != 429:
         cls = BackendRejected
     else:
         cls = BackendUnavailable
+    try:
+        retry_after = float(resp.headers["Retry-After"]) if "Retry-After" in resp.headers else None
+    except ValueError:
+        retry_after = None
+    if cls is not BackendConfigError:
+        retryable = retryable or resp.status_code in (429, 502, 503, 504)
     return cls(f"HTTP {resp.status_code} {code}: {msg}", status=resp.status_code, code=code,
-               retryable=retryable or resp.status_code in (429, 502, 503, 504), request_id=rid)
+               retryable=retryable, request_id=rid, retry_after=retry_after)
 
 
 class BackendClient:
@@ -117,8 +135,14 @@ class BackendClient:
                  (time.perf_counter() - started) * 1000)
         return resp
 
-    async def _backoff(self, attempt: int, cap: float = 4.0) -> None:
-        await self._sleep(min(cap, 0.25 * 2 ** (attempt - 1)) * random.uniform(0.8, 1.2))
+    async def _backoff(self, attempt: int, cap: float = 4.0, retry_after: float | None = None,
+                       remaining: float | None = None) -> None:
+        delay = min(cap, 0.25 * 2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
+        if retry_after is not None:
+            delay = max(delay, retry_after)
+        if remaining is not None:
+            delay = max(0.0, min(delay, remaining))
+        await self._sleep(delay)
 
     async def _call(self, method: str, path: str, *, request_id: str, **kwargs: Any) -> httpx.Response:
         """Bounded retries for idempotent calls. Returns a 2xx response or raises BackendError."""
@@ -135,7 +159,7 @@ class BackendClient:
                 if isinstance(last, BackendRejected):
                     raise last
             if attempt < self._max_attempts:
-                await self._backoff(attempt)
+                await self._backoff(attempt, retry_after=last.retry_after)
         assert last is not None
         raise last
 
@@ -201,7 +225,7 @@ class BackendClient:
             if isinstance(err, BackendRejected):
                 raise err
             log.warning("turn %s attempt %d backend error %s (retrying same turn_id)", turn_id, attempt, err)
-            await self._backoff(attempt)
+            await self._backoff(attempt, retry_after=err.retry_after, remaining=deadline - self._clock())
         log.error("turn %s outcome unknown after %.1fs", turn_id, time.perf_counter() - started)
         raise TurnOutcomeUnknown(turn_id)
 

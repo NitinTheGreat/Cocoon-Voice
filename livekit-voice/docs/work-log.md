@@ -2,6 +2,29 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-24 — M12: remote LangGraph brain wired (branch `voice`)
+
+- **Revisions:** the `voice` branch already contains the backend (`6ecc131` merges `origin/backend` `c779e26`), so
+  both services run from one checkout. No worktree was needed.
+- **Worker:** `VOICE_BRAIN=remote_langgraph` now drives `llm_node` through `TurnBridge` (commit `94fb4b0`). Details
+  are in the README "Remote LangGraph brain" section.
+- **Environment:**
+  - Port 8000 is held by an unrelated app (`uvicorn server.api:app`), so the backend runs on `COCOON_PORT=8010`
+    and the worker uses `COCOON_BACKEND_URL=http://127.0.0.1:8010`.
+  - The backend `.env` had the example service token. A new random token was generated and set in both `.env`
+    files; it was never printed or committed.
+  - `VERTEX_MODEL=gemini-3.8-flash` comes from the handoff. It is not verified in mock mode.
+  - The ADC path was checked for existence only.
+- **Readiness (observed):** backend `GET /readyz` → `status ready`, `llm_mode mock`, `catalog true`, 5 machines and
+  15 operators. The worker registered `cocoon-voice` with brain `remote_langgraph`, wake `off` and noise `none`.
+- **Checks run:** configuration validation and a syntax compile only. No tests, smoke or simulator, by request.
+- **Pending (manual, user):**
+  - Playground: "What's my next task?"
+  - Incident creation.
+  - Simulator warning and "why?".
+  - Stopping the backend mid-conversation.
+  - The live-mode pass: ADC, model availability and quota are unverified.
+
 ## 2026-09-24 — M11: wake gating, Krisp isolation and STT diagnosis (branch `voice`)
 
 **User's run:** `wake decision=ignore reason=armed: no wake phrase state=ARMED chars=29`; `outcome=gated:ignore`

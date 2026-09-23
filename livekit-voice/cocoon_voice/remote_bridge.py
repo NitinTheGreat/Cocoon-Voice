@@ -1,9 +1,9 @@
-"""Phase-0 remote HTTP bridge pieces: retained and tested, NOT wired into the phase-1 worker.
+"""Remote-brain pieces for VOICE_BRAIN=remote_langgraph.
 
-The standalone voice phase uses providers.create_brain() -> Gemini on Vertex AI. When the
-LangGraph backend is connected, the replacement belongs in create_brain(): a streaming
-llm.LLM that forwards the completed user turn through TurnBridge/BackendClient. These
-classes document the earlier llm_node-based approach and its tested turn semantics.
+providers.create_brain() returns BackendBridgeLLM (a placeholder the SDK needs to run llm_node);
+VoiceController.generate() sends each wake-approved final turn through TurnBridge/BackendClient.
+SessionSpeaker plays backend announcements through the session's normal speech output.
+CocoonAgent is the earlier phase-0 agent, kept for its tests.
 """
 
 from __future__ import annotations
@@ -87,6 +87,10 @@ class SessionSpeaker:
         # session.say() queues behind any in-progress agent speech; it never runs llm_node.
         return self._session.say(text, allow_interruptions=True, add_to_chat_ctx=True)
 
+    def produced_audio(self) -> bool | None:
+        """None = unknown. Subclasses report whether the last say() actually synthesized audio."""
+        return None
+
 
 def parse_job_metadata(raw: str | None) -> dict[str, str]:
     """Job metadata comes from a server-side dispatch, so it is trusted for session binding."""
@@ -100,13 +104,27 @@ def parse_job_metadata(raw: str | None) -> dict[str, str]:
     return {k: str(v) for k, v in data.items() if k in ("session_id", "operator_id", "machine_id") and v}
 
 
+class MissingOperatorId(ValueError):
+    pass
+
+
 def session_request(room_name: str, participant: rtc.RemoteParticipant, meta: dict[str, str],
                     settings: VoiceSettings) -> c.SessionCreateRequest:
+    """Catalog IDs from job metadata, then the participant attribute, then the configured defaults.
+
+    The LiveKit participant identity is never used as a catalog operator ID. The client_session_key stays
+    lk:<room>:<identity>, so a resumed room keeps its original backend session (the backend answers 409 if
+    the same key is later sent with a different operator or machine; that is reported, never re-keyed).
+    """
     attrs = participant.attributes or {}
+    operator_id = meta.get("operator_id") or attrs.get("operator_id") or settings.default_operator_id
+    if not operator_id:
+        raise MissingOperatorId("no operator_id in job metadata or participant attributes, and "
+                                "COCOON_DEFAULT_OPERATOR_ID is not set")
     return c.SessionCreateRequest(
         client_session_key=f"lk:{room_name}:{participant.identity}",
         room_name=room_name,
         participant_identity=participant.identity,
-        operator_id=meta.get("operator_id") or attrs.get("operator_id") or participant.identity,
+        operator_id=operator_id,
         machine_id=meta.get("machine_id") or attrs.get("machine_id") or settings.default_machine_id,
     )
