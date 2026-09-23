@@ -1,4 +1,9 @@
-"""Porcupine acoustic wake mode: keyword spotting on the selected participant's room audio.
+"""Acoustic wake modes: keyword spotting on the selected participant's room audio.
+
+Engines: LiveKitWakeWordEngine (livekit-wakeword ONNX classifier, WAKE_MODE=livekit_wakeword)
+and PorcupineEngine (Picovoice, WAKE_MODE=porcupine). Both implement KeywordEngine.
+CPU: livekit-wakeword inference costs ~58 ms per call on the dev laptop, so engines run on a
+dedicated thread with a bounded, drop-oldest queue (threaded=True), never on the event loop.
 
 The router is the ONLY consumer of the agent's audio input stream in this mode (the frames
 arrive after the configured Krisp input filter). Every frame is fed to the keyword engine at
@@ -12,6 +17,8 @@ from __future__ import annotations
 import array
 import asyncio
 import logging
+import queue
+import threading
 from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
 from pathlib import Path
@@ -55,6 +62,89 @@ class PorcupineEngine:
         self._porcupine.delete()
 
 
+class LiveKitWakeWordEngine:
+    """livekit-wakeword classifier (ONNX) behind the KeywordEngine interface.
+
+    The model is stateless and scores a ~2 s window of 16 kHz audio; this keeps a rolling window,
+    scores it every hop, and clears it after a detection so the same utterance cannot re-fire.
+    """
+
+    sample_rate = 16000
+    WINDOW_SAMPLES = 32000
+
+    def __init__(self, model_path: Path, threshold: float, hop_ms: int = 160):
+        import numpy as np
+        from livekit.wakeword import WakeWordModel
+
+        if not Path(model_path).is_file():
+            raise FileNotFoundError("LIVEKIT_WAKEWORD_MODEL_PATH does not exist")
+        self._np = np
+        self._model = WakeWordModel(models=[str(model_path)])
+        self.name = Path(model_path).stem
+        self.threshold = threshold
+        self.frame_length = self.sample_rate * hop_ms // 1000
+        self._window = np.zeros(self.WINDOW_SAMPLES, dtype=np.int16)
+        self.last_score = 0.0
+        self.max_score = 0.0
+
+    def process(self, pcm: Sequence[int]) -> int:
+        np = self._np
+        chunk = pcm.astype(np.int16) if isinstance(pcm, np.ndarray) else np.frombuffer(pcm, dtype=np.int16)
+        self._window = np.concatenate((self._window[len(chunk):], chunk))
+        score = float(self._model.predict(self._window).get(self.name, 0.0))
+        self.last_score = score
+        self.max_score = max(self.max_score, score)
+        if score >= self.threshold:
+            self._window[:] = 0
+            return 0
+        return -1
+
+    def delete(self) -> None:
+        return None
+
+
+class _DetectorThread:
+    """Runs a KeywordEngine off the event loop; detections are posted back to the loop."""
+
+    def __init__(self, engine: KeywordEngine, on_detect: Callable[[], None], max_backlog: int = 16):
+        self._engine = engine
+        self._on_detect = on_detect
+        self._loop = asyncio.get_running_loop()
+        self._queue: queue.Queue[array.array | None] = queue.Queue(maxsize=max_backlog)
+        self.dropped = 0
+        self._thread = threading.Thread(target=self._run, name="acoustic-wake", daemon=True)
+        self._thread.start()
+
+    def submit(self, chunk: array.array) -> None:
+        try:
+            self._queue.put_nowait(chunk)
+        except queue.Full:  # engine slower than real time: drop the oldest chunk, keep latency bounded
+            try:
+                self._queue.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                pass
+            self._queue.put_nowait(chunk)
+
+    def _run(self) -> None:
+        while True:
+            chunk = self._queue.get()
+            if chunk is None:
+                return
+            try:
+                if self._engine.process(chunk) >= 0:
+                    self._loop.call_soon_threadsafe(self._on_detect)
+            except Exception:
+                log.exception("keyword engine failed")
+
+    def close(self, timeout: float = 2.0) -> None:
+        try:
+            self._queue.put(None, timeout=timeout)
+        except queue.Full:
+            pass
+        self._thread.join(timeout)
+
+
 class _Segment:
     """Bounded frame queue for one ACTIVE period; ends with a sentinel."""
 
@@ -96,6 +186,7 @@ class AcousticRouter:
         preroll_ms: int,
         on_wake: Callable[[], None],
         max_segment_s: float = 12.0,
+        threaded: bool = False,
     ):
         self.engine = engine
         self.gate = gate
@@ -109,6 +200,8 @@ class AcousticRouter:
         self._segment: _Segment | None = None
         self._segments: asyncio.Queue[_Segment | None] = asyncio.Queue()
         self._max_segment_frames = max(10, int(max_segment_s * 50))  # ~20 ms frames
+        self.threaded = threaded
+        self._detector: _DetectorThread | None = None
         self.frames_in = 0
         self.frames_forwarded = 0
         self.engine_frames = 0
@@ -123,12 +216,26 @@ class AcousticRouter:
     # ------------------------------------------------------------------ producer side
 
     async def run(self, audio: AsyncIterable[rtc.AudioFrame]) -> None:
+        if self.threaded:
+            self._detector = _DetectorThread(self.engine, self._on_async_detection)
         try:
             async for frame in audio:
                 self.handle_frame(frame)
         finally:
             self._close_segment()
             self._segments.put_nowait(None)
+            if self._detector is not None:
+                await asyncio.to_thread(self._detector.close)
+                if self._detector.dropped:
+                    log.warning("keyword engine fell behind; dropped %d chunk(s)", self._detector.dropped)
+
+    def _on_async_detection(self) -> None:
+        """Called on the event loop when the threaded engine fires."""
+        self.detections += 1
+        if self.gate.on_acoustic_wake():
+            if self._segment is None:
+                self._open_segment(with_preroll=True)
+            self.on_wake()
 
     def handle_frame(self, frame: rtc.AudioFrame) -> None:
         self.frames_in += 1
@@ -182,7 +289,9 @@ class AcousticRouter:
             chunk = self._pcm[:n]
             del self._pcm[:n]
             self.engine_frames += 1
-            if self.engine.process(chunk) >= 0:
+            if self._detector is not None:
+                self._detector.submit(chunk)  # result arrives via _on_async_detection
+            elif self.engine.process(chunk) >= 0:
                 self.detections += 1
                 detected = True
         return detected

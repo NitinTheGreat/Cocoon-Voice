@@ -2,6 +2,27 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 21:30 UTC — M8: livekit-wakeword acoustic mode; Cartesia key diagnosis (branch `voice`)
+
+- **Decision (user):** use `livekit-wakeword` instead of Porcupine (Picovoice needs a company email).
+- **Implemented:** `WAKE_MODE=livekit_wakeword` (`acoustic_wake.LiveKitWakeWordEngine`), engine inference on a dedicated
+  thread with a bounded drop-oldest queue, engine-neutral `WAKE_PREROLL_MS` / `WAKE_ONLY_ACK_WAIT_MS` (renamed from
+  the Porcupine-specific names), doctor check with per-call inference time and phrase/model mismatch warning,
+  `wakeword/hey_cat.yaml` training config (validated against `livekit.wakeword.config.WakeWordConfig`) and
+  `wakeword/README.md` (Colab / WSL2 training). `porcupine_gate.py` renamed to `acoustic_wake.py`.
+- **Measured with LiveKit's real example model `hey_livekit.onnx` (Apache-2.0 fixture) on SAPI speech:**
+  max scores "Hey LiveKit." 0.912, "Hey LiveKit, what is the track tension?" 0.761, "The live kit is ready." 0.598,
+  "Hey liquid, pour it." 0.078, "Hey Cat, what should I check…" 0.038, background talk 0.021.
+  `predict()` p50 57.7 ms / p95 94.3 ms per call (n=474, 80 ms hop) → 160 ms hop + worker thread; default threshold
+  0.7. Doctor (offline) reported 67 ms/call.
+- **Cartesia:** the new key (29 chars, `sk_car_` prefix, single `.env` entry, not overridden by the OS environment)
+  is rejected with 401 "Invalid API key" by `/tts/bytes` and the TTS websocket, with API versions 2025-04-16 and
+  2026-08-14 and with both `X-API-Key` and Bearer auth. `GET /voices` returns 200 for it (that endpoint does not
+  validate keys). Cause is on the Cartesia account/key side; no usage is recorded because requests fail authentication.
+- **Checks run:** `pytest` → 137 passed, 1 skipped (10 new real-model wake tests); `pip check` clean after pinning
+  `livekit-wakeword==0.2.1`.
+- **Not verified:** a "Hey Cat" model (not trained), real human voices, Playground speech (Cartesia).
+
 ## 2026-09-23 20:30 UTC — M7: first live provider checks with real keys (branch `voice`)
 
 - **Doctor:** settings, VAD, noise (constructs), Vertex (ADC), AssemblyAI, LiveKit PASS.

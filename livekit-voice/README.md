@@ -3,6 +3,19 @@
 **Phase 1 (current):** a standalone voice assistant for trying out the Cocoon voice experience in LiveKit Playground or the Agent Console. It is **not connected to langgraph-agent yet**. Phase 2, the LangGraph integration, waits until this voice experience has been evaluated and accepted.
 
 ```
+py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt; pip install -e . --no-deps
+python -m livekit.agents download-files
+python -m cocoon_voice.doctor              # config + provider checks
+python -m cocoon_voice.smoke               # small paid live checks
+pytest                                     # offline tests
+python -m cocoon_voice.agent dev           # worker; health on 127.0.0.1:8081
+python scripts\dispatch.py token --room cat-test-1 --identity operator-7   # join link that dispatches cocoon-voice
+python -m cocoon_voice.benchmark run --turns 10 --stt   # once both keys exist
+python -m cocoon_voice.benchmark report                 # after live sessions
+```
+
+```
 browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one AgentSession per dispatched room)
    Krisp VIVA input filter ─▶ Silero VAD + wake gate ("Hey Cat")
    ─▶ AssemblyAI streaming STT (endpointing = end-of-turn)
@@ -19,9 +32,10 @@ browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one 
 | Wake gate, turn policy, streaming guard, Porcupine plumbing, metrics | 127 offline tests pass, including real `AgentSession` runs with a scripted LLM. |
 | Vertex latency | Measured through the real plugin: warm TTFT p50 668 ms / p95 695 ms (n=9, prewarmed). |
 | VAD against synthetic cab noise | 0 false speech detections; speech kept as one segment down to −5 dB SNR (offline, synthetic). |
-| **Dispatch, STT, TTS, real speech in Playground** | **Not verified.** `ASSEMBLYAI_API_KEY` and `CARTESIA_API_KEY` are missing. |
+| AssemblyAI live | Verified: the local "Hey Cat, what should I check…" clip was transcribed exactly. |
+| **Dispatch, TTS, real speech in Playground** | **Not verified.** Cartesia rejects the configured key (HTTP 401 "Invalid API key"). |
 | **Krisp noise filtering** | **Not verified.** It constructs on native Windows; filtering happens only inside a LiveKit Cloud session. |
-| **Acoustic wake (Porcupine)** | **Blocked.** Needs `PICOVOICE_ACCESS_KEY` and a real custom `Hey Cat` `.ppn`. |
+| **Acoustic wake (livekit-wakeword)** | Implemented and verified offline with LiveKit's real `hey_livekit` model (detection, rejection, threaded routing). **"Hey Cat" model not trained yet** (`wakeword/README.md`). |
 
 ## Selected models and settings
 
@@ -67,7 +81,8 @@ With uv instead: `uv venv --python 3.11 .venv`, then `uv pip sync requirements-d
 | `ASSEMBLYAI_API_KEY` | Worker (STT), smoke, benchmark `--stt` | https://www.assemblyai.com/app/api-keys |
 | `CARTESIA_API_KEY` | Worker (TTS), smoke, benchmark | https://play.cartesia.ai/keys |
 | Vertex AI | Worker (brain), doctor, smoke, benchmark | **No key.** Uses existing Application Default Credentials (`gcloud auth application-default login`) with `GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, `GOOGLE_GENAI_USE_VERTEXAI=true`. `GOOGLE_API_KEY` and `GEMINI_API_KEY` are rejected. Nothing here reads the ADC file. |
-| `PICOVOICE_ACCESS_KEY`, `PORCUPINE_KEYWORD_PATH` | `WAKE_MODE=porcupine` only | Picovoice Console (see "Acoustic wake" below) |
+| `LIVEKIT_WAKEWORD_MODEL_PATH` | `WAKE_MODE=livekit_wakeword` only | No key. A `.onnx` you train (`wakeword/README.md`) |
+| `PICOVOICE_ACCESS_KEY`, `PORCUPINE_KEYWORD_PATH` | `WAKE_MODE=porcupine` only | Picovoice Console (needs a company email) |
 | Silero VAD, Krisp | — | No key (Krisp authenticates through the LiveKit Cloud job) |
 
 The settings are typed and validated. The worker refuses to start and lists the **names** of missing or invalid settings. `VOICE_PROFILE=production` rejects transcript wake mode, degraded audio, preemptive generation, transcript logging and recording.
@@ -146,30 +161,31 @@ A worker that starts has already passed settings validation, since startup refus
 - **Echo guard:** a wake phrase heard while Cat is speaking, or within `WAKE_ECHO_GUARD_MS` after, cannot wake an armed gate. The greeting and fixed phrases never contain "Hey Cat".
 - **Not security:** activation is not operator authentication. Nearby voices are mitigated by Krisp VIVA and debounce, not by speaker verification.
 
-**`WAKE_MODE=transcript`** (default, Playground test mode): AssemblyAI hears the room continuously, so idle speech is streamed and billed. It is not on-device or private keyword spotting.
+**`WAKE_MODE=transcript`** (default, works now without any model): AssemblyAI hears the room continuously, so idle speech is streamed and billed. It is not on-device or private keyword spotting.
 
-**`WAKE_MODE=porcupine`** (acoustic keyword spotting):
-- The worker runs Picovoice Porcupine on the selected participant's **room audio** (after the Krisp filter) and never opens a local microphone.
-- The router is the single consumer of the audio stream. It resamples to the engine rate (16 kHz), frames to the engine's frame length (512), and keeps a 400 ms pre-roll.
-- STT segments open only while ACTIVE, and each frame is forwarded once. Measured routing delay before the engine sees the keyword end is about 40–60 ms (resampler blocks plus framing).
-- A wake-only acknowledgement plays only if no speech follows within `PORCUPINE_WAKE_ONLY_WAIT_MS`.
-- There is no fallback to transcript mode. A missing key or model stops the worker.
+**`WAKE_MODE=livekit_wakeword`** (recommended acoustic mode; open source, no account or key):
+- The worker runs LiveKit's `livekit-wakeword` classifier (Apache-2.0, ONNX) on the selected participant's **room audio** (after the Krisp filter). It never opens a local microphone.
+- The router is the single consumer of the audio stream. It resamples to 16 kHz, scores a rolling 2 s window every `LIVEKIT_WAKEWORD_HOP_MS` (160 ms), and clears the window after a hit so one utterance cannot fire twice.
+- Inference takes about 58–67 ms per call on the dev laptop, so it runs on a **dedicated thread** with a bounded drop-oldest queue, never on the event loop.
+- STT segments open only while ACTIVE and start with `WAKE_PREROLL_MS` (600 ms) of pre-roll, so "Hey Cat, <question>" is not clipped. Each frame is forwarded once.
+- A wake-only "I'm listening." plays only if no speech follows within `WAKE_ONLY_ACK_WAIT_MS`. There is no silent fallback to transcript mode.
+- **The "Hey Cat" model still has to be trained:** follow [wakeword/README.md](wakeword/README.md) (Google Colab or WSL2; config `wakeword/hey_cat.yaml`).
+- Until then, test the acoustic path with LiveKit's example model: `LIVEKIT_WAKEWORD_MODEL_PATH=tests/fixtures/wakeword/hey_livekit.onnx` and `WAKE_PHRASE=Hey LiveKit`.
 
-To create the keyword model:
-1. Sign in at https://console.picovoice.ai/ and copy your AccessKey.
-2. Go to Porcupine → create a wake word "Hey Cat", language English, platform **Windows (x86_64)** for this machine. A Linux deployment needs a Linux model.
-3. Train, download, and save the `.ppn` as `livekit-voice/keywords/` (git-ignored).
-4. Set `WAKE_MODE=porcupine`, `PICOVOICE_ACCESS_KEY` and `PORCUPINE_KEYWORD_PATH=keywords/<file>.ppn`.
-5. Run `python -m cocoon_voice.doctor` to create the engine.
+  Verified offline with that real model on synthetic speech:
 
-Licensing and assumptions:
-- Keyword files are tied to the Picovoice account and platform.
-- Usage limits and commercial-use terms depend on your Picovoice plan. Check them for the hackathon and any product use.
-- "Hey Cat" is not a built-in keyword. Nothing here fakes a `.ppn`.
+  | Clip | Result |
+  |---|---|
+  | "Hey LiveKit." | detected once (score 0.91) |
+  | "Hey LiveKit, what is the track tension?" | detected once (0.76), question forwarded to STT |
+  | "Hey Cat…", background talk, "hey liquid" | rejected (≤0.08) |
+  | "The live kit is ready." | rejected at the 0.7 threshold (score 0.60) |
 
-Acoustic false accepts, misses and truncation are **unvalidated** until a real model is exercised.
+**`WAKE_MODE=porcupine`** (alternative; needs a Picovoice AccessKey, which requires a company email):
+- Same router and threading, with a custom `Hey Cat` `.ppn` from https://console.picovoice.ai/ (Windows x86_64 for this machine).
+- Set `PICOVOICE_ACCESS_KEY` and `PORCUPINE_KEYWORD_PATH`. "Hey Cat" is not a built-in Porcupine keyword. Nothing fakes a `.ppn`.
 
-For the future Android client, keyword detection belongs on the device. A hosted Playground worker cannot be an always-listening phone service, and server-side detection still requires the browser microphone to be published.
+For the future Android client, keyword detection belongs on the device. livekit-wakeword has on-device (Swift/Rust) runtimes for the same `.onnx`. A hosted Playground worker cannot be an always-listening phone service, and server-side detection still requires the browser microphone to be published.
 
 ## Streaming, barge-in and recovery
 

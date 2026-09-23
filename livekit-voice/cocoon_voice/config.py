@@ -37,6 +37,8 @@ OBSOLETE_SETTINGS = {
     "COCOON_TTS_MODEL": "CARTESIA_MODEL",
     "COCOON_TTS_VOICE": "CARTESIA_VOICE_ID",
     "COCOON_GREETING": "VOICE_GREETING",
+    "PORCUPINE_PREROLL_MS": "WAKE_PREROLL_MS",
+    "PORCUPINE_WAKE_ONLY_WAIT_MS": "WAKE_ONLY_ACK_WAIT_MS",
 }
 FORBIDDEN_GOOGLE_KEYS = ("GOOGLE_API_KEY", "GEMINI_API_KEY")
 
@@ -97,7 +99,8 @@ class VoiceSettings(BaseSettings):
                                 min_length=1, max_length=200)
 
     # ---------------------------------------------------------------- wake gate
-    wake_mode: Literal["transcript", "porcupine"] = Field(default="transcript", alias="WAKE_MODE")
+    wake_mode: Literal["transcript", "livekit_wakeword", "porcupine"] = Field(default="transcript",
+                                                                              alias="WAKE_MODE")
     wake_phrase: str = Field(default="Hey Cat", alias="WAKE_PHRASE")
     wake_active_timeout_s: float = Field(default=45.0, alias="WAKE_ACTIVE_TIMEOUT_SECONDS", ge=5, le=600)
     wake_debounce_s: float = Field(default=2.0, alias="WAKE_DEBOUNCE_SECONDS", ge=0, le=30)
@@ -105,8 +108,12 @@ class VoiceSettings(BaseSettings):
     picovoice_access_key: SecretStr | None = Field(default=None, alias="PICOVOICE_ACCESS_KEY")
     porcupine_keyword_path: Path | None = Field(default=None, alias="PORCUPINE_KEYWORD_PATH")
     porcupine_sensitivity: float = Field(default=0.5, alias="PORCUPINE_SENSITIVITY", ge=0.0, le=1.0)
-    porcupine_preroll_ms: int = Field(default=400, alias="PORCUPINE_PREROLL_MS", ge=0, le=2000)
-    porcupine_wake_only_wait_ms: int = Field(default=900, alias="PORCUPINE_WAKE_ONLY_WAIT_MS", ge=100, le=5000)
+    wakeword_model_path: Path | None = Field(default=None, alias="LIVEKIT_WAKEWORD_MODEL_PATH")
+    wakeword_threshold: float = Field(default=0.7, alias="LIVEKIT_WAKEWORD_THRESHOLD", gt=0.0, lt=1.0)
+    wakeword_hop_ms: int = Field(default=160, alias="LIVEKIT_WAKEWORD_HOP_MS", ge=80, le=320)
+    # apply to every acoustic mode (livekit_wakeword, porcupine)
+    wake_preroll_ms: int = Field(default=600, alias="WAKE_PREROLL_MS", ge=0, le=2000)
+    wake_only_ack_wait_ms: int = Field(default=900, alias="WAKE_ONLY_ACK_WAIT_MS", ge=100, le=5000)
 
     # ---------------------------------------------------------------- audio / turns
     noise_cancellation: Literal["krisp", "none"] = Field(default="krisp", alias="NOISE_CANCELLATION")
@@ -154,7 +161,7 @@ class VoiceSettings(BaseSettings):
         return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("assemblyai_api_key", "cartesia_api_key", "livekit_api_secret", "picovoice_access_key",
-                     "service_token", "porcupine_keyword_path", mode="before")
+                     "service_token", "porcupine_keyword_path", "wakeword_model_path", mode="before")
     @classmethod
     def _blank_secret_is_none(cls, value):
         return None if isinstance(value, str) and not value.strip() else value
@@ -175,6 +182,8 @@ class VoiceSettings(BaseSettings):
                 setattr(self, attr, SERVICE_DIR / path)
         if self.porcupine_keyword_path is not None and not self.porcupine_keyword_path.is_absolute():
             self.porcupine_keyword_path = SERVICE_DIR / self.porcupine_keyword_path
+        if self.wakeword_model_path is not None and not self.wakeword_model_path.is_absolute():
+            self.wakeword_model_path = SERVICE_DIR / self.wakeword_model_path
         return self
 
     # ---------------------------------------------------------------- derived values
@@ -182,6 +191,22 @@ class VoiceSettings(BaseSettings):
     @property
     def keyterms(self) -> list[str]:
         return [t.strip() for t in self.assemblyai_keyterms.split(",") if t.strip()]
+
+    @property
+    def acoustic_wake(self) -> bool:
+        return self.wake_mode in ("livekit_wakeword", "porcupine")
+
+    def wake_model_mismatch(self) -> str | None:
+        """Warn when the keyword model's name does not match WAKE_PHRASE (e.g. testing with hey_livekit)."""
+        from .wake import normalize
+
+        if self.wake_mode != "livekit_wakeword" or self.wakeword_model_path is None:
+            return None
+        model_words = normalize(self.wakeword_model_path.stem.replace("_", " "))
+        if model_words != normalize(self.wake_phrase):
+            return (f"wake model '{self.wakeword_model_path.stem}' does not match WAKE_PHRASE '{self.wake_phrase}' "
+                    "(fine for a pipeline test; set WAKE_PHRASE to the model's phrase)")
+        return None
 
     def missing_livekit(self) -> list[str]:
         return [name for name, value in (
@@ -211,6 +236,13 @@ class VoiceSettings(BaseSettings):
         for name in FORBIDDEN_GOOGLE_KEYS:
             if os.environ.get(name):
                 issues.append(f"{name} is set; remove it. Vertex AI uses ADC and must not fall back to an API key")
+        if self.wake_mode == "livekit_wakeword":
+            if self.wakeword_model_path is None:
+                issues.append("WAKE_MODE=livekit_wakeword requires LIVEKIT_WAKEWORD_MODEL_PATH (a trained .onnx)")
+            elif not self.wakeword_model_path.is_file():
+                issues.append("LIVEKIT_WAKEWORD_MODEL_PATH does not point to an existing file")
+            elif self.wakeword_model_path.suffix.lower() != ".onnx":
+                issues.append("LIVEKIT_WAKEWORD_MODEL_PATH must be a livekit-wakeword .onnx classifier")
         if self.wake_mode == "porcupine":
             if self.picovoice_access_key is None:
                 issues.append("WAKE_MODE=porcupine requires PICOVOICE_ACCESS_KEY")
@@ -221,7 +253,7 @@ class VoiceSettings(BaseSettings):
             elif self.porcupine_keyword_path.suffix.lower() != ".ppn":
                 issues.append("PORCUPINE_KEYWORD_PATH must be a Porcupine .ppn keyword file")
         if self.voice_profile == "production":
-            if self.wake_mode != "porcupine":
+            if self.wake_mode == "transcript":
                 issues.append("VOICE_PROFILE=production rejects WAKE_MODE=transcript (idle speech is streamed to STT)")
             if self.noise_cancellation != "krisp" or self.allow_degraded_audio:
                 issues.append("VOICE_PROFILE=production requires NOISE_CANCELLATION=krisp and ALLOW_DEGRADED_AUDIO=false")
@@ -265,7 +297,9 @@ class VoiceSettings(BaseSettings):
                      "active_timeout_s": self.wake_active_timeout_s,
                      "picovoice_access_key": presence(self.picovoice_access_key) if self.wake_mode == "porcupine"
                      else "not needed",
-                     "keyword_path": str(self.porcupine_keyword_path) if self.porcupine_keyword_path else None},
+                     "keyword_path": str(self.porcupine_keyword_path) if self.porcupine_keyword_path else None,
+                     "wakeword_model": self.wakeword_model_path.name if self.wakeword_model_path else None,
+                     "wakeword_threshold": self.wakeword_threshold},
             "noise": {"mode": self.noise_cancellation, "profile": self.noise_profile,
                       "allow_degraded": self.allow_degraded_audio},
             "preemptive_generation": self.preemptive_generation,

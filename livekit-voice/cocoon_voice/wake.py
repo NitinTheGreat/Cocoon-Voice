@@ -1,7 +1,7 @@
 """Wake gate: ARMED -> ACTIVE -> ARMED/CLOSED, independent of LiveKit's agent/user states.
 
 Pure logic with an injected clock so it can be tested without audio. The worker feeds it
-finalized user utterances (transcript mode) or acoustic detections (Porcupine mode) and acts
+finalized user utterances (transcript mode) or acoustic detections (livekit-wakeword or Porcupine) and acts
 on the returned Decision. Matching is exact after case/punctuation normalisation: no fuzzy
 matching, so "hey cap" or "hey cats" never wake the assistant. Activation is not authentication.
 """
@@ -74,14 +74,14 @@ class WakeGate:
         self,
         phrase: str,
         *,
-        mode: Literal["transcript", "porcupine"] = "transcript",
+        mode: Literal["transcript", "acoustic", "porcupine"] = "transcript",
         active_timeout_s: float = 45.0,
         debounce_s: float = 2.0,
         echo_guard_s: float = 0.6,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.matcher = WakeMatcher(phrase)
-        self.mode = mode
+        self.mode = "transcript" if mode == "transcript" else "acoustic"  # "porcupine" kept as an alias
         self.active_timeout_s = active_timeout_s
         self.debounce_s = debounce_s
         self.echo_guard_s = echo_guard_s
@@ -130,7 +130,7 @@ class WakeGate:
     def _debounced(self) -> bool:
         return self._last_activation is not None and self._clock() - self._last_activation < self.debounce_s
 
-    # ------------------------------------------------------------------ acoustic (Porcupine)
+    # ------------------------------------------------------------------ acoustic (livekit-wakeword / Porcupine)
 
     def on_acoustic_wake(self) -> bool:
         """Keyword engine fired. Returns True when this is a new activation (not debounced)."""
@@ -168,9 +168,9 @@ class WakeGate:
                 return Decision("ignore", reason="armed: no wake phrase")
             if overlapped_agent_speech:
                 return Decision("ignore", reason="armed: wake phrase overlapped assistant audio (echo guard)")
-            if self.mode == "porcupine":
+            if self.mode == "acoustic":
                 # acoustic mode activates only from the keyword engine, never from transcripts
-                return Decision("ignore", reason="armed: porcupine mode ignores transcript wake")
+                return Decision("ignore", reason="armed: acoustic mode ignores transcript wake")
             self._activate("wake phrase")
             return self._command_or_request(rest, rest_norm, activated=True)
 
@@ -178,7 +178,7 @@ class WakeGate:
         self._last_activity = now
         if woke:
             if not rest_norm:
-                if self.mode == "porcupine" or self._debounced():
+                if self.mode == "acoustic" or self._debounced():
                     return Decision("ignore", reason="wake phrase already handled (debounce/acoustic)")
                 self._last_activation = now
                 return Decision("ack", reason="wake phrase while active")

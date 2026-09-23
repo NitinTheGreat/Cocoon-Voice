@@ -11,7 +11,7 @@ import array
 import pytest
 from livekit import rtc
 
-from cocoon_voice.porcupine_gate import AcousticRouter, PorcupineEngine
+from cocoon_voice.acoustic_wake import AcousticRouter, PorcupineEngine
 from cocoon_voice.wake import WakeGate, WakeState
 
 from .conftest import FakeClock
@@ -150,7 +150,9 @@ async def test_controller_feeds_stt_once_per_activation(monkeypatch):
             yield None
 
     monkeypatch.setattr(Agent.default, "stt_node", staticmethod(fake_default_stt))
-    c = VoiceController(settings(WAKE_MODE="porcupine"), phrases=None, metrics=metrics(), keyword_engine=FakeEngine())
+    c = VoiceController(settings(), phrases=None, metrics=metrics(), keyword_engine=FakeEngine(),
+                        threaded_engine=False)
+    c.gate.mode = "acoustic"
 
     async def audio():
         for i in range(1, 31):

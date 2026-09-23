@@ -130,8 +130,9 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Worker registration | DONE | `python -m cocoon_voice.agent start` registered `cocoon-voice` (2026-09-23). |
 | Wake gate, turn policy, streaming guard, Porcupine plumbing, metrics | DONE (offline) | 127 tests incl. real `AgentSession` runs; see `docs/work-log.md`. |
 | Latency | PARTIAL | Vertex measured (warm TTFT p50 668 ms, n=9); STT/TTS/playout unmeasured. `docs/voice-latency-report.md`. |
-| Live dispatch + speech in Playground | BLOCKED | Needs ASSEMBLYAI_API_KEY and CARTESIA_API_KEY in `livekit-voice/.env`. |
-| Krisp effect, acoustic wake | BLOCKED | Krisp needs a live cloud session; Porcupine needs PICOVOICE_ACCESS_KEY + real `Hey Cat` .ppn. |
+| Live dispatch + speech in Playground | BLOCKED | AssemblyAI verified live; Cartesia returns 401 "Invalid API key" for the configured key. |
+| Acoustic wake | IN_PROGRESS | Decision: livekit-wakeword (Porcupine needs a company email). Implemented + verified with real `hey_livekit` model; `Hey Cat` model must be trained (`wakeword/README.md`). |
+| Krisp effect | BLOCKED | Needs a live LiveKit Cloud session. |
 
 ### Active work
 

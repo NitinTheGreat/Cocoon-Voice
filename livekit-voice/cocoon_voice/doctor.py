@@ -163,13 +163,38 @@ def check_noise(s: VoiceSettings) -> Check:
                                   "(not validated here)")
 
 
+def check_livekit_wakeword(s: VoiceSettings) -> Check:
+    if s.wake_mode != "livekit_wakeword":
+        return Check("wakeword", "SKIP", f"WAKE_MODE={s.wake_mode} (livekit-wakeword not in use)", False)
+    problems = [p for p in s.problems("offline") if "LIVEKIT_WAKEWORD" in p]
+    if problems:
+        return Check("wakeword", "FAIL", "; ".join(problems))
+    from .acoustic_wake import LiveKitWakeWordEngine
+
+    try:
+        import numpy as np
+
+        engine = LiveKitWakeWordEngine(s.wakeword_model_path, s.wakeword_threshold, s.wakeword_hop_ms)  # type: ignore
+        t0 = time.perf_counter()
+        for _ in range(5):
+            engine.process(np.zeros(engine.frame_length, dtype=np.int16))
+        per_call = (time.perf_counter() - t0) / 5 * 1000
+        detail = (f"model={engine.name} threshold={s.wakeword_threshold} hop={s.wakeword_hop_ms}ms "
+                  f"inference={per_call:.0f}ms/call (runs on a worker thread)")
+        mismatch = s.wake_model_mismatch()
+        return Check("wakeword", "WARN" if mismatch else "PASS", detail + (f"; {mismatch}" if mismatch else ""),
+                     not mismatch)
+    except Exception as exc:
+        return Check("wakeword", "FAIL", f"{type(exc).__name__}: {_short(exc)}")
+
+
 def check_porcupine(s: VoiceSettings) -> Check:
     if s.wake_mode != "porcupine":
-        return Check("porcupine", "SKIP", "WAKE_MODE=transcript (acoustic keyword spotting not in use)", False)
+        return Check("porcupine", "SKIP", f"WAKE_MODE={s.wake_mode} (Porcupine not in use)", False)
     problems = [p for p in s.problems("offline") if "PORCUPINE" in p or "PICOVOICE" in p]
     if problems:
         return Check("porcupine", "FAIL", "; ".join(problems))
-    from .porcupine_gate import PorcupineEngine
+    from .acoustic_wake import PorcupineEngine
 
     try:
         engine = PorcupineEngine(s.picovoice_access_key.get_secret_value(), s.porcupine_keyword_path,  # type: ignore
@@ -206,6 +231,7 @@ def run(offline: bool) -> list[Check]:
         checks.append(Check("obsolete_setting", "WARN", f"{obsolete} is ignored", False))
     checks.append(check_vad())
     checks.append(check_noise(s))
+    checks.append(check_livekit_wakeword(s))
     checks.append(check_porcupine(s))
     if offline:
         return checks

@@ -169,6 +169,8 @@ livekit-protocol==1.1.27
     # via
     #   livekit-agents
     #   livekit-api
+livekit-wakeword==0.2.1
+    # via -r requirements.in
 markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
@@ -186,6 +188,7 @@ numpy==2.4.6 ; python_full_version < '3.12'
     #   livekit-plugins-krisp
     #   livekit-plugins-krisp-internal
     #   livekit-plugins-silero
+    #   livekit-wakeword
     #   onnxruntime
 numpy==2.5.3 ; python_full_version >= '3.12'
     # via
@@ -194,9 +197,12 @@ numpy==2.5.3 ; python_full_version >= '3.12'
     #   livekit-plugins-krisp
     #   livekit-plugins-krisp-internal
     #   livekit-plugins-silero
+    #   livekit-wakeword
     #   onnxruntime
 onnxruntime==1.30.0
-    # via livekit-plugins-silero
+    # via
+    #   livekit-plugins-silero
+    #   livekit-wakeword
 openai==2.54.0
     # via livekit-agents
 opentelemetry-api==1.44.0

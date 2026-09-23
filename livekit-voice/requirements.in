@@ -4,6 +4,7 @@ livekit-agents[assemblyai,cartesia,google,silero]==1.8.2
 livekit-plugins-krisp==0.4.2
 livekit-plugins-noise-cancellation==0.3.2
 pvporcupine==4.0.3
+livekit-wakeword==0.2.1
 httpx
 pydantic
 pydantic-settings

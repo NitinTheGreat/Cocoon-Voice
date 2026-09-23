@@ -39,7 +39,7 @@ from . import speech_policy as sp
 from .config import ConfigError, VoiceSettings, get_settings
 from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
-from .porcupine_gate import AcousticRouter, KeywordEngine, PorcupineEngine
+from .acoustic_wake import AcousticRouter, KeywordEngine, LiveKitWakeWordEngine, PorcupineEngine
 from .providers import NoiseSetup, build_noise_cancellation, build_stt, build_tts, create_brain, load_vad
 from .recording import InputRecorder, cleanup_recordings
 from .streaming import EpochCounter, GenerationStats, guarded_stream
@@ -55,9 +55,10 @@ class VoiceController:
     """Session-scoped policy: wake gate, generation guard, cues, metrics. No cross-room state."""
 
     def __init__(self, settings: VoiceSettings, *, phrases: PhraseCache | None, metrics: SessionMetrics,
-                 keyword_engine: KeywordEngine | None = None, recorder: InputRecorder | None = None):
+                 keyword_engine: KeywordEngine | None = None, recorder: InputRecorder | None = None,
+                 threaded_engine: bool = True):
         self.s = settings
-        self.gate = WakeGate(settings.wake_phrase, mode=settings.wake_mode,
+        self.gate = WakeGate(settings.wake_phrase, mode="acoustic" if settings.acoustic_wake else "transcript",
                              active_timeout_s=settings.wake_active_timeout_s, debounce_s=settings.wake_debounce_s,
                              echo_guard_s=settings.wake_echo_guard_ms / 1000)
         self.phrases = phrases
@@ -65,8 +66,8 @@ class VoiceController:
         self.epochs = EpochCounter()
         self.recorder = recorder
         self.session: AgentSession | None = None
-        self.router = (AcousticRouter(keyword_engine, self.gate, preroll_ms=settings.porcupine_preroll_ms,
-                                      on_wake=self._on_acoustic_wake)
+        self.router = (AcousticRouter(keyword_engine, self.gate, preroll_ms=settings.wake_preroll_ms,
+                                      on_wake=self._on_acoustic_wake, threaded=threaded_engine)
                        if keyword_engine is not None else None)
         self.keyword_engine = keyword_engine
         self.greeted = False
@@ -259,12 +260,12 @@ class VoiceController:
 
     def _on_acoustic_wake(self) -> None:
         self._text_since_wake = False
-        log.info("acoustic keyword detected (engine=porcupine)")
+        log.info("acoustic keyword detected (engine=%s)", self.s.wake_mode)
         self._spawn(self._ack_if_wake_only())
 
     async def _ack_if_wake_only(self) -> None:
-        """Porcupine mode: acknowledge only if no question follows the keyword."""
-        wait = self.s.porcupine_wake_only_wait_ms / 1000
+        """Acoustic modes: acknowledge only if no question follows the keyword."""
+        wait = self.s.wake_only_ack_wait_ms / 1000
         deadline = time.monotonic() + 4.0
         quiet_since: float | None = None
         while time.monotonic() < deadline:
@@ -423,7 +424,14 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
                                                                    "noise_effective": noise.effective},
                              metrics_dir=settings.metrics_dir, log_transcripts=settings.log_transcripts)
     engine: KeywordEngine | None = None
-    if settings.wake_mode == "porcupine":
+    if settings.wake_mode == "livekit_wakeword":
+        engine = LiveKitWakeWordEngine(settings.wakeword_model_path, settings.wakeword_threshold,  # type: ignore[arg-type]
+                                       settings.wakeword_hop_ms)
+        log.info("livekit-wakeword engine ready model=%s threshold=%.2f hop=%dms", engine.name,
+                 settings.wakeword_threshold, settings.wakeword_hop_ms)
+        if (mismatch := settings.wake_model_mismatch()):
+            log.warning(mismatch)
+    elif settings.wake_mode == "porcupine":
         engine = PorcupineEngine(settings.picovoice_access_key.get_secret_value(),  # type: ignore[union-attr]
                                  settings.porcupine_keyword_path, settings.porcupine_sensitivity)  # type: ignore[arg-type]
         log.info("porcupine engine ready sample_rate=%d frame_length=%d", engine.sample_rate, engine.frame_length)
