@@ -270,7 +270,7 @@ class VoiceController:
                 epoch=epoch, epochs=self.epochs,
                 first_chunk_timeout=self.s.llm_first_chunk_timeout_s, stall_timeout=self.s.llm_stall_timeout_s,
                 max_attempts=self.s.llm_max_attempts,
-                cue_text=sp.THINKING_CUE if self.s.thinking_cue_enabled else None,
+                cue_text=sp.thinking_cue(epoch) if self.s.thinking_cue_enabled else None,
                 cue_delay=self.s.thinking_cue_delay_ms / 1000,
                 failure_text=sp.LLM_FAILED, empty_text=sp.EMPTY_REPLY, stats=stats,
             ):
@@ -305,7 +305,7 @@ class VoiceController:
 
         async def observed_text() -> AsyncIterable[str]:
             async for chunk in text:
-                if chunk.strip() and chunk.strip() != sp.THINKING_CUE and not substantive_at:
+                if chunk.strip() and chunk.strip() not in sp.THINKING_CUES and not substantive_at:
                     substantive_at.append(time.perf_counter())
                 yield chunk
 

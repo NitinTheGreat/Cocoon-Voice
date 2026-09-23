@@ -65,6 +65,10 @@ class TtsPacing:
         self.audio_s += duration_s
         self.frames += 1
 
+    # Flag only a lag of more than one 20 ms frame (a heuristic, not a listening result). Live runs after the
+    # Krisp fix measured -1..-71 ms; the earlier -404/-685 ms runs coincided with 105-339 ms loop blocks.
+    UNDERRUN_MS = -20.0
+
     @property
     def underran(self) -> bool:
-        return self.min_margin_ms is not None and self.min_margin_ms < 0
+        return self.min_margin_ms is not None and self.min_margin_ms < self.UNDERRUN_MS
