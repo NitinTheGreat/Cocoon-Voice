@@ -1,0 +1,51 @@
+{
+  "schema": "cocoon.safety-policy.v1",
+  "policy_version": "demo-safety-2026-09-24.1",
+  "source_status": "demo_assumption",
+  "note": "Prototype rules on simulated data. Thresholds are demo assumptions chosen so a replay shows each rule within minutes; they are not published Caterpillar limits and must not protect people on a real machine.",
+  "rules": [
+    {
+      "rule_id": "prototype.seatbelt_unfastened.v1",
+      "family": "seatbelt_engine_on",
+      "alert_type": "seatbelt_unfastened",
+      "severity": "warning",
+      "message": "Seatbelt unfastened while the engine is running (simulated).",
+      "reason": "The engine was running while the seatbelt was unfastened.",
+      "recommended_action": "Fasten your seatbelt before moving or operating the machine.",
+      "start_speech": "Warning: the engine is running and your seatbelt is not fastened. Please fasten your seatbelt.",
+      "clear_speech": "Thanks, your seatbelt is fastened. The seatbelt warning is cleared.",
+      "draft_incident": true,
+      "draft_severity": "medium",
+      "applies_to_categories": []
+    },
+    {
+      "rule_id": "prototype.prolonged_idle.v1",
+      "family": "prolonged_idle",
+      "alert_type": "prolonged_idle",
+      "severity": "warning",
+      "idle_threshold_seconds": 300,
+      "message": "Engine idling for a prolonged period (simulated).",
+      "reason": "The engine kept idling past the demo idle limit.",
+      "recommended_action": "If you are waiting, tell me why; otherwise shut the engine down to save fuel.",
+      "start_speech": "You've been idling for over five minutes. If you're waiting, tell me why; otherwise consider shutting the engine down.",
+      "clear_speech": null,
+      "draft_incident": false,
+      "applies_to_categories": []
+    },
+    {
+      "rule_id": "prototype.idle_unbelted.v1",
+      "family": "idle_unbelted",
+      "alert_type": "idle_unbelted",
+      "severity": "warning",
+      "idle_threshold_seconds": 60,
+      "message": "Idling with the seatbelt unfastened (simulated).",
+      "reason": "The machine idled with the engine on and the seatbelt unfastened past the demo limit.",
+      "recommended_action": "Fasten your seatbelt while you wait in the cab.",
+      "start_speech": "You're idling with your seatbelt unfastened. Please fasten it while you wait.",
+      "clear_speech": null,
+      "draft_incident": true,
+      "draft_severity": "medium",
+      "applies_to_categories": []
+    }
+  ]
+}

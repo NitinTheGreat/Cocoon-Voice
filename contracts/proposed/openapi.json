@@ -702,7 +702,7 @@
           "simulator",
           "voice_service"
         ],
-        "x-idempotency": "(session_id, event_id); same payload → duplicate:true, different payload → 409",
+        "x-idempotency": "(session_id, event_id); same payload → duplicate:true, different payload → 409; a late or same-time conflicting sample is recorded but ignored (stale:true, ignored_reason)",
         "x-target-changes": [
           {
             "stage": "I05A",
@@ -3061,7 +3061,11 @@
           },
           "alert_type": {
             "type": "string",
-            "const": "seatbelt_unfastened",
+            "enum": [
+              "seatbelt_unfastened",
+              "prolonged_idle",
+              "idle_unbelted"
+            ],
             "title": "Alert Type"
           },
           "severity": {
@@ -3111,6 +3115,96 @@
               }
             ],
             "title": "Cleared At"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version",
+            "description": "Safety policy that produced this episode."
+          },
+          "source_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "demo_assumption",
+                  "published_limit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Status",
+            "description": "demo_assumption: thresholds are demo values, not published CAT limits."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "recommended_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Action"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "correlated_alert_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlated Alert Id",
+            "description": "Episode this one overlaps (same physical situation); it is not announced again."
+          },
+          "draft_incident_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Incident Id",
+            "description": "Automatic incident draft linked to this episode."
+          },
+          "announced": {
+            "type": "boolean",
+            "title": "Announced",
+            "description": "An alert_started announcement was created (not: heard).",
+            "default": true
           }
         },
         "additionalProperties": false,
@@ -3256,6 +3350,77 @@
         ],
         "title": "AlertAcknowledgement",
         "type": "object"
+      },
+      "AlertEvidence": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At",
+            "description": "Observation (data) time of the triggering sample."
+          },
+          "readings": {
+            "$ref": "#/components/schemas/TelemetryReadings"
+          },
+          "idle_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Since",
+            "description": "Start of the observed idle streak, if any."
+          },
+          "idle_seconds_observed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds Observed",
+            "description": "observed_at - idle_since (data clock)."
+          },
+          "machine_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Machine Category"
+          },
+          "applicability": {
+            "type": "string",
+            "enum": [
+              "all_categories",
+              "category_listed"
+            ],
+            "title": "Applicability",
+            "default": "all_categories"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "observed_at",
+          "readings"
+        ],
+        "title": "AlertEvidence",
+        "description": "What the rule saw when the episode opened. Saved once; later readings never change it."
       },
       "AlertExplainedAction": {
         "properties": {
@@ -4997,7 +5162,8 @@
                 "type": "null"
               }
             ],
-            "title": "Incident Id"
+            "title": "Incident Id",
+            "description": "incident.* commands: the draft ID (DRF-…)."
           },
           "description": {
             "anyOf": [
@@ -7369,12 +7535,9 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "draft",
-              "confirmed",
-              "dismissed"
-            ],
+            "const": "confirmed",
             "title": "Status",
+            "description": "Unconfirmed drafts are IncidentDraft.",
             "default": "confirmed"
           },
           "origin": {
@@ -7447,8 +7610,7 @@
                 "type": "string",
                 "enum": [
                   "reported",
-                  "active_task",
-                  "shift_zone"
+                  "active_task"
                 ]
               },
               {
@@ -7505,12 +7667,19 @@
               }
             ],
             "title": "Episode Id",
-            "description": "Alert episode behind an automatic draft."
+            "description": "Alert episode behind a confirmed automatic draft."
           },
-          "version": {
-            "type": "integer",
-            "title": "Version",
-            "default": 1
+          "draft_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Id",
+            "description": "The draft this incident was confirmed from."
           },
           "confirmed_at": {
             "anyOf": [
@@ -7538,7 +7707,7 @@
           "created_at"
         ],
         "title": "Incident",
-        "description": "A report. `description` is the \"what\". Structured fields are additive; each `*_basis` says where a value came\nfrom (reported by the operator, taken from recorded context, or a stated default) so nothing looks invented."
+        "description": "A confirmed report. `description` is the \"what\". Structured fields are additive; each `*_basis` says where a\nvalue came from (stated by the operator, taken from recorded context, or a rule default) so nothing looks\ninvented."
       },
       "IncidentActionDetails": {
         "additionalProperties": false,
@@ -7779,6 +7948,227 @@
         "title": "IncidentDismissPayload",
         "type": "object"
       },
+      "IncidentDraft": {
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "title": "Draft Id"
+          },
+          "draft_number": {
+            "type": "integer",
+            "title": "Draft Number"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "operator_id": {
+            "type": "string",
+            "title": "Operator Id"
+          },
+          "machine_id": {
+            "type": "string",
+            "title": "Machine Id"
+          },
+          "origin": {
+            "type": "string",
+            "const": "auto_draft",
+            "title": "Origin"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "confirmed",
+              "dismissed"
+            ],
+            "title": "Status"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "severity_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "reported",
+                  "rule_default"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Basis"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "site_zone_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Zone Id"
+          },
+          "zone_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "reported",
+                  "active_task"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Basis"
+          },
+          "location_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Text"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "occurred_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "time_of_report",
+                  "observation_time"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred Basis"
+          },
+          "episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incident Id",
+            "description": "Set once, when the draft is confirmed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "dismissed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismissed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "draft_id",
+          "draft_number",
+          "session_id",
+          "operator_id",
+          "machine_id",
+          "origin",
+          "status",
+          "description",
+          "version",
+          "created_at"
+        ],
+        "title": "IncidentDraft",
+        "description": "An automatic draft from a safety episode. Not an incident until confirmed; confirming allocates the real\nincident ID once (`incident_id`)."
+      },
       "IncidentDraftAction": {
         "properties": {
           "type": {
@@ -7789,8 +8179,19 @@
             ],
             "title": "Type"
           },
+          "draft": {
+            "$ref": "#/components/schemas/IncidentDraft"
+          },
           "incident": {
-            "$ref": "#/components/schemas/Incident"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Incident"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The incident created by confirming (confirm only)."
           },
           "created": {
             "type": "boolean",
@@ -7801,7 +8202,7 @@
         "type": "object",
         "required": [
           "type",
-          "incident",
+          "draft",
           "created"
         ],
         "title": "IncidentDraftAction"
@@ -7880,7 +8281,7 @@
           },
           "drafts": {
             "items": {
-              "$ref": "#/components/schemas/Incident"
+              "$ref": "#/components/schemas/IncidentDraft"
             },
             "type": "array",
             "title": "Drafts"
@@ -9054,6 +9455,128 @@
         ],
         "title": "MachineStateObservation",
         "type": "object"
+      },
+      "MachineStateView": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "unavailable",
+              "fresh",
+              "stale"
+            ],
+            "title": "Status"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "engine_on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine On"
+          },
+          "seatbelt_fastened": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seatbelt Fastened"
+          },
+          "operating_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "idle",
+                  "working",
+                  "travel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operating State"
+          },
+          "speed_kph": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed Kph"
+          },
+          "idle_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Since"
+          },
+          "idle_seconds_observed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds Observed"
+          },
+          "stale_after_seconds": {
+            "type": "integer",
+            "title": "Stale After Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "stale_after_seconds"
+        ],
+        "title": "MachineStateView",
+        "description": "Latest accepted observation. Two clocks: durations use observation time (`observed_at`); freshness uses the\nserver's receipt time. Missing or stale data is reported as such, never as healthy."
       },
       "MeResponse": {
         "properties": {
@@ -11681,6 +12204,16 @@
               }
             ]
           },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IncidentDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "incident": {
             "anyOf": [
               {
@@ -11949,11 +12482,11 @@
           },
           "incident_drafts": {
             "items": {
-              "$ref": "#/components/schemas/Incident"
+              "$ref": "#/components/schemas/IncidentDraft"
             },
             "type": "array",
             "title": "Incident Drafts",
-            "description": "Unconfirmed drafts (status draft). `incidents` lists confirmed reports only."
+            "description": "Open automatic drafts. `incidents` lists confirmed reports only."
           },
           "pending_approvals": {
             "items": {
@@ -11961,6 +12494,17 @@
             },
             "type": "array",
             "title": "Pending Approvals"
+          },
+          "machine_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MachineStateView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Freshness of machine observations."
           }
         },
         "additionalProperties": false,
@@ -12075,9 +12619,9 @@
             "type": "array"
           },
           "incident_drafts": {
-            "description": "Unconfirmed drafts (status draft). `incidents` lists confirmed reports only.",
+            "description": "Open automatic drafts. `incidents` lists confirmed reports only.",
             "items": {
-              "$ref": "#/components/schemas/Incident"
+              "$ref": "#/components/schemas/IncidentDraft"
             },
             "title": "Incident Drafts",
             "type": "array"
@@ -12088,6 +12632,18 @@
             },
             "title": "Pending Approvals",
             "type": "array"
+          },
+          "machine_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MachineStateView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Freshness of machine observations."
           },
           "server_time": {
             "anyOf": [
@@ -14579,6 +15135,43 @@
         "title": "TelemetryIngestResult",
         "type": "object"
       },
+      "TelemetryProvenance": {
+        "properties": {
+          "origin": {
+            "type": "string",
+            "enum": [
+              "synthetic_scenario",
+              "dataset_replay"
+            ],
+            "title": "Origin"
+          },
+          "generator": {
+            "type": "string",
+            "maxLength": 80,
+            "title": "Generator"
+          },
+          "record_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Ref",
+            "description": "Dataset record ID for a replay."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "origin",
+          "generator"
+        ],
+        "title": "TelemetryProvenance"
+      },
       "TelemetryReadings": {
         "properties": {
           "engine_on": {
@@ -14593,7 +15186,40 @@
             "type": "integer",
             "maximum": 86400.0,
             "minimum": 0.0,
-            "title": "Idle Seconds"
+            "title": "Idle Seconds",
+            "description": "Client-reported counter; informational. Idle rules time idling from observation timestamps instead."
+          },
+          "operating_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "idle",
+                  "working",
+                  "travel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operating State",
+            "description": "Observed machine state. Omitted = unknown: idle rules neither open nor clear."
+          },
+          "speed_kph": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed Kph",
+            "description": "Observed ground speed (motion)."
           }
         },
         "additionalProperties": false,
@@ -14629,6 +15255,17 @@
           },
           "readings": {
             "$ref": "#/components/schemas/TelemetryReadings"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelemetryProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where a simulated sample came from. Stored, never used by the rules."
           }
         },
         "additionalProperties": false,
@@ -14670,7 +15307,23 @@
           "stale": {
             "type": "boolean",
             "title": "Stale",
-            "description": "True when observed_at is older than the newest processed sample."
+            "description": "True when the sample was not applied (late or conflicting)."
+          },
+          "ignored_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "late",
+                  "conflicting"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignored Reason",
+            "description": "late: older than the newest applied sample; conflicting: same observation time as the newest applied sample but different readings."
           },
           "alerts_opened": {
             "items": {
@@ -14692,6 +15345,14 @@
             },
             "type": "array",
             "title": "Announcements Created"
+          },
+          "drafts_created": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Drafts Created",
+            "description": "Automatic incident drafts opened."
           },
           "active_alerts": {
             "items": {

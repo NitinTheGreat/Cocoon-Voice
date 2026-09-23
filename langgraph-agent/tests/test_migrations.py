@@ -69,10 +69,12 @@ def make_populated_baseline(path: Path) -> None:
 ADDED_COLUMNS = {
     "sessions": ("dataset_manifest_sha256", "site_id", "shift_id", "binding_status", "context_status",
                  "context_source"),
-    "incidents": ("status", "origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis",
-                  "location_text", "occurred_at", "occurred_basis", "episode_id", "version", "confirmed_at",
-                  "dismissed_at"),
+    "incidents": ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
+                  "occurred_at", "occurred_basis", "episode_id", "draft_id", "confirmed_at"),
     "turns": ("route_json",),
+    "alerts": ("policy_version", "source_status", "reason", "recommended_action", "evidence_json",
+               "correlated_alert_id", "draft_incident_id", "announced"),
+    "telemetry_events": ("provenance_json",),
 }
 
 
@@ -141,8 +143,8 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
     assert row == (None, None, None, "legacy_unverified", "legacy_unverified", None)  # no fabricated provenance
     conn = sqlite3.connect(db)
     # a legacy report was saved immediately as a report: it stays a confirmed operator report, nothing invented
-    assert conn.execute("SELECT status, origin, severity, site_zone_id, version FROM incidents"
-                        " WHERE incident_number = 1").fetchone() == ("confirmed", "operator_reported", None, None, 1)
+    assert conn.execute("SELECT origin, severity, site_zone_id, occurred_at FROM incidents"
+                        " WHERE incident_number = 1").fetchone() == ("operator_reported", None, None, None)
     conn.close()
 
 

@@ -70,7 +70,7 @@ def build_graph(store: Store, brain: Brain):
             pending=state.get("pending"),
             latest_alert=s.Alert.model_validate(alert) if alert else None,
             lessons=store.list_lessons(),
-            drafts=store.list_incidents(state["session_id"], "draft"),
+            drafts=store.list_drafts(state["session_id"]),
         )
 
     def _command(state: CocoonState, kind: str, fingerprint: str, mutate) -> tuple[dict[str, Any], bool]:
@@ -191,14 +191,14 @@ def build_graph(store: Store, brain: Brain):
         r = state["route"]
         intent = r["intent"]
         if intent == "review_drafts":
-            action = s.IncidentDraftsAction(type="incident_drafts", drafts=store.list_incidents(state["session_id"], "draft"))
+            action = s.IncidentDraftsAction(type="incident_drafts", drafts=store.list_drafts(state["session_id"]))
             return {"actions": [action.model_dump(mode="json")]}
         kind = "incident.dismiss" if intent == "dismiss_draft" else "incident.confirm"
         saved = _saved(state, kind)
         if saved is not None:  # retry of a turn that already committed this
-            return {"actions": [_draft_action(kind, saved["incident"], created=False)]}
-        open_drafts = store.list_incidents(state["session_id"], "draft")
-        options = [f"draft number {d.incident_number}" for d in open_drafts]
+            return {"actions": [_draft_action(kind, saved, created=False)]}
+        open_drafts = store.list_drafts(state["session_id"])
+        options = [f"draft number {d.draft_number}" for d in open_drafts]
         if intent == "affirm":
             if state.get("pending"):
                 if not open_drafts:  # "yes" is not an answer to "what happened?": ask again, keep the question
@@ -214,7 +214,7 @@ def build_graph(store: Store, brain: Brain):
             target = open_drafts[0]
         else:
             ref = r.get("incident_number")
-            matches = [d for d in open_drafts if ref is None or d.incident_number == ref]
+            matches = [d for d in open_drafts if ref is None or d.draft_number == ref]
             if len(matches) != 1:
                 for_action = "dismiss_draft" if intent == "dismiss_draft" else "confirm_draft"
                 reason = "several_candidates" if len(matches) > 1 else "nothing_pending"
@@ -223,13 +223,13 @@ def build_graph(store: Store, brain: Brain):
                 return {"actions": [action.model_dump(mode="json")]}
             target = matches[0]
         try:
-            result, duplicate = _command(state, kind, f"{kind}:{target.incident_id}", Store.incident_transition(
-                _session(state), kind, target.incident_id, None))
+            result, duplicate = _command(state, kind, f"{kind}:{target.draft_id}", Store.incident_transition(
+                _session(state), kind, target.draft_id, None))
         except (InvalidTransition, NotFound):  # changed by a tap between the read and the write
             action = s.ClarificationAction(type="clarification_needed", reason="nothing_pending", options=[],
                                            for_action="dismiss_draft" if kind == "incident.dismiss" else "confirm_draft")
             return {"actions": [action.model_dump(mode="json")]}
-        return {"actions": [_draft_action(kind, result["incident"], created=not duplicate)]}
+        return {"actions": [_draft_action(kind, result, created=not duplicate)]}
 
     async def unsupported(state: CocoonState) -> CocoonState:
         capability = state["route"].get("unsupported_capability") or "requested_capability"
@@ -287,6 +287,7 @@ def build_graph(store: Store, brain: Brain):
     return g
 
 
-def _draft_action(kind: str, incident: dict[str, Any], created: bool) -> dict[str, Any]:
+def _draft_action(kind: str, result: dict[str, Any], created: bool) -> dict[str, Any]:
     return s.IncidentDraftAction(type="incident_confirmed" if kind == "incident.confirm" else "incident_dismissed",
-                                 incident=incident, created=created).model_dump(mode="json")
+                                 draft=result["draft"], incident=result.get("incident"),
+                                 created=created).model_dump(mode="json")

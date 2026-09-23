@@ -132,34 +132,43 @@ def test_drafts_are_separate_and_confirmed_or_dismissed_once_by_voice_or_tap(tmp
     with TestClient(create_app(settings)) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
         other = session_for(c, "DOZ_DEMO_001")["session_id"]
+        say(c, sid, "t0", "log an incident: loose step on the cab ladder")  # INC-0001, a normal report
         d1 = make_draft(settings, sid, "EP-1", "Seatbelt unfastened while the engine was running")
         d2 = make_draft(settings, sid, "EP-2", "Prolonged idling")
+        assert make_draft(settings, sid, "EP-1", "same episode again") == d1  # one draft per episode
         state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
-        assert [d["incident_id"] for d in state["incident_drafts"]] == [d1, d2] and state["incidents"] == []
-        assert state["incident_drafts"][0]["origin"] == "auto_draft"
+        assert [d["draft_id"] for d in state["incident_drafts"]] == [d1, d2] == ["DRF-0001", "DRF-0002"]
+        assert [i["incident_id"] for i in state["incidents"]] == ["INC-0001"]  # drafts are not incidents
+        first = state["incident_drafts"][0]
+        assert (first["origin"], first["status"], first["severity_basis"], first["occurred_basis"]) == (
+            "auto_draft", "draft", "rule_default", "observation_time")
 
         ambiguous = say(c, sid, "t1", "yes")  # two drafts waiting: a bare yes must not confirm either
         assert ambiguous["actions"][0]["type"] == "clarification_needed"
         assert ambiguous["actions"][0]["reason"] == "several_candidates" and ambiguous["action_records"] == []
-        n1 = int(d1.split("-")[1])
-        ok = say(c, sid, "t2", f"confirm draft number {n1}")
-        assert ok["actions"][0]["type"] == "incident_confirmed"
-        assert (ok["actions"][0]["incident"]["incident_id"], ok["actions"][0]["incident"]["status"]) == (d1, "confirmed")
-        assert say(c, sid, "t2", f"confirm draft number {n1}") == ok
+        ok = say(c, sid, "t2", "confirm draft number 1")
+        action = ok["actions"][0]
+        assert action["type"] == "incident_confirmed" and action["draft"]["status"] == "confirmed"
+        # the real incident ID is allocated once, on confirmation
+        assert action["incident"]["incident_id"] == action["draft"]["incident_id"] == "INC-0002"
+        assert (action["incident"]["origin"], action["incident"]["draft_id"]) == ("auto_draft", d1)
+        assert ok["action_records"][0]["record_id"] == "INC-0002"
+        assert say(c, sid, "t2", "confirm draft number 1") == ok
 
         # taps: edit with a version check, dismiss once, then illegal and foreign attempts change nothing
         edit = incident_command(c, sid, "c1", "incident.edit", d2, expected=1, severity="medium",
                                 location_text="by the crusher")
         assert edit.status_code == 200, edit.text
-        body = edit.json()["incident"]
-        assert (body["version"], body["severity"], body["severity_basis"], body["site_zone_id"]) == (
-            2, "medium", "reported", "ZONE_N_HAUL")
+        body = edit.json()["draft"]
+        assert (body["version"], body["severity"], body["severity_basis"], body["site_zone_id"], body["zone_basis"]) == (
+            2, "medium", "reported", "ZONE_N_HAUL", "reported")
         stale = incident_command(c, sid, "c2", "incident.edit", d2, expected=1, severity="low")
         assert stale.status_code == 409 and stale.json()["error"]["code"] == "version_conflict"
         dismiss = incident_command(c, sid, "c3", "incident.dismiss", d2, expected=2)
-        assert dismiss.status_code == 200 and dismiss.json()["incident"]["status"] == "dismissed"
+        assert dismiss.status_code == 200 and dismiss.json()["draft"]["status"] == "dismissed"
+        assert dismiss.json()["incident"] is None
         again = incident_command(c, sid, "c3", "incident.dismiss", d2, expected=2)
-        assert again.json()["duplicate"] is True and again.json()["incident"] == dismiss.json()["incident"]
+        assert again.json()["duplicate"] is True and again.json()["draft"] == dismiss.json()["draft"]
         late = incident_command(c, sid, "c4", "incident.confirm", d2)
         assert late.status_code == 409 and late.json()["error"]["code"] == "invalid_transition"
         foreign = incident_command(c, other, "c5", "incident.confirm", d1)
@@ -169,9 +178,10 @@ def test_drafts_are_separate_and_confirmed_or_dismissed_once_by_voice_or_tap(tmp
         d3 = make_draft(settings, sid, "EP-3", "Idling with the seatbelt unfastened")
         single = say(c, sid, "t4", "yes")  # exactly one workflow waiting
         assert single["actions"][0]["type"] == "incident_confirmed"
-        assert single["actions"][0]["incident"]["incident_id"] == d3
+        assert single["actions"][0]["draft"]["draft_id"] == d3
         state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
-        assert [i["incident_id"] for i in state["incidents"]] == [d1, d3] and state["incident_drafts"] == []
+        assert [i["incident_id"] for i in state["incidents"]] == ["INC-0001", "INC-0002", "INC-0003"]
+        assert state["incident_drafts"] == []
 
 
 def test_unsupported_capabilities_are_reported_honestly(tmp_path):

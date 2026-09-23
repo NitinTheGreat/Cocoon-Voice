@@ -2,6 +2,25 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## B3: machine replay, belt/idle episodes and automatic drafts
+
+- **Schema v6:** alert episode columns (policy version, source status, reason, recommended action, evidence,
+  correlated episode, linked draft, announced), `machine_state` (latest applied observation with idle streak start)
+  and `telemetry_events.provenance_json`. **v5 was revised before release** (never applied outside test databases):
+  drafts now live in `incident_drafts` (`DRF-…`, own numbering) and confirming one allocates the real `INC-…` once,
+  so drafts never consume report numbers.
+- **Rules:** `policies/safety_policy_v1.json` (belt+engine, prolonged idle 300 s, idle+unbelted 60 s; demo
+  assumptions). One short transaction per sample applies every rule and writes alert + draft + announcement
+  together. Idle time uses observation timestamps; a sample without `operating_state` leaves idle state unknown.
+  Late and same-time conflicting samples are recorded and ignored. Telemetry now has its own per-session lock, so it
+  never waits for a turn's model call (the graph reads alerts from the DB at turn start).
+- **Simulator:** `scripts/simulate_machine.py` (any of the 5 machines; `belt_idle`, `belt_retrigger`,
+  `selection_check`, `dataset`).
+- **Checks:** `tests/test_safety.py` (5): warning before motion, no spam, one draft, correlation, restart keeps
+  episodes and duplicate replay; observation-clock idle timing and unknown state; clear/retrigger/late/conflicting;
+  all five assets isolated plus stale freshness; dataset replay (runs only where the ignored dataset exists). Full
+  suite and both contract drift checks pass. Not observed: real sensors, live voice playback of these announcements.
+
 ## B2: operator workflows, structured incidents and truthful action outcomes
 
 - **Schema v5:** structured incident columns (status draft/confirmed/dismissed, origin, severity + basis, site/zone +

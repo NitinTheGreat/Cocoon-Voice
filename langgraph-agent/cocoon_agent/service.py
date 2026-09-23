@@ -26,7 +26,7 @@ from .catalog import Catalog, SessionBindings
 from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
-from .rules import SEATBELT_RULE, seatbelt_condition
+from .rules import SafetyPolicy, load_policy
 from .store import (
     Conflict, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
 )
@@ -60,7 +60,10 @@ class CocoonService:
         self.catalog = catalog  # immutable verified snapshot, loaded once at startup; None = not admitting
         self.bindings = bindings
         self.catalog_issue = catalog_issue
+        self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
+        self._telemetry_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._inflight: dict[tuple[str, str], asyncio.Task] = {}
 
     # ------------------------------------------------------------------ sessions
@@ -363,7 +366,7 @@ class CocoonService:
             llm_mode=self.brain.mode,
             tasks=self.store.list_tasks(),
             incidents=self.store.list_incidents(session_id),
-            incident_drafts=self.store.list_incidents(session_id, "draft"),
+            incident_drafts=self.store.list_drafts(session_id),
             pending_approvals=self.store.list_pending_approvals(session_id),
             training_assignments=self.store.list_assignments(session),
             available_lessons=self.store.list_lessons(),
@@ -372,39 +375,53 @@ class CocoonService:
             pending_question=s.PendingQuestion.model_validate(pending) if pending else None,
             shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
             assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
+            machine_state=self._machine_state(session_id),
+        )
+
+    def _machine_state(self, session_id: str) -> s.MachineStateView:
+        limit = self.settings.telemetry_stale_seconds
+        row = self.store.machine_state(session_id)
+        if row is None:
+            return s.MachineStateView(status="unavailable", stale_after_seconds=limit)
+        readings = s.TelemetryReadings.model_validate_json(row["readings_json"])
+        received = datetime.fromisoformat(row["received_at"])
+        observed = datetime.fromisoformat(row["observed_at"])
+        idle_since = datetime.fromisoformat(row["idle_since"]) if row["idle_since"] else None
+        return s.MachineStateView(
+            status="stale" if (utcnow() - received).total_seconds() > limit else "fresh",
+            observed_at=observed, received_at=received, engine_on=readings.engine_on,
+            seatbelt_fastened=readings.seatbelt_fastened, operating_state=readings.operating_state,
+            speed_kph=readings.speed_kph, idle_since=idle_since,
+            idle_seconds_observed=int((observed - idle_since).total_seconds()) if idle_since else None,
+            stale_after_seconds=limit,
         )
 
     # ------------------------------------------------------------------ telemetry
 
     async def submit_telemetry(self, session_id: str, req: s.TelemetryRequest) -> s.TelemetryResult:
-        self.require_session(session_id)
+        """Rules run synchronously on the sample, in one short transaction, without any model call. The graph reads
+        alerts from the database when a turn starts, so no checkpoint write (and no turn lock) is needed here."""
+        session = self.require_session(session_id)
         digest = payload_hash(req.model_dump(mode="json", exclude={"event_id"}))
-        async with self._locks[session_id]:  # ordered with turns for the same session
+        async with self._telemetry_locks[session_id]:
             prior = self.store.get_telemetry(session_id, req.event_id)
             if prior is not None:
                 if prior[0] != digest:
                     raise ApiError(409, "idempotency_conflict", "event_id was already used with a different payload")
                 return self._telemetry_result(session_id, prior[1], duplicate=True)
-            condition = seatbelt_condition(
-                req.readings, requires_engine_on=self.settings.seatbelt_rule_requires_engine_on
-            )
-            outcome = self.store.apply_telemetry(
-                session_id, req, digest, condition, SEATBELT_RULE,
+            machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+            outcome = self.store.apply_observation(
+                session, req, digest, self.policy, machine.category if machine else None,
                 timedelta(seconds=self.settings.announcement_ttl_seconds),
+                requires_engine_on=self.settings.seatbelt_rule_requires_engine_on,
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
-                latest = self.store.latest_alert(session_id)
-                # keep graph context in step so a later "why?" resolves against this alert
-                await self.graph.aupdate_state(
-                    thread_config(session_id),
-                    {"latest_alert": latest.model_dump(mode="json") if latest else None},
-                    as_node="compose",
-                )
-                log.info("alert transition session=%s opened=%s cleared=%s",
-                         session_id, outcome["alerts_opened"], outcome["alerts_cleared"])
+                log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,
+                         outcome["alerts_opened"], outcome["alerts_cleared"], outcome["drafts_created"])
             return self._telemetry_result(session_id, outcome, duplicate=False)
 
     def _telemetry_result(self, session_id: str, outcome: dict[str, Any], duplicate: bool) -> s.TelemetryResult:
+        outcome = {k: v for k, v in outcome.items() if k in s.TelemetryResult.model_fields}  # pre-B3 saved results
         return s.TelemetryResult(**outcome, duplicate=duplicate, active_alerts=self.store.active_alerts(session_id))
 
     # ------------------------------------------------------------------ announcements

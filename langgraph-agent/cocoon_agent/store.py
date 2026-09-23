@@ -14,11 +14,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .api import schemas as s
 from .catalog import Catalog, CatalogError
 from .migrations import migrate
+
+if TYPE_CHECKING:
+    from .rules import SafetyPolicy
 
 SEED_TASKS = [
     ("T-101", "Pre-start walkaround inspection", "Check tracks, hydraulic lines and fluid levels before starting the excavator.", "high", 10),
@@ -446,14 +449,14 @@ class Store:
             row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
             return _incident(row), True
 
-    def list_incidents(self, session_id: str, status: str = "confirmed") -> list[s.Incident]:
-        rows = self._all("SELECT * FROM incidents WHERE session_id = ? AND status = ? ORDER BY incident_number",
-                         (session_id, status))
+    def list_incidents(self, session_id: str) -> list[s.Incident]:
+        rows = self._all("SELECT * FROM incidents WHERE session_id = ? ORDER BY incident_number", (session_id,))
         return [_incident(r) for r in rows]
 
-    def get_incident(self, session_id: str, incident_id: str) -> s.Incident | None:
-        row = self._one("SELECT * FROM incidents WHERE session_id = ? AND incident_id = ?", (session_id, incident_id))
-        return _incident(row) if row else None
+    def list_drafts(self, session_id: str, status: str = "draft") -> list[s.IncidentDraft]:
+        rows = self._all("SELECT * FROM incident_drafts WHERE session_id = ? AND status = ? ORDER BY draft_number",
+                         (session_id, status))
+        return [_draft(r) for r in rows]
 
     def list_pending_approvals(self, session_id: str) -> list[s.ApprovalRequest]:
         rows = self._all("SELECT * FROM approval_requests WHERE session_id = ? AND status = 'pending'"
@@ -476,9 +479,9 @@ class Store:
                 zone, zone_basis = _resolve_zone(c, session, location_text)
                 number = c.execute(
                     "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
-                    " status, origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
+                    " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
                     " occurred_at, occurred_basis, confirmed_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, 'confirmed', 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
+                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
                     (session.session_id, session.operator_id, session.machine_id, description, turn_id, now, severity,
                      "reported" if severity else None, session.site_id, zone, zone_basis, location_text, now, now),
                 ).lastrowid
@@ -493,68 +496,87 @@ class Store:
     @staticmethod
     def insert_auto_draft(c: sqlite3.Connection, session: s.Session, episode_id: str, description: str,
                           severity: str, occurred_at: datetime) -> str:
-        """An automatic draft for one alert episode (at most one per episode). Not a confirmed incident."""
-        row = c.execute("SELECT incident_id FROM incidents WHERE episode_id = ?", (episode_id,)).fetchone()
+        """An automatic draft for one alert episode (at most one per episode). Not an incident until confirmed."""
+        row = c.execute("SELECT draft_id FROM incident_drafts WHERE episode_id = ?", (episode_id,)).fetchone()
         if row is not None:
-            return row["incident_id"]
+            return row["draft_id"]
         zone, zone_basis = _resolve_zone(c, session, None)
         number = c.execute(
-            "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at, status,"
-            " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, occurred_at, occurred_basis,"
-            " episode_id) VALUES (?, ?, ?, ?, ?, ?, 'draft', 'auto_draft', ?, 'rule_default', ?, ?, ?, ?,"
-            " 'observation_time', ?)",
-            (session.session_id, session.operator_id, session.machine_id, description, f"episode:{episode_id}",
-             iso(utcnow()), severity, session.site_id, zone, zone_basis, iso(occurred_at), episode_id),
+            "INSERT INTO incident_drafts(session_id, operator_id, machine_id, origin, description, severity,"
+            " severity_basis, site_id, site_zone_id, zone_basis, occurred_at, occurred_basis, episode_id, created_at)"
+            " VALUES (?, ?, ?, 'auto_draft', ?, ?, 'rule_default', ?, ?, ?, ?, 'observation_time', ?, ?)",
+            (session.session_id, session.operator_id, session.machine_id, description, severity, session.site_id,
+             zone, zone_basis, iso(occurred_at), episode_id, iso(utcnow())),
         ).lastrowid
-        incident_id = f"INC-{number:04d}"
-        c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
-        return incident_id
+        draft_id = f"DRF-{number:04d}"
+        c.execute("UPDATE incident_drafts SET draft_id = ? WHERE draft_number = ?", (draft_id, number))
+        return draft_id
 
     @staticmethod
-    def incident_transition(session: s.Session, kind: str, incident_id: str, expected_version: int | None,
+    def incident_transition(session: s.Session, kind: str, draft_id: str, expected_version: int | None,
                             edits: dict[str, Any] | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
-        """Mutation for incident.edit / incident.confirm / incident.dismiss. Only this session's drafts change;
-        a confirmed or dismissed report is final. The incident keeps its ID when confirmed."""
+        """Mutation for incident.edit / incident.confirm / incident.dismiss on this session's open drafts. Confirming
+        allocates the incident (and its real ID) exactly once; a confirmed or dismissed draft is final."""
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
-            row = c.execute("SELECT * FROM incidents WHERE incident_id = ? AND session_id = ?",
-                            (incident_id, session.session_id)).fetchone()
+            row = c.execute("SELECT * FROM incident_drafts WHERE draft_id = ? AND session_id = ?",
+                            (draft_id, session.session_id)).fetchone()
             if row is None:
-                raise NotFound("no such incident in this session")
+                raise NotFound("no such incident draft in this session")
             if expected_version is not None and row["version"] != expected_version:
                 raise VersionConflict(row["version"])
             if row["status"] != "draft":
-                raise InvalidTransition(row["status"], f"incident is {row['status']}; {kind} needs a draft")
+                raise InvalidTransition(row["status"], f"draft is {row['status']}; {kind} needs an open draft")
             now = iso(utcnow())
+            incident = None
             if kind == "incident.confirm":
-                c.execute("UPDATE incidents SET status = 'confirmed', confirmed_at = ?, version = version + 1"
-                          " WHERE incident_id = ?", (now, incident_id))
-                verb = "Confirmed"
+                number = c.execute(
+                    "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
+                    " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
+                    " occurred_basis, episode_id, draft_id, confirmed_at)"
+                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?, origin,"
+                    " severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
+                    " occurred_basis, episode_id, draft_id, ? FROM incident_drafts WHERE draft_id = ?",
+                    (now, now, draft_id)).lastrowid
+                incident_id = f"INC-{number:04d}"
+                c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
+                c.execute("UPDATE incident_drafts SET status = 'confirmed', incident_id = ?, confirmed_at = ?,"
+                          " version = version + 1 WHERE draft_id = ?", (incident_id, now, draft_id))
+                incident = _incident(c.execute("SELECT * FROM incidents WHERE incident_number = ?",
+                                               (number,)).fetchone())
+                summary = f"Confirmed draft {row['draft_number']} as incident {number}."
             elif kind == "incident.dismiss":
-                c.execute("UPDATE incidents SET status = 'dismissed', dismissed_at = ?, version = version + 1"
-                          " WHERE incident_id = ?", (now, incident_id))
-                verb = "Dismissed"
+                c.execute("UPDATE incident_drafts SET status = 'dismissed', dismissed_at = ?, version = version + 1"
+                          " WHERE draft_id = ?", (now, draft_id))
+                summary = f"Dismissed draft {row['draft_number']}."
             else:
                 e = edits or {}
                 sets, args = [], []
                 if e.get("description"):
-                    sets.append("description = ?"), args.append(e["description"])
+                    sets.append("description = ?")
+                    args.append(e["description"])
                 if e.get("severity"):
                     sets += ["severity = ?", "severity_basis = 'reported'"]
                     args.append(e["severity"])
                 if e.get("location_text"):
                     zone, basis = _resolve_zone(c, session, e["location_text"])
-                    sets += ["location_text = ?", "site_zone_id = ?", "zone_basis = ?"]
-                    args += [e["location_text"], zone if basis == "reported" else row["site_zone_id"],
-                             basis if basis == "reported" else row["zone_basis"]]
+                    sets.append("location_text = ?")
+                    args.append(e["location_text"])
+                    if basis == "reported":
+                        sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
+                        args.append(zone)
                 if not sets:
                     raise InvalidTransition(row["status"], "incident.edit needs at least one field to change")
-                c.execute(f"UPDATE incidents SET {', '.join(sets)}, version = version + 1 WHERE incident_id = ?",
-                          (*args, incident_id))
-                verb = "Edited"
-            inc = _incident(c.execute("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone())
-            return {"record_type": "incident", "record_id": incident_id,
-                    "summary": f"{verb} incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+                c.execute(f"UPDATE incident_drafts SET {', '.join(sets)}, version = version + 1 WHERE draft_id = ?",
+                          (*args, draft_id))
+                summary = f"Edited draft {row['draft_number']}."
+            draft = _draft(c.execute("SELECT * FROM incident_drafts WHERE draft_id = ?", (draft_id,)).fetchone())
+            out = {"record_type": "incident" if incident else "incident_draft",
+                   "record_id": incident.incident_id if incident else draft_id, "summary": summary,
+                   "draft": draft.model_dump(mode="json")}
+            if incident is not None:
+                out["incident"] = incident.model_dump(mode="json")
+            return out
 
         return mutate
 
@@ -700,70 +722,121 @@ class Store:
         )
         return (row["request_hash"], json.loads(row["result_json"])) if row else None
 
-    def apply_telemetry(
-        self,
-        session_id: str,
-        req: s.TelemetryRequest,
-        request_hash: str,
-        condition_active: bool,
-        rule: "AlertTemplate",
-        announcement_ttl: timedelta,
-    ) -> dict[str, Any]:
-        """Record one sample and apply the alert episode transition atomically."""
+    def machine_state(self, session_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT * FROM machine_state WHERE session_id = ?", (session_id,))
+        return dict(row) if row else None
+
+    def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
+                          machine_category: str | None, announcement_ttl: timedelta,
+                          requires_engine_on: bool) -> dict[str, Any]:
+        """Record one sample and apply every rule's episode transition, the linked automatic draft and the
+        announcement in ONE short transaction (no model call inside).
+
+        Ordering uses the observation clock: a sample older than the newest applied one is `late`, and one with the
+        same observation time but different readings is `conflicting`; both are recorded but change nothing.
+        Idle streaks are measured between observation timestamps, never against the wall clock."""
+        from .rules import condition, idle_observation
+
         now = utcnow()
+        session_id = session.session_id
         opened: list[str] = []
         cleared: list[str] = []
         announced: list[str] = []
+        drafts: list[str] = []
+        readings_json = req.readings.model_dump_json()
         with self._tx() as c:
+            prev = c.execute("SELECT * FROM machine_state WHERE session_id = ?", (session_id,)).fetchone()
             srow = c.execute("SELECT last_observed_at FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
             last_observed = parse_dt(srow["last_observed_at"])
-            stale = last_observed is not None and req.observed_at < last_observed
+            ignored = None
+            if last_observed is not None and req.observed_at < last_observed:
+                ignored = "late"
+            elif (last_observed is not None and req.observed_at == last_observed and prev is not None
+                  and json.loads(prev["readings_json"]) != json.loads(readings_json)):
+                ignored = "conflicting"
             changed = False
-            if not stale:
-                c.execute("UPDATE sessions SET last_observed_at = ? WHERE session_id = ?", (iso(req.observed_at), session_id))
-                active = c.execute(
-                    "SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
-                    (session_id, rule.rule_id),
-                ).fetchone()
-                if condition_active and active is None:
-                    alert_id = "ALR-" + uuid.uuid4().hex[:12]
-                    c.execute(
-                        "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message,"
-                        " explanation, trigger_readings_json, opened_by_event_id, started_at)"
-                        " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
-                        (alert_id, session_id, rule.rule_id, rule.alert_type, rule.severity, rule.message,
-                         rule.explanation(req), req.readings.model_dump_json(), req.event_id, iso(req.observed_at)),
-                    )
-                    opened.append(alert_id)
-                    announced.append(self._announce(c, session_id, alert_id, "alert_started", "high",
-                                                    rule.start_speech, now, announcement_ttl))
-                    changed = True
-                elif not condition_active and active is not None:
-                    c.execute(
-                        "UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ? WHERE alert_id = ?",
-                        (iso(req.observed_at), req.event_id, active["alert_id"]),
-                    )
-                    cleared.append(active["alert_id"])
-                    announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
-                                                    rule.clear_speech, now, announcement_ttl))
-                    changed = True
+            if ignored is None:
+                idle = idle_observation(req.readings)
+                prev_idle_since = parse_dt(prev["idle_since"]) if prev is not None else None
+                idle_since = (prev_idle_since or req.observed_at) if idle else None
+                idle_seconds = int((req.observed_at - idle_since).total_seconds()) if idle_since else 0
+                c.execute("UPDATE sessions SET last_observed_at = ? WHERE session_id = ?",
+                          (iso(req.observed_at), session_id))
+                c.execute("INSERT INTO machine_state(session_id, event_id, observed_at, received_at, readings_json,"
+                          " idle_since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET"
+                          " event_id = excluded.event_id, observed_at = excluded.observed_at,"
+                          " received_at = excluded.received_at, readings_json = excluded.readings_json,"
+                          " idle_since = excluded.idle_since",
+                          (session_id, req.event_id, iso(req.observed_at), iso(now), readings_json, iso(idle_since)))
+                for rule in policy.rules:
+                    if not rule.applies_to(machine_category):
+                        continue
+                    held = condition(rule, req.readings, idle, idle_seconds, requires_engine_on=requires_engine_on)
+                    active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
+                                       (session_id, rule.rule_id)).fetchone()
+                    if held and active is None:
+                        alert_id = "ALR-" + uuid.uuid4().hex[:12]
+                        correlated = None
+                        if rule.family == "idle_unbelted":
+                            belt = c.execute("SELECT a.alert_id FROM alerts a WHERE a.session_id = ? AND a.status ="
+                                             " 'active' AND a.alert_type = 'seatbelt_unfastened'",
+                                             (session_id,)).fetchone()
+                            correlated = belt["alert_id"] if belt else None
+                        evidence = s.AlertEvidence(
+                            event_id=req.event_id, observed_at=req.observed_at, readings=req.readings,
+                            idle_since=idle_since if rule.family != "seatbelt_engine_on" else None,
+                            idle_seconds_observed=idle_seconds if rule.family != "seatbelt_engine_on" else None,
+                            machine_category=machine_category,
+                            applicability="category_listed" if rule.applies_to_categories else "all_categories")
+                        c.execute(
+                            "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message,"
+                            " explanation, trigger_readings_json, opened_by_event_id, started_at, policy_version,"
+                            " source_status, reason, recommended_action, evidence_json, correlated_alert_id, announced)"
+                            " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (alert_id, session_id, rule.rule_id, rule.alert_type, rule.severity, rule.message,
+                             rule.explanation(req.observed_at, idle_since, idle_seconds), readings_json, req.event_id,
+                             iso(req.observed_at), policy.policy_version, policy.source_status, rule.reason,
+                             rule.recommended_action, evidence.model_dump_json(), correlated, int(correlated is None)),
+                        )
+                        opened.append(alert_id)
+                        if correlated is None:  # one physical situation is announced (and drafted) once
+                            if rule.draft_incident:
+                                draft_id = Store.insert_auto_draft(
+                                    c, session, alert_id, f"{rule.reason} (automatic draft from simulated telemetry)",
+                                    rule.draft_severity or "medium", req.observed_at)
+                                c.execute("UPDATE alerts SET draft_incident_id = ? WHERE alert_id = ?",
+                                          (draft_id, alert_id))
+                                drafts.append(draft_id)
+                            announced.append(self._announce(c, session_id, alert_id, "alert_started", "high",
+                                                            rule.start_speech, now, announcement_ttl))
+                        changed = True
+                    elif held is False and active is not None:
+                        c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?"
+                                  " WHERE alert_id = ?", (iso(req.observed_at), req.event_id, active["alert_id"]))
+                        cleared.append(active["alert_id"])
+                        if rule.clear_speech and active["announced"]:
+                            announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
+                                                            rule.clear_speech, now, announcement_ttl))
+                        changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
             result = {
                 "session_id": session_id,
                 "event_id": req.event_id,
-                "stale": stale,
+                "stale": ignored is not None,
+                "ignored_reason": ignored,
                 "alerts_opened": opened,
                 "alerts_cleared": cleared,
                 "announcements_created": announced,
+                "drafts_created": drafts,
                 "state_version": version,
             }
             c.execute(
                 "INSERT INTO telemetry_events(session_id, event_id, request_hash, observed_at, readings_json,"
-                " result_json, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id, req.event_id, request_hash, iso(req.observed_at), req.readings.model_dump_json(),
-                 json.dumps(result), iso(now)),
+                " result_json, received_at, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, req.event_id, request_hash, iso(req.observed_at), readings_json, json.dumps(result),
+                 iso(now), req.provenance.model_dump_json() if req.provenance else None),
             )
             return result
 
@@ -813,23 +886,6 @@ class Store:
             row = c.execute("SELECT * FROM deliveries WHERE event_id = ? AND consumer_id = ?",
                             (event_id, report.consumer_id)).fetchone()
             return _delivery(row)
-
-
-@dataclass(frozen=True)
-class AlertTemplate:
-    rule_id: str
-    alert_type: str
-    severity: str
-    message: str
-    start_speech: str
-    clear_speech: str
-
-    def explanation(self, req: s.TelemetryRequest) -> str:
-        at = req.observed_at.strftime("%H:%M:%S UTC")
-        return (
-            f"At {at} the simulated telemetry showed the engine running while the seatbelt was unfastened. "
-            "This is a prototype rule on simulated data, not validated machine safety logic."
-        )
 
 
 # ---------------------------------------------------------------------- row mappers
@@ -906,8 +962,8 @@ def _task(r: sqlite3.Row) -> s.Task:
     return s.Task(task_id=r["task_id"], title=r["title"], details=r["details"], priority=r["priority"], status=r["status"])
 
 
-_INCIDENT_V5 = ("status", "origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis",
-                "location_text", "occurred_basis", "episode_id", "version")
+_INCIDENT_V5 = ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
+                "occurred_basis", "episode_id", "draft_id")
 
 
 def _incident(r: sqlite3.Row) -> s.Incident:
@@ -919,6 +975,18 @@ def _incident(r: sqlite3.Row) -> s.Incident:
         incident_id=r["incident_id"], incident_number=r["incident_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], description=r["description"],
         source_turn_id=r["source_turn_id"], created_at=parse_dt(r["created_at"]), **extra,
+    )
+
+
+def _draft(r: sqlite3.Row) -> s.IncidentDraft:
+    return s.IncidentDraft(
+        draft_id=r["draft_id"], draft_number=r["draft_number"], session_id=r["session_id"],
+        operator_id=r["operator_id"], machine_id=r["machine_id"], origin=r["origin"], status=r["status"],
+        description=r["description"], severity=r["severity"], severity_basis=r["severity_basis"], site_id=r["site_id"],
+        site_zone_id=r["site_zone_id"], zone_basis=r["zone_basis"], location_text=r["location_text"],
+        occurred_at=parse_dt(r["occurred_at"]), occurred_basis=r["occurred_basis"], episode_id=r["episode_id"],
+        version=r["version"], incident_id=r["incident_id"], created_at=parse_dt(r["created_at"]),
+        confirmed_at=parse_dt(r["confirmed_at"]), dismissed_at=parse_dt(r["dismissed_at"]),
     )
 
 
@@ -958,11 +1026,18 @@ def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:
 
 
 def _alert(r: sqlite3.Row) -> s.Alert:
+    keys = r.keys()
+    extra = {}
+    if "evidence_json" in keys:  # absent only while reading a pre-v6 row during an upgrade
+        extra = dict(policy_version=r["policy_version"], source_status=r["source_status"], reason=r["reason"],
+                     recommended_action=r["recommended_action"], correlated_alert_id=r["correlated_alert_id"],
+                     draft_incident_id=r["draft_incident_id"], announced=bool(r["announced"]),
+                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None)
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],
         status=r["status"], message=r["message"], explanation=r["explanation"], simulated=True,
         trigger_readings=s.TelemetryReadings.model_validate_json(r["trigger_readings_json"]),
-        started_at=parse_dt(r["started_at"]), cleared_at=parse_dt(r["cleared_at"]),
+        started_at=parse_dt(r["started_at"]), cleared_at=parse_dt(r["cleared_at"]), **extra,
     )
 
 

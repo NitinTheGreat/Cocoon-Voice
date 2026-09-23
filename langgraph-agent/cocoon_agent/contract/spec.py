@@ -137,8 +137,10 @@ ROUTES: tuple[Route, ...] = (
                                                          "time. Operator projection only; supervisors use "
                                                          "/v1/supervisor/overview.", "schema": "SessionStateTarget"},)),
     Route("post", "/v1/sessions/{session_id}/telemetry", "implemented", "v1", ("simulator", "voice_service"),
-          "Post one simulated sample",
-          idempotency="(session_id, event_id); same payload → duplicate:true, different payload → 409",
+          "Post one simulated sample. B3 (additive): optional operating_state/speed_kph/provenance; three versioned "
+          "demo rules (belt, prolonged idle, idle+belt) with episodes, a linked automatic draft and announcements",
+          idempotency="(session_id, event_id); same payload → duplicate:true, different payload → 409; a late or "
+                      "same-time conflicting sample is recorded but ignored (stale:true, ignored_reason)",
           target_changes=({"stage": "I05A", "change": "Also accept the typed cocoon.telemetry.v2 batch; per-"
                                                       "observation accepted/duplicate/ignored/rejected outcomes.",
                            "schema": "TelemetryRequestTarget"},

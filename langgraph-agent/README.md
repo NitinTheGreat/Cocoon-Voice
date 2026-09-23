@@ -93,6 +93,9 @@ python scripts/smoke.py                 # scripted end-to-end check of every flo
 python scripts/chat_cli.py              # interactive text chat; /state, /events, /quit
 python scripts/simulate_telemetry.py --room <room> --identity <participant>   # SIMULATED seatbelt scenario
 python scripts/simulate_telemetry.py --session-id ses_...  --scenario seatbelt-start
+python scripts/simulate_machine.py --machine EXC_DEMO_001 --scenario belt_idle --start 2026-09-24T07:40:00+05:30
+python scripts/simulate_machine.py --machine DOZ_DEMO_001 --scenario selection_check --pace 0   # any of the 5 assets
+python scripts/simulate_machine.py --machine LDR_DEMO_001 --scenario dataset --limit 20         # dataset minute rows
 python scripts/reset_db.py [--wipe]     # apply migrations and seed demo data idempotently; --wipe deletes data/ (stop server first)
 python scripts/backup_db.py [--dest D] # consistent backup of cocoon.db + checkpoints.db (safe while running)
 ```
@@ -145,6 +148,17 @@ $env:SESSION_BINDINGS_PATH = "data\demo\session_bindings.json"; python -m cocoon
   `POST /v1/sessions/{session_id}/commands` (`task.start` / `task.complete`, with optional `expected_version`).
 - **Shared rules.** Voice and taps go through one command service that records each committed command once, with
   the same ownership, legal-transition and version checks.
+- **Machine replay and safety episodes (B3).** `scripts/simulate_machine.py` posts SIMULATED observations for one
+  catalog machine (operator from the fixture, session bound like the voice worker's) with stable event IDs and
+  `provenance`. Scenarios: `belt_idle` (detailed Cat 320 sequence), `belt_retrigger`, `selection_check`, and `dataset`
+  (re-timed rows of `history_minutes.csv`). `--start` sets the observation clock; `--pace` only spaces the posts.
+  Rules come from the versioned `policies/safety_policy_v1.json` (thresholds are labelled demo assumptions, not CAT
+  limits): belt unfastened with the engine running (checked on that sample, before any motion), prolonged idling
+  (300 s) and idling unbelted (60 s), with idle time measured between observation timestamps. An opening episode
+  saves its evidence, policy version, reason and recommended action, one automatic incident draft and one
+  announcement in the same transaction; an overlapping idle/belt episode is linked, not re-announced. Late or
+  same-time conflicting samples are recorded but ignored. `/state.machine_state` is `unavailable`, `fresh` or
+  `stale` (receipt clock, `COCOON_TELEMETRY_STALE_SECONDS`).
 - **Incidents (B2).** "Log an incident: hose leaking near the stockpile yard, high severity, and tell my supervisor"
   saves a structured report (what, where + site zone, when, severity, each with its basis; identity from the session)
   and a linked supervisor-review request that stays `pending` (no notification or decision exists yet). A missing

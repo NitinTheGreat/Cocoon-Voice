@@ -19,7 +19,7 @@ import anthropic
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
-from ..api.schemas import Alert, Incident, Lesson
+from ..api.schemas import Alert, IncidentDraft, Lesson
 from ..config import Settings
 
 log = logging.getLogger("cocoon_agent.brain")
@@ -64,7 +64,7 @@ class RouteDecision(BaseModel):
         default=None, description="Only if the operator stated a severity.")
     incident_location: str | None = Field(default=None, description="Where it happened, only if stated.")
     notify_supervisor: bool = Field(default=False, description="The operator asked to tell/escalate to a supervisor.")
-    incident_number: int | None = Field(default=None, description="A draft/incident number the operator named.")
+    incident_number: int | None = Field(default=None, description="A draft number the operator named.")
     unsupported_capability: UnsupportedCapability | None = None
     training_action: Literal["assign", "status"] | None = None
     lesson_id: Literal["L1", "L2", "L3"] | None = None
@@ -89,7 +89,7 @@ class TurnContext:
     pending: dict[str, Any] | None = None
     latest_alert: Alert | None = None
     lessons: list[Lesson] = field(default_factory=list)
-    drafts: list[Incident] = field(default_factory=list)
+    drafts: list[IncidentDraft] = field(default_factory=list)
 
 
 class LLMUnavailable(Exception):
@@ -244,16 +244,16 @@ def _template(a: dict[str, Any]) -> str:
     if kind == "escalation_requested":
         return ("I've requested supervisor review of that report. It's pending; I can't message your supervisor "
                 "directly yet.")
-    if kind in ("incident_confirmed", "incident_dismissed"):
+    if kind == "incident_confirmed":
         inc = a["incident"]
-        verb = "Confirmed" if kind == "incident_confirmed" else "Dismissed"
-        noun = "incident" if kind == "incident_confirmed" else "draft"
-        return f"{verb} {noun} number {inc['incident_number']}: {inc['description']}."
+        return f"Confirmed. It's saved as incident number {inc['incident_number']}: {inc['description']}."
+    if kind == "incident_dismissed":
+        return f"Dismissed draft number {a['draft']['draft_number']}."
     if kind == "incident_drafts":
         drafts = a["drafts"]
         if not drafts:
             return "You have no draft reports."
-        parts = [f"number {d['incident_number']}, {d['description']}" for d in drafts]
+        parts = [f"number {d['draft_number']}, {d['description']}" for d in drafts]
         return (f"You have {len(drafts)} draft report{'s' if len(drafts) != 1 else ''}: " + "; ".join(parts)
                 + ". Say confirm or dismiss.")
     if kind == "clarification_needed":
@@ -373,7 +373,7 @@ class AnthropicBrain:
             "latest_alert": ctx.latest_alert.model_dump(mode="json", include={"message", "status", "started_at"})
             if ctx.latest_alert else None,
             "lesson_catalog": [{"lesson_id": l.lesson_id, "title": l.title} for l in ctx.lessons],
-            "incident_drafts": [{"incident_number": d.incident_number, "description": d.description}
+            "incident_drafts": [{"draft_number": d.draft_number, "description": d.description}
                                 for d in ctx.drafts],
             "recent_conversation": [{"role": r, "text": t} for r, t in ctx.history[-6:]],
             "utterance": ctx.text,
@@ -479,7 +479,7 @@ class VertexBrain:
             "latest_alert": ctx.latest_alert.model_dump(mode="json", include={"message", "status", "started_at"})
             if ctx.latest_alert else None,
             "lesson_catalog": [{"lesson_id": l.lesson_id, "title": l.title} for l in ctx.lessons],
-            "incident_drafts": [{"incident_number": d.incident_number, "description": d.description}
+            "incident_drafts": [{"draft_number": d.draft_number, "description": d.description}
                                 for d in ctx.drafts],
             "recent_conversation": [{"role": r, "text": t} for r, t in ctx.history[-6:]],
             "utterance": ctx.text,

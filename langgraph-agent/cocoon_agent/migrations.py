@@ -295,9 +295,8 @@ ASSIGNED_TASKS: tuple[str, ...] = (
 
 
 STRUCTURED_INCIDENTS: tuple[str, ...] = (
-    # Existing rows were saved immediately as reports, so they are confirmed operator reports (the defaults).
-    """ALTER TABLE incidents ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'
-    CHECK (status IN ('draft', 'confirmed', 'dismissed'))""",
+    # Structured report fields. Existing rows were saved immediately as operator reports (the default origin); their
+    # new fields stay NULL (not stated), nothing is back-filled.
     """ALTER TABLE incidents ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator_reported'
     CHECK (origin IN ('operator_reported', 'auto_draft'))""",
     "ALTER TABLE incidents ADD COLUMN severity TEXT CHECK (severity IN ('low', 'medium', 'high', 'critical'))",
@@ -309,10 +308,36 @@ STRUCTURED_INCIDENTS: tuple[str, ...] = (
     "ALTER TABLE incidents ADD COLUMN occurred_at TEXT",
     "ALTER TABLE incidents ADD COLUMN occurred_basis TEXT",
     "ALTER TABLE incidents ADD COLUMN episode_id TEXT",
-    "ALTER TABLE incidents ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE incidents ADD COLUMN draft_id TEXT",
     "ALTER TABLE incidents ADD COLUMN confirmed_at TEXT",
-    "ALTER TABLE incidents ADD COLUMN dismissed_at TEXT",
-    "CREATE UNIQUE INDEX one_draft_per_episode ON incidents(episode_id) WHERE episode_id IS NOT NULL",
+    # Confirming a draft creates its incident exactly once.
+    "CREATE UNIQUE INDEX one_incident_per_draft ON incidents(draft_id) WHERE draft_id IS NOT NULL",
+    # Unconfirmed drafts live apart from reports and have their own numbering; a real incident ID is allocated only
+    # when a draft is confirmed.
+    """CREATE TABLE incident_drafts (
+    draft_number INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id TEXT UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('auto_draft')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'dismissed')),
+    description TEXT NOT NULL,
+    severity TEXT CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    severity_basis TEXT,
+    site_id TEXT,
+    site_zone_id TEXT,
+    zone_basis TEXT,
+    location_text TEXT,
+    occurred_at TEXT,
+    occurred_basis TEXT,
+    episode_id TEXT UNIQUE,
+    version INTEGER NOT NULL DEFAULT 1,
+    incident_id TEXT,
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    dismissed_at TEXT
+)""",
     # The routing decision of a turn, saved once, so a retried turn repeats the same plan without a new model call.
     "ALTER TABLE turns ADD COLUMN route_json TEXT",
     # A request for supervisor review. Pending until a supervisor decision route exists (Batch D).
@@ -329,6 +354,30 @@ STRUCTURED_INCIDENTS: tuple[str, ...] = (
 )
 
 
+MACHINE_EPISODES: tuple[str, ...] = (
+    # Episode details saved when an alert opens (policy, reason, action, evidence) and its links. Existing alerts
+    # were announced when they opened, so `announced` defaults to 1; their other new columns stay NULL (unknown).
+    "ALTER TABLE alerts ADD COLUMN policy_version TEXT",
+    "ALTER TABLE alerts ADD COLUMN source_status TEXT",
+    "ALTER TABLE alerts ADD COLUMN reason TEXT",
+    "ALTER TABLE alerts ADD COLUMN recommended_action TEXT",
+    "ALTER TABLE alerts ADD COLUMN evidence_json TEXT",
+    "ALTER TABLE alerts ADD COLUMN correlated_alert_id TEXT",
+    "ALTER TABLE alerts ADD COLUMN draft_incident_id TEXT",
+    "ALTER TABLE alerts ADD COLUMN announced INTEGER NOT NULL DEFAULT 1",
+    # Latest applied observation per session: observation clock for durations, receipt clock for freshness.
+    """CREATE TABLE machine_state (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    event_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    readings_json TEXT NOT NULL,
+    idle_since TEXT
+)""",
+    "ALTER TABLE telemetry_events ADD COLUMN provenance_json TEXT",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -342,6 +391,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(3, "actor_tokens", ACTOR_TOKENS),
     Migration(4, "assigned_tasks", ASSIGNED_TASKS),
     Migration(5, "structured_incidents", STRUCTURED_INCIDENTS),
+    Migration(6, "machine_episodes", MACHINE_EPISODES),
 )
 
 
