@@ -2,6 +2,19 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 18:05 UTC — M2: wake gate and turn policy tests (branch `voice`)
+
+- **Scope:** exact leading "Hey Cat" matcher (case/punctuation normalisation only, no fuzzy matching), ARMED/ACTIVE/
+  CLOSED gate, stop/sleep commands (standalone utterances only), debounce, duplicate-final suppression, echo guard,
+  backchannel handling, idle timeout paused while busy; controller hook behaviour.
+- **Checks run:** `pytest tests/test_wake.py` → 30 passed; `pytest tests/test_controller.py` → 9 passed, including a
+  real `AgentSession` (text mode) with a scripted streaming LLM: 0 brain calls while ARMED, exactly 1 after
+  "Hey Cat …". Full suite: 87 passed, 1 skipped.
+- **Limits:** the SDK's text-mode `run()` bypasses `on_user_turn_completed`, so hook gating is tested at controller
+  level; STT-originated turns in a live room are still unverified (no AssemblyAI key). Nearby-voice rejection relies
+  on Krisp VIVA + wake debounce only; activation is not speaker authentication.
+- **Next:** streaming/interruption tests, Porcupine router tests.
+
 ## 2026-09-23 17:30 UTC — M1: standalone foundation (branch `voice`, base `521d318`)
 
 - **Scope:** phase-1 standalone voice. Typed settings (`cocoon_voice/config.py`), provider factories with the
