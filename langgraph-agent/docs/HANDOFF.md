@@ -2,6 +2,36 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## Batch A (fast track): connect voice through the existing JSON APIs
+
+- **Recorded:** 2026-09-24. Branch `backend`. Order per `BACKEND_FAST_TRACK_PLAN.md`: voice integration comes before I02c/I02d. The user's commit `c779e26` ("check apis") holds the Gemini-on-Vertex integration and git-ignores `Cocoon_Dataset_v1/`. Batch A adds `4d324fc` (bounded Vertex calls, one model call per turn) and the commit containing this entry (499 mapping, voice handoff, docs).
+- **Runs now:**
+  - The 7 JSON routes, unchanged.
+  - Live mode on Gemini `gemini-3.8-flash` via Vertex (`orbit-507316`, `global`, SDK ADC; the credential file is never opened by backend code). One routing call per turn; the reply is worded from the saved action results.
+  - Bounds: 1 call in flight, 8 waiting, 3 attempts with 1–4 s jittered backoff for 408/429/5xx/timeouts only, 20 s per call, 45 s per turn.
+  - No mock or alternate-model fallback.
+- **Checks:**
+  - Focused provider tests: 18, covering retry budget and hint capping, non-retried 400/403/404, the 499 deadline message, one call in flight, queue full, template wording, and an HTTP turn where a 429 leaves nothing behind and the same `turn_id` later succeeds once with one model call.
+  - Full suite run once after the provider change: 287 passed, 1 skipped (Windows symlink case). The 499 test was added afterwards and passes.
+  - Both contract drift checks are clean.
+- **Backend HTTP evidence (mock, real process):**
+  - `smoke.py` SMOKE OK.
+  - Session 201/200; unknown IDs → 422; association change → 409.
+  - Turn 200; identical retry returns the stored result; changed text → 409; status GET.
+  - Telemetry → announcement; events poll; delivery 200; "why" explanation; 404 and 401 envelopes.
+
+  The exact bodies are in `docs/VOICE_INTEGRATION.md`.
+- **Live evidence (real Vertex calls, sanitized):**
+  - Direct SDK probes: 7 of 7 calls succeeded (4 spaced about 8 s apart, then a burst of 3); 1.6–4.2 s each; `traffic_type ON_DEMAND`.
+  - A 5-turn live run through the backend: 2 turns returned 200 (≈5.7 s and ≈5.0 s; `information_requested` and `alert_explained`).
+  - 2 turns hit `429 RESOURCE_EXHAUSTED` ("Resource exhausted. Please try again later.") on all 3 attempts. The payload had no quota ID and no RetryInfo.
+  - 1 turn ended with `499 CANCELLED` at the 20 s per-call deadline.
+  - Every failure was a retryable `503 llm_unavailable` with no record written. No token appeared in any log.
+  - **Diagnosis:** time-dependent shared on-demand capacity, not a fixed per-project call count. No quota purchase or model change was made (neither is authorised).
+- **Not observed:** microphone → backend → speaker audio, Android, and the voice worker's `remote_langgraph` wiring (voice owner). Streaming, cancel and per-turn delivery are still proposed only.
+- **Voice owner's action:** `docs/VOICE_INTEGRATION.md` → "Voice owner's remaining work".
+- **Next:** Batch B (operator workflow), not an automatic return to I02c.
+
 ## I02b: actor authentication and `/v1/me`
 
 - **Recorded:** 2026-09-24. Branch `backend`, base `2ea49eb`. That commit merges `main` (voice PR #2, `livekit-voice/**` only) on top of I02a `ec9f02c`. Chain verified: `6bcbf88` ← `ec9f02c` ← `2ea49eb` = HEAD. Backend and contract files at `2ea49eb` are identical to `ec9f02c`.
