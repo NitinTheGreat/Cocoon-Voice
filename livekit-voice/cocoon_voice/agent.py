@@ -457,6 +457,11 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
     ctx.room.on("participant_disconnected", _gone)
     ctx.room.on("participant_connected", _back)
 
+    if settings.wake_mode == "transcript":
+        log.warning("WAKE_MODE=transcript: room audio is streamed to AssemblyAI even while armed (billed); "
+                    "this is Playground test mode, not on-device keyword spotting")
+    if noise.degraded:
+        log.warning("AUDIO DEGRADED: %s", noise.effective)
     log.info("starting session room=%s participant=%s noise=%s wake=%s brain=%s:%s", ctx.room.name,
              participant.identity, noise.effective, settings.wake_mode, settings.voice_brain, settings.vertex_model)
     await session.start(

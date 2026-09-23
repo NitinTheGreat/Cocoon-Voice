@@ -2,6 +2,8 @@
 
 Cocoon is a proactive voice assistant for construction equipment operators, built by Team Butterfly for a Caterpillar hackathon. This repository contains the voice and backend services. The Android client, Cocoon-App, lives in a separate repository.
 
+> **Current phase (branch `voice`): standalone voice.** `livekit-voice` runs on its own as "Cat": AssemblyAI STT → Gemini on Vertex AI (ADC) → Cartesia TTS, with a "Hey Cat" wake gate and Krisp input filtering. It is **not connected to `langgraph-agent` yet**. The diagram below shows the planned phase-2 integration, which is pending acceptance of the voice experience. See [livekit-voice/README.md](livekit-voice/README.md) and [livekit-voice/docs/voice-latency-report.md](livekit-voice/docs/voice-latency-report.md).
+
 ```
  browser / future Android app                 LiveKit Cloud                       this repo
  ────────────────────────────                ─────────────                ───────────────────────────────────────────
@@ -14,7 +16,7 @@ Cocoon is a proactive voice assistant for construction equipment operators, buil
 
 | Folder | Owner | Runs as | Default port |
 |---|---|---|---|
-| [`livekit-voice/`](livekit-voice/README.md) | Developer A: audio transport, STT and TTS, HTTP backend client, announcement delivery | A long-lived LiveKit Agents worker with explicit dispatch name `cocoon-voice`. It connects out to LiveKit Cloud. | `127.0.0.1:8081` health; mock backend on `8010` |
+| [`livekit-voice/`](livekit-voice/README.md) | Developer A: audio transport, STT and TTS, wake gate, noise handling; phase 2: HTTP backend client and announcement delivery | A long-lived LiveKit Agents worker with explicit dispatch name `cocoon-voice`. It connects out to LiveKit Cloud. Phase 1 uses a standalone Vertex brain (`providers.create_brain()`). | `127.0.0.1:8081` health; phase-0 mock backend on `8010` |
 | [`langgraph-agent/`](langgraph-agent/README.md) | Developer B: FastAPI, LangGraph, state, tools, rules, persistence | One Uvicorn process (one worker) | `127.0.0.1:8000` (`/docs`, `/healthz`, `/readyz`) |
 | [`contracts/`](contracts/), [`API_CONTRACT.md`](API_CONTRACT.md) | Shared **documentation and fixtures**, not a runtime package | none | none |
 
@@ -33,11 +35,11 @@ Copy-Item .env.example .env          # COCOON_LLM_MODE=mock
 python -m cocoon_agent               # http://127.0.0.1:8000/docs
 python scripts\smoke.py              # in another shell: end-to-end HTTP check
 
-# terminal 2: voice worker (needs LiveKit Cloud keys in livekit-voice/.env)
+# terminal 2: voice worker (needs LiveKit, AssemblyAI and Cartesia keys plus Vertex ADC; see livekit-voice/README.md)
 cd livekit-voice
 py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt; pip install -e . --no-deps
-Copy-Item .env.example .env          # set LIVEKIT_URL/KEY/SECRET; COCOON_SERVICE_TOKEN must match the backend
+Copy-Item .env.example .env          # set LIVEKIT_*, ASSEMBLYAI_API_KEY, CARTESIA_API_KEY (Vertex uses ADC)
 python -m cocoon_voice.agent dev
 ```
 
@@ -49,7 +51,7 @@ Then follow the [Playground / Agent Console walkthrough](livekit-voice/README.md
 - The telemetry rule and all telemetry are **simulated prototypes**, not validated machine safety logic.
 - Turn and announcement handling is idempotent and retry-safe, but **not exactly-once**. See API_CONTRACT.md.
 - The backend must run as a single Uvicorn worker because per-session ordering locks live in process.
-- Out of scope for this task: MQTT, Redis, Kafka, Celery, vector databases, Kubernetes, custom signalling, LMS, wearable ML, streaming responses and Android UI.
+- Out of scope: MQTT, Redis, Kafka, Celery, vector databases, Kubernetes, custom signalling, LMS, wearable ML and Android UI. The phase-1 voice worker streams LLM text into TTS; the backend `/v1` contract is still nonstreaming.
 
 ## Future Android client (Cocoon-App, not implemented here)
 

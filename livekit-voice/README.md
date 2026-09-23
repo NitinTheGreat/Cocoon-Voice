@@ -1,194 +1,216 @@
-# livekit-voice: Cocoon voice worker (Developer A)
+# livekit-voice: Cocoon standalone voice assistant ("Cat")
 
-A long-lived **LiveKit Agents worker** (`livekit-agents==1.8.2`) that connects out to LiveKit Cloud and registers under the explicit dispatch name **`cocoon-voice`**. For each room it is dispatched into, it runs:
-
-```
-WebRTC mic ─▶ LiveKit Inference STT ─▶ end-of-turn (turn detector) ─▶ CocoonAgent.llm_node
-          ─▶ POST {COCOON_BACKEND_URL}/v1/sessions/{id}/turns ─▶ speech text ─▶ LiveKit Inference TTS ─▶ WebRTC
-```
-
-There is no realtime speech-to-speech model and no second reasoning LLM here. All reasoning happens in `langgraph-agent`.
-
-## Layout
+**Phase 1 (current):** a standalone voice assistant for trying out the Cocoon voice experience in LiveKit Playground or the Agent Console. It is **not connected to langgraph-agent yet**. Phase 2, the LangGraph integration, waits until this voice experience has been evaluated and accepted.
 
 ```
-cocoon_voice/
-  agent.py          AgentServer + rtc_session(agent_name), CocoonAgent.llm_node, session config, health port
-  bridge.py         single submission path: final user text -> stable turn_id -> backend; session binding
-  backend_client.py one reusable httpx.AsyncClient; 200/202-poll/409/5xx/timeout semantics; TurnOutcomeUnknown
-  announcements.py  event poller + queued playback + delivery reports + bounded backoff
-  contract.py       the worker's own copy of the v1 models it uses (not imported from langgraph-agent)
-  mock_backend.py   MOCK contract-compatible backend (in-memory) for developing without langgraph-agent
-  config.py         settings from livekit-voice/.env (also exports LIVEKIT_* for the SDK)
-scripts/dispatch.py      explicit dispatch / dev join token / list dispatches
-scripts/backend_probe.py drive the bridge against a backend with no LiveKit or audio
+browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one AgentSession per dispatched room)
+   Krisp VIVA input filter ─▶ Silero VAD + wake gate ("Hey Cat")
+   ─▶ AssemblyAI streaming STT (endpointing = end-of-turn)
+   ─▶ Gemini on Vertex AI via ADC (streaming text)   ◀── providers.create_brain(): the only brain
+   ─▶ Cartesia streaming TTS ─▶ WebRTC ─▶ browser speaker
 ```
 
-### SDK findings that shaped the bridge (verified against the installed 1.8.2 source)
+## Status: what has and has not been verified
 
-- **`llm_node` only runs if the session has an LLM.** `agent_activity.py` does `elif self.llm is None: return  # skip response if no llm is set`. The session therefore gets `BackendBridgeLLM`, an `llm.LLM` placeholder whose `chat()` raises, and `CocoonAgent.llm_node` makes the HTTP call and yields the final speech string. `LLMAdapter`, the local compiled-graph adapter, is not used.
-- **Preemptive generation defaults to on** (`PreemptiveGenerationOptions.enabled=True`). It is disabled with `TurnHandlingOptions(preemptive_generation={"enabled": False})`, so a turn that can trigger actions is never posted speculatively. `tests/test_bridge.py` asserts this.
-- `turn_id = "lk-" + <LiveKit ChatMessage.id>`. It is stable for the utterance and reused on every retry. If the last chat item is not a user message, `llm_node` submits nothing, so an old turn is never resubmitted. Partial transcripts never reach `llm_node`.
-- The greeting and announcements use `session.say()`, which never invokes `llm_node`.
-- Model strings are validated against the SDK's `STTModels` and `TTSModels` literals and the current quickstart:
-  - STT `assemblyai/universal-3-5-pro` (`en`)
-  - TTS `fishaudio/s2.1-pro`, voice `fa4c9eb3dccc4806b382b40d61c6b10a`
-  - Turn detection `inference.TurnDetector()`
+| Area | Evidence (see `docs/work-log.md`) |
+|---|---|
+| Settings, doctor, provider factories | Offline tests pass. The doctor passes Vertex (ADC) and LiveKit on the dev machine. |
+| Worker registration | `cocoon-voice` registered with LiveKit Cloud; `GET :8081/worker` returned its JSON. |
+| Wake gate, turn policy, streaming guard, Porcupine plumbing, metrics | 127 offline tests pass, including real `AgentSession` runs with a scripted LLM. |
+| Vertex latency | Measured through the real plugin: warm TTFT p50 668 ms / p95 695 ms (n=9, prewarmed). |
+| VAD against synthetic cab noise | 0 false speech detections; speech kept as one segment down to −5 dB SNR (offline, synthetic). |
+| **Dispatch, STT, TTS, real speech in Playground** | **Not verified.** `ASSEMBLYAI_API_KEY` and `CARTESIA_API_KEY` are missing. |
+| **Krisp noise filtering** | **Not verified.** It constructs on native Windows; filtering happens only inside a LiveKit Cloud session. |
+| **Acoustic wake (Porcupine)** | **Blocked.** Needs `PICOVOICE_ACCESS_KEY` and a real custom `Hey Cat` `.ppn`. |
 
-  To use another model, set `COCOON_STT_*` or `COCOON_TTS_*`, for example `deepgram/nova-3` or `cartesia/sonic-3`. Voice IDs are provider-specific.
+## Selected models and settings
+
+| Stage | Choice | Why and evidence |
+|---|---|---|
+| STT | AssemblyAI `universal-3-5-pro` via `livekit-plugins-assemblyai==1.8.2` | AssemblyAI recommends it for English voice agents; it supports keyterm prompting. Domain keyterms: `ASSEMBLYAI_KEYTERMS` (Cocoon, Caterpillar, CAT, Hey Cat, excavator …). English only in this phase. Hindi and Hinglish are **not** validated. |
+| End of turn | `turn_detection="stt"` with AssemblyAI `min_turn_silence=160 ms` and `max_turn_silence=1400 ms`; SDK `endpointing.min_delay=0` | One authority. In STT mode the SDK would otherwise add `min_delay` (default 0.3 s) on top of AssemblyAI's endpointing. The punctuation-based model ends a finished sentence after about 160 ms of silence and waits up to 1.4 s through mid-sentence pauses. |
+| Brain | `gemini-2.5-flash` on Vertex AI, `location=global`, `thinking_budget=0`, `max_output_tokens=220`, context capped at 8 exchanges | Streaming TTFT measured on Vertex `global` (5 warm runs each): 2.5-flash p50 738 / max 967 ms; 2.5-flash-lite p50 597 / max 678 ms; 3.5-flash (minimal thinking) p50 1047 / max 11918 ms; 3-flash-preview p50 4691 / max 19133 ms. Configurable with `VERTEX_MODEL`. |
+| TTS | Cartesia `sonic-3` via `livekit-plugins-cartesia==1.8.2`, voice `f786b574-daa5-4673-aa0c-cbe3e8534c02` | Plugin default and LiveKit-documented voice. **Its name, warmth and pronunciation have not been heard yet:** the doctor prints its name once a key is set, and the smoke check writes a CAT / unit-ID / number pronunciation sample. |
+| VAD | Silero (`livekit-plugins-silero`), loaded in prewarm, `min_silence=0.45 s` | Bundled model, no key |
+| Noise | Krisp **VIVA voice isolation** (`livekit-plugins-krisp==0.4.2`, native `win_amd64` wheel) in the worker; `NOISE_PROFILE=noise_suppression` selects Krisp NC | Current LiveKit guidance: VIVA removes competing voices; NC is background-noise suppression. Both need LiveKit Cloud auth (the job's JWT) and do not use a separate Krisp key. LiveKit documents voice isolation as an additional-cost feature, so check your plan. |
+| Interruption | VAD barge-in with `min_duration=0.4 s`; false interruptions resume after 1.5 s; SDK LLM retries off | See "Streaming, barge-in and recovery" below |
 
 ## Install
 
-Windows PowerShell:
+Python 3.11, native Windows first. Use PowerShell from `livekit-voice\`:
 
 ```powershell
-cd livekit-voice
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt     # dev: tests + mock backend; requirements.txt = worker runtime only
+pip install -r requirements-dev.txt        # requirements.txt = worker runtime only
 pip install -e . --no-deps
-Copy-Item .env.example .env             # then fill LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET
+python -m livekit.agents download-files    # plugin assets (google, krisp, silero)
+Copy-Item .env.example .env                # then fill the keys below
 ```
 
-Bash:
+Bash (macOS/Linux) from `livekit-voice/`:
 
 ```bash
-cd livekit-voice
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt && pip install -e . --no-deps
+python -m livekit.agents download-files
 cp .env.example .env
 ```
 
-With uv: `uv venv --python 3.11 .venv`, then `uv pip sync requirements-dev.txt`, then `uv pip install -e . --no-deps`. The pins were compiled with `uv pip compile --universal --python-version 3.11` from `requirements*.in`.
+With uv instead: `uv venv --python 3.11 .venv`, then `uv pip sync requirements-dev.txt`, then `uv pip install -e . --no-deps`. The pins are compiled with `uv pip compile --universal --python-version 3.11` from `requirements*.in`.
 
-**Model downloads:** none are needed for this configuration. VAD uses the SDK's bundled native model, and STT, TTS and turn detection run on LiveKit Inference. `python -m livekit.agents download-files` is the current command (running `download-files` through the agent script is deprecated as of 1.5.10). It reports "nothing to download" and is safe to run in deployment scripts. If you later add a `livekit-plugins-*` package with local models, run it before `start`.
+### Keys and where they come from (`.env.example` is the requested env.example)
 
-## Run and stop
+| Variable | Needed for | Source |
+|---|---|---|
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Worker, dispatch helper | LiveKit Cloud project → Settings → API keys. The browser (Console or Playground) must use this **same project**. |
+| `ASSEMBLYAI_API_KEY` | Worker (STT), smoke, benchmark `--stt` | https://www.assemblyai.com/app/api-keys |
+| `CARTESIA_API_KEY` | Worker (TTS), smoke, benchmark | https://play.cartesia.ai/keys |
+| Vertex AI | Worker (brain), doctor, smoke, benchmark | **No key.** Uses existing Application Default Credentials (`gcloud auth application-default login`) with `GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, `GOOGLE_GENAI_USE_VERTEXAI=true`. `GOOGLE_API_KEY` and `GEMINI_API_KEY` are rejected. Nothing here reads the ADC file. |
+| `PICOVOICE_ACCESS_KEY`, `PORCUPINE_KEYWORD_PATH` | `WAKE_MODE=porcupine` only | Picovoice Console (see "Acoustic wake" below) |
+| Silero VAD, Krisp | — | No key (Krisp authenticates through the LiveKit Cloud job) |
 
-| Command (from `livekit-voice/`, venv active) | What it does |
+The settings are typed and validated. The worker refuses to start and lists the **names** of missing or invalid settings. `VOICE_PROFILE=production` rejects transcript wake mode, degraded audio, preemptive generation, transcript logging and recording.
+
+`COCOON_AGENT_NAME` is a deprecated alias of `LIVEKIT_AGENT_NAME`; they must not disagree. These phase-0 names are ignored with a warning: `COCOON_STT_MODEL`, `COCOON_TTS_MODEL`, `COCOON_TTS_VOICE`, `COCOON_STT_LANGUAGE` and `COCOON_GREETING`.
+
+## Commands (from `livekit-voice/`, venv active)
+
+| Command | What it does |
 |---|---|
-| `python -m cocoon_voice.agent dev` | Registers with LiveKit Cloud, reloads on file changes, debug logs |
-| `python -m cocoon_voice.agent start` | Production-style worker |
-| `python -m cocoon_voice.agent console` | Local mic and speaker in the terminal. It still uses LiveKit Inference, so it needs the LiveKit keys. **This is not a Playground or WebRTC test.** |
-| `python -m cocoon_voice.mock_backend` | MOCK backend on `127.0.0.1:8010`. Set `COCOON_BACKEND_URL=http://127.0.0.1:8010`. |
-| `python scripts/backend_probe.py "What's my next task?"` | Runs the same bridge code as `llm_node` against the configured backend, with no LiveKit |
+| `python -m cocoon_voice.doctor` | Checks settings, VAD, the noise plugin, Porcupine (if selected), Vertex via ADC, AssemblyAI (issues a temporary streaming token, not printed), the Cartesia voice (prints its name), and LiveKit (lists rooms). Errors are categorised and sanitised. `--offline` skips the network. |
+| `python -m cocoon_voice.smoke` | Small paid live checks: Vertex through the plugin, Cartesia (writes `recordings/smoke-cartesia-pronunciation.wav`), and AssemblyAI on that synthetic audio |
+| `python -m cocoon_voice.agent dev` | Worker with reload. Use `start` for production-style, `console` for local mic/speaker in the terminal (not a WebRTC/Playground test). Stop with Ctrl+C. |
+| `pytest` | Offline tests (no keys, no network) |
+| `$env:COCOON_INTEGRATION_BACKEND_URL=...; pytest -m integration` | Phase-0 backend integration (future-only) |
+| `python -m cocoon_voice.benchmark run --turns 10 [--stt] [--noise machinery --snr 10] [--no-prewarm]` | Bounded synthetic pipeline benchmark: at most 30 turns and 10 minutes. Writes `metrics/benchmark-*.json`. |
+| `python -m cocoon_voice.benchmark report` | Aggregates `metrics/session-*.jsonl` from live worker sessions (p50/p95, cold/warm) |
+| `powershell -ExecutionPolicy Bypass -File scripts\make_speech_fixtures.ps1` | Local SAPI speech fixtures for the VAD noise tests (git-ignored) |
+| `python scripts\dispatch.py token\|dispatch\|list --room <room>` | Dev dispatch helper (explicit agent name) |
 
-Press Ctrl+C to stop. The worker drains, then the session's shutdown callback stops the announcement poller and closes the HTTP client.
+Health endpoint (SDK built-in, `COCOON_HEALTH_HOST:COCOON_HEALTH_PORT`, default `127.0.0.1:8081`):
+- `GET /` returns `OK`. It stays `OK` while LiveKit connection retries continue, and becomes `503` only after they are exhausted.
+- `GET /worker` returns JSON with `agent_name`.
 
-**Health endpoint** (the SDK's own server, on `COCOON_HEALTH_HOST:COCOON_HEALTH_PORT`, default `127.0.0.1:8081`, which does not clash with the backend on 8000 or the mock on 8010):
+A worker that starts has already passed settings validation, since startup refuses invalid configuration. Provider reachability is what `doctor` checks.
 
-- `GET /` returns `OK`. It returns `503` only after LiveKit connection retries are exhausted, or if the inference process died. **`OK` does not prove the worker is registered.** While it is still retrying a bad `LIVEKIT_URL`, it says `OK`.
-- `GET /worker` returns JSON including `"agent_name": "cocoon-voice"`, `worker_type`, `sdk_version` and `worker_load`.
+## Testing in the browser (Playground / Agent Console)
 
-## Environment variables
+### Three milestones to tell apart
 
-| Mode | Required |
-|---|---|
-| Mock checks (`pytest`, mock backend, `backend_probe.py`) | `COCOON_SERVICE_TOKEN` (the tests set their own) |
-| Worker against a backend | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `COCOON_BACKEND_URL`, `COCOON_SERVICE_TOKEN` (same value as the backend's) |
+1. **Worker registered.** The log shows `registered worker … agent_name=cocoon-voice`, and `GET 127.0.0.1:8081/worker` shows the name. *Verified 2026-09-23.*
+2. **Agent dispatched into a room.** The log shows `starting session room=… participant=… noise=… wake=…`.
+3. **Real speech connected.** You hear the greeting "Hi, I'm Cat, your Cocoon assistant." Then "Hey Cat, can you hear me?" produces `wake decision=respond` and a spoken answer.
 
-Optional settings, all with defaults in `.env.example`:
+**Common trap:** because the worker registers with an explicit `agent_name`, LiveKit does **not** auto-dispatch it. A registered worker receives no job unless something dispatches exactly `cocoon-voice` in the **same project**. The usual causes are a name mismatch or the browser being on another project. A token-embedded dispatch fires only when the join *creates* the room.
 
-- `COCOON_AGENT_NAME` (default `cocoon-voice`)
-- `COCOON_HEALTH_HOST` and `COCOON_HEALTH_PORT`
-- `COCOON_STT_MODEL`, `COCOON_STT_LANGUAGE`, `COCOON_TTS_MODEL`, `COCOON_TTS_VOICE`
-- `COCOON_BACKEND_*` timeouts and attempts, and `COCOON_TURN_DEADLINE_SECONDS`
-- `COCOON_EVENT_POLL_INTERVAL` (default 1s) and `COCOON_EVENT_POLL_MAX_BACKOFF`
-- `COCOON_DEFAULT_MACHINE_ID`
-- `COCOON_GREETING`
+### Connecting (pick one)
 
-## Session binding
+- **Deterministic (recommended).**
+  1. `python scripts\dispatch.py token --room cat-test-1 --identity operator-7`. Use a fresh room name.
+  2. Open the printed `meet.livekit.io/custom?...` link, or paste the URL and token into the hosted Agents Playground's manual connection.
+  3. For a room that already exists: `python scripts\dispatch.py dispatch --room <room>`.
 
-- On a job, the worker calls `ctx.connect()` and then `wait_for_participant()`. It binds to the first standard participant, because v1 supports **one operator per room**, and passes that identity to `RoomOptions(participant_identity=...)`.
-- It calls `POST /v1/sessions` with `client_session_key = lk:<room>:<participant identity>`. `operator_id` and `machine_id` come from the first of these that is set:
-  1. Trusted **job metadata** (JSON from a server-side dispatch).
-  2. The participant's `operator_id` and `machine_id` attributes.
-  3. The identity and `COCOON_DEFAULT_MACHINE_ID`.
-- If the job metadata has `session_id` and the backend knows it, that session is reused.
-- If the backend is down at job start, the greeting says so and the session is bound on the first turn. If the backend later returns "session not found", for example after a data wipe, the worker re-creates the session by the same key and retries the same `turn_id` once.
+  (I have not verified that the Meet link and the Playground's manual connection work.)
+- **Agent Console.** LiveKit Cloud dashboard (same project) → Agents → **Launch Console**. The docs say the Console works with agents running locally, but I could not confirm how it targets an explicitly named agent. If it does not dispatch `cocoon-voice`, use the deterministic path.
 
-## Turn handling and failure semantics
+**Browser audio controls:**
+- Keep the browser's echo cancellation on (the default for `getUserMedia`).
+- **Do not** enable Krisp or enhanced noise filtering in the browser; the worker already runs Krisp.
+- Test with headphones first for a clean baseline, then with speakers separately. Headphones are not evidence of speakerphone echo performance.
 
-| Backend response | Worker behaviour |
-|---|---|
-| `200 completed` | Speaks `speech`. Actions and other internal fields never reach TTS. |
-| `202 processing` | Polls `GET .../turns/{turn_id}` every `retry_after_ms` until completed or the deadline |
-| timeout or network error | **Checks the turn status first** with the same `turn_id`, then resubmits the same `turn_id` if the backend never saw it or reports `failed` |
-| `5xx` or `429` | Bounded exponential backoff with jitter, then resubmits the same `turn_id` |
-| `409` or other `4xx` | No retry. Says "Sorry, I couldn't process that request." |
-| deadline passed (`COCOON_TURN_DEADLINE_SECONDS`) | Says "I'm having trouble reaching the site system, so I can't confirm that yet…". It **never** says the action failed or was cancelled. |
+### Manual checklist (record results in `docs/work-log.md`)
 
-Logs carry `request_id=<turn_id>.<attempt>`, status and milliseconds for every backend call, and only the text length. They contain no transcripts, audio or tokens.
+1. Join: expect exactly one greeting. Reconnect within 90 s: expect no second greeting and a `reconnected` log line.
+2. Say something without the wake phrase ("did you see the game"): no reply, and the log shows `decision=ignore reason=armed`.
+3. "Hey Cat." gives a short "I'm listening." with no LLM call.
+4. "Hey Cat, can you hear me?" gives one answer, and no "I'm listening." over it.
+5. Follow-ups without "Hey Cat": short yes/no answers, a long question, and a question with a mid-sentence pause ("what should I… check on the tracks"). It must not be cut off at the pause.
+6. Near-misses: "hey cap", "okay cat", "hey cats". None of them should wake it.
+7. While Cat is answering, say "stop". Speech should stop, with no reply. Try "yeah" during a reply: Cat does not answer it, but the rest of that reply is cut (known SDK trade-off, see below).
+8. "Go to sleep." gives "Okay, going quiet." and later speech is ignored. After 45 s of silence Cat re-arms by itself.
+9. "What can you do?" should describe this as a voice trial with business features not yet connected.
+10. Noise: play machinery, fan or impact audio from another device, and have a second person talk nearby. Check for false replies and for truncated or missed questions. Then repeat on speakers without headphones (echo).
+11. Pronunciation: ask about "a CAT three-twenty" and "unit E-742 at 3,500 hours".
+12. `python -m cocoon_voice.benchmark report` gives worker-side p50/p95 from the session. Note manual impressions of client playback separately.
 
-## Proactive announcements
+## Wake gate ("Hey Cat")
 
-- `AnnouncementPump` polls `GET /events?after=<cursor>` every `COCOON_EVENT_POLL_INTERVAL` seconds. On a backend outage it backs off exponentially up to `COCOON_EVENT_POLL_MAX_BACKOFF`, so it never busy-loops.
-- For each new event:
-  1. Skip it if any consumer already reported `played`, `interrupted` or `expired`.
-  2. Report `expired` if it is past `expires_at`.
-  3. Otherwise wait up to `COCOON_ANNOUNCEMENT_QUIET_WAIT_SECONDS` for a quiet moment, meaning the agent is not thinking or speaking and the user is not speaking.
-  4. Call `session.say()`, wait for playout, then report `played`, `interrupted` or `failed`.
-- Announcements play one at a time, and `session.say` queues behind ordinary speech.
-- The poller stops when the session closes or the job shuts down.
-- After a reconnect it starts from `after=0` and relies on the persisted delivery reports, so completed events are not replayed. A crash between playout and the report can replay one announcement.
-- `played` is not operator acknowledgement, and it does not resolve the hazard.
+- **States:** `ARMED` → `ACTIVE` → `ARMED` or `CLOSED`, separate from the SDK's listening/thinking/speaking states.
+- **Matching:** exact and leading. It is word-bounded "hey cat" after case and punctuation normalisation. There is no fuzzy matching, so near-misses stay armed.
+- **Gating:** while ARMED, utterances without the phrase are dropped in `on_user_turn_completed` with `StopResponse`, *before* the SDK appends them to chat history. `llm_node` also refuses to call the brain while armed.
+- **Wake only vs wake plus question:** a wake-only utterance gets a cached "I'm listening." A wake-plus-question utterance has the phrase removed and the question answered once.
+- **Staying awake:** ACTIVE accepts follow-ups without the phrase. It re-arms after `WAKE_ACTIVE_TIMEOUT_SECONDS` of inactivity, but never while Cat is speaking, the user is speaking, or a request is in flight.
+- **Commands:** `stop` and `go to sleep` only count as standalone utterances; "what does stop mean?" is a question, not a command.
+- **Repeats:** repeated wakes are debounced (`WAKE_DEBOUNCE_SECONDS`), and a duplicate final transcript within 1.5 s is ignored.
+- **Echo guard:** a wake phrase heard while Cat is speaking, or within `WAKE_ECHO_GUARD_MS` after, cannot wake an armed gate. The greeting and fixed phrases never contain "Hey Cat".
+- **Not security:** activation is not operator authentication. Nearby voices are mitigated by Krisp VIVA and debounce, not by speaker verification.
 
-## Testing in the browser
+**`WAKE_MODE=transcript`** (default, Playground test mode): AssemblyAI hears the room continuously, so idle speech is streamed and billed. It is not on-device or private keyword spotting.
 
-### Three states to tell apart
+**`WAKE_MODE=porcupine`** (acoustic keyword spotting):
+- The worker runs Picovoice Porcupine on the selected participant's **room audio** (after the Krisp filter) and never opens a local microphone.
+- The router is the single consumer of the audio stream. It resamples to the engine rate (16 kHz), frames to the engine's frame length (512), and keeps a 400 ms pre-roll.
+- STT segments open only while ACTIVE, and each frame is forwarded once. Measured routing delay before the engine sees the keyword end is about 40–60 ms (resampler blocks plus framing).
+- A wake-only acknowledgement plays only if no speech follows within `PORCUPINE_WAKE_ONLY_WAIT_MS`.
+- There is no fallback to transcript mode. A missing key or model stops the worker.
 
-| State | How you know |
-|---|---|
-| **Worker registered** | `dev`/`start` logs show a successful registration to your `LIVEKIT_URL`. `GET :8081/worker` shows `agent_name: cocoon-voice`. The LiveKit Cloud dashboard's Agents page shows it for the same project. |
-| **Agent dispatched into a room** | The worker logs a received job and then `bound room=<room> participant=<identity> -> session_id=ses_...`. The backend logs `POST /v1/sessions`. |
-| **Speech connected** | You hear the greeting, and each utterance logs `submitting turn ...` and `turn ... completed` on the worker and `turn completed ...` on the backend. |
+To create the keyword model:
+1. Sign in at https://console.picovoice.ai/ and copy your AccessKey.
+2. Go to Porcupine → create a wake word "Hey Cat", language English, platform **Windows (x86_64)** for this machine. A Linux deployment needs a Linux model.
+3. Train, download, and save the `.ppn` as `livekit-voice/keywords/` (git-ignored).
+4. Set `WAKE_MODE=porcupine`, `PICOVOICE_ACCESS_KEY` and `PORCUPINE_KEYWORD_PATH=keywords/<file>.ppn`.
+5. Run `python -m cocoon_voice.doctor` to create the engine.
 
-**Common trap: registered but never dispatched.** Because `agent_name` is set, LiveKit **does not auto-dispatch** this worker. A room gets the agent only through an explicit dispatch that names exactly `cocoon-voice` (or your `COCOON_AGENT_NAME`), in the **same LiveKit Cloud project** as `LIVEKIT_URL`. If the name differs (for example the console defaults to another agent, or there is a typo), or if the browser uses a different project, the worker stays idle with no error. A token-embedded dispatch also fires **only when the room is created**, so it is ignored for a room that already exists.
+Licensing and assumptions:
+- Keyword files are tied to the Picovoice account and platform.
+- Usage limits and commercial-use terms depend on your Picovoice plan. Check them for the hackathon and any product use.
+- "Hey Cat" is not a built-in keyword. Nothing here fakes a `.ppn`.
 
-### Option A: LiveKit Cloud Agent Console
+Acoustic false accepts, misses and truncation are **unvalidated** until a real model is exercised.
 
-1. Start the backend (`langgraph-agent`: `python -m cocoon_agent`) and the worker (`python -m cocoon_voice.agent dev`).
-2. In the LiveKit Cloud dashboard for the **same project**, open **Agents** and click **Launch Console**. The LiveKit docs say the Console works with agents running locally.
-3. If the Console lets you choose or type an agent name, use `cocoon-voice`, start a session, allow the microphone, and speak.
+For the future Android client, keyword detection belongs on the device. A hosted Playground worker cannot be an always-listening phone service, and server-side detection still requires the browser microphone to be published.
 
-*Not verified here:* no LiveKit credentials were available, so I could not confirm how the current Console selects an explicitly named, self-hosted agent. If it offers no way to target `cocoon-voice`, use option B, which does not depend on the Console UI.
+## Streaming, barge-in and recovery
 
-### Option B: explicit dispatch you control (deterministic)
+- **Streaming path:** Vertex chunks stream into `llm_node` and then into the Cartesia streaming TTS node. The plugin's sentence tokenizer coalesces text, so audio starts after the first sentence rather than per token or after the whole reply.
+- **Epochs:** each generation gets an epoch. `stop` or a new turn advances it, so late chunks from an old reply are dropped.
+- **Played text:** with `use_tts_aligned_transcript` and Cartesia word timestamps, an interrupted reply keeps only the words actually played in history.
+- **No replayed speech:** the SDK would retry an LLM stream even after it produced chunks, and would restart the answer. SDK LLM retries are therefore off, and `guarded_stream` retries (bounded, jittered) **only before the first chunk**. After partial output, the partial answer stands. TTS never retries after partial audio (SDK behaviour).
+- **Timeouts and fallbacks:**
+  - First-chunk timeout 6 s and mid-stream stall timeout 5 s.
+  - An empty reply gets a short fallback, and a failure before any output gets "Sorry, I couldn't get an answer just now…".
+  - Errors are categorised as auth, permission, rate_limit, model_unavailable or timeout.
+- **Thinking cue:** a one-off "One moment." plays only if no text has arrived after `THINKING_CUE_DELAY_MS`. There are no artificial delays and no background sounds.
+- **Cached phrases:** the greeting, "I'm listening.", "Okay, going quiet." and the failure phrase are synthesised once. They are cached in memory and in `.cache/tts`, keyed by provider, model, voice, language, speed and text.
+- **Known trade-off:** single-word "stop" must interrupt, so the SDK's `min_words` gate is off. A committed backchannel ("yeah") during a reply therefore interrupts it (the SDK interrupts before the hook runs); Cat does not answer the backchannel, and the cut remainder is not resumed. Noise or coughs without words resume after 1.5 s.
+- **Preemptive generation:** `PREEMPTIVE_GENERATION=false` by default. It is allowed only for this tool-free phase, and it must be off for the future action-capable backend.
 
-```powershell
-# fresh room name, so the token's dispatch fires on room creation
-python scripts\dispatch.py token --room cocoon-demo-1 --identity operator-7 --machine cat-320-demo
-```
+## Privacy and logs
 
-This prints the `LIVEKIT_URL`, a 2-hour **dev** token and a `https://meet.livekit.io/custom?...` link. Open the link, or paste the URL and token into any LiveKit client that accepts them, such as the hosted Agents Playground's manual connection. The room is created by your join, the token's `RoomAgentDispatch(agent_name="cocoon-voice")` dispatches the worker, and you should hear the greeting.
+- No transcripts or audio are logged by default. Decisions log text **length**.
+- `LOG_TRANSCRIPTS=true` and `RECORD_AUDIO=true` are explicit development opt-ins. Recordings go to `recordings/` (post-Krisp input) and are deleted after `RECORD_RETENTION_HOURS`.
+- Per-turn metrics go to `metrics/session-*.jsonl` without text.
+- Secrets appear only as `set` or `MISSING`.
+- Future deployments should use a workload or service identity, never a copied user ADC file.
 
-For a room that already exists, dispatch through the API instead: `python scripts\dispatch.py dispatch --room <room>`, or `lk dispatch create --agent-name cocoon-voice --room <room>` if you have the `lk` CLI. List dispatches with `python scripts\dispatch.py list --room <room>`.
+## Replacement point for phase 2 (LangGraph)
 
-### What to say
+`cocoon_voice/providers.py:create_brain()` is the only place the brain is chosen. Phase 2 adds `VOICE_BRAIN=remote_langgraph`, returning a streaming `llm.LLM` adapter. The adapter should:
+- Forward the completed user turn to `langgraph-agent`.
+- Reuse the tested `TurnBridge` and `BackendClient` semantics (stable `turn_id`, 202 polling, unknown-outcome wording).
+- Stream the returned speech.
+- Keep preemptive generation disabled.
 
-1. "What's my next task?"
-2. "I want to report an incident", then "The hydraulic hose on the boom is leaking"
-3. "Assign me the seatbelt lesson"
-4. In another shell, run `python scripts/simulate_telemetry.py --room cocoon-demo-1 --identity operator-7 --machine cat-320-demo` from `langgraph-agent`. You should hear the seatbelt warning within about one second of the second sample, then "Why?" or "Why did you warn me?" is answered from the stored alert.
+The LiveKit chat context stays the single history on this side; the backend owns business state.
 
-### Local worker vs hosted worker
+Phase-0 tooling is kept, tested and **not wired in**: `bridge.py`, `backend_client.py`, `announcements.py`, `remote_bridge.py`, `mock_backend.py` and `scripts/backend_probe.py`. It uses the future-only `COCOON_BACKEND_URL` and `COCOON_SERVICE_TOKEN`; `LANGGRAPH_BASE_URL` is reserved as the phase-2 name.
 
-A worker running on your laptop opens **outbound** connections to LiveKit Cloud and can call `http://127.0.0.1:8000` on the same laptop. A worker **hosted in the cloud**, including one deployed to LiveKit Cloud, **cannot reach `localhost` on a developer's laptop**. Point `COCOON_BACKEND_URL` at a reachable HTTPS URL, such as a deployed backend or a tunnel, and keep the bearer token secret.
+## Known production-readiness gaps
 
-## Tests
-
-```
-pytest                                    # 35 credential-free tests (+1 integration test skipped)
-# real HTTP against a running langgraph-agent (no LiveKit, no audio):
-$env:COCOON_INTEGRATION_BACKEND_URL="http://127.0.0.1:8000"; pytest -m integration        # PowerShell
-COCOON_INTEGRATION_BACKEND_URL=http://127.0.0.1:8000 pytest -m integration                # Bash
-```
-
-The tests cover:
-
-- Client semantics: 200, 202 and polling, a status check before resubmitting after a timeout, same-`turn_id` retries, bounded attempts and deadline, and no retry on 409.
-- The bridge: stable `turn_id`, no resubmission, speech-only `llm_node` output, unknown-outcome wording, rebinding, lazy binding, and preemptive generation being off.
-- Announcements: once per event, skip or expire, interrupted and failed reports, bounded backoff, and stop.
-- Contract checks: worker requests and the mock backend against `../contracts/openapi.yaml`, plus the bridge driven against the mock backend, including 202.
-
-None of these tests exercise real STT, TTS or WebRTC.
+- Real speech, Krisp effect, acoustic wake accuracy, speakerphone echo and human accents are unmeasured (keys and assets missing).
+- One operator per room. There is no speaker verification.
+- Client playback timing is not observable from the worker. Playout metrics are worker-side proxies.
+- The thinking cue text becomes part of that turn's assistant message in history.
+- Backchannels interrupt the current reply (see the trade-off above).
+- No deployment manifest. Deploy with a service identity for Vertex and a region-appropriate Porcupine model.

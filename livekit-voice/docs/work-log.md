@@ -2,6 +2,22 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 19:45 UTC — M6: documentation, report, dispatch helper (branch `voice`)
+
+- **Added/updated:** phase-1 README (install, keys, commands, Playground walkthrough + manual checklist, wake modes,
+  Porcupine model creation, noise, streaming/recovery, privacy, phase-2 replacement point, gaps);
+  `docs/voice-latency-report.md`; root README phase note; this folder's CLAUDE.md snapshot.
+- **Worker:** logs an explicit cost warning in `WAKE_MODE=transcript` and a loud `AUDIO DEGRADED` line when
+  degraded audio is allowed. `scripts/dispatch.py list` handles a missing room.
+- **Checks run:** `python -m livekit.agents download-files` → finished for google, krisp and silero plugins;
+  `python scripts/dispatch.py list --room cocoon-smoke-check` → authenticated, "room does not exist";
+  full `pytest` → 127 passed, 1 skipped.
+- **Still blocked:** Playground speech test (ASSEMBLYAI_API_KEY, CARTESIA_API_KEY), acoustic wake
+  (PICOVOICE_ACCESS_KEY + `Hey Cat` .ppn). The Agent Console's way of targeting an explicitly named local agent is
+  not confirmed by the docs; README gives the deterministic token/dispatch path.
+- **Next step for the user:** add the two provider keys, run `python -m cocoon_voice.doctor`, `python -m
+  cocoon_voice.smoke`, `python -m cocoon_voice.agent dev`, then the README checklist. Phase 2 stays pending.
+
 ## 2026-09-23 19:20 UTC — M5: smoke, benchmark, noise fixtures, metrics (branch `voice`)
 
 - **Added:** `python -m cocoon_voice.smoke` (bounded live checks through the worker factories),

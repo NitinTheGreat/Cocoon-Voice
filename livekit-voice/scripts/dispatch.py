@@ -4,7 +4,7 @@
     python scripts/dispatch.py dispatch --room cocoon-demo                          # explicit dispatch into a room (API)
     python scripts/dispatch.py list     --room cocoon-demo
 
-Dev/test helper only. Real clients (Cocoon-App) must get tokens from an authenticated
+Dev/test helper only (uses LIVEKIT_AGENT_NAME). Real clients (Cocoon-App) must get tokens from an authenticated
 server-side token endpoint; never ship LIVEKIT_API_SECRET to a browser or phone.
 """
 
@@ -68,8 +68,17 @@ async def cmd_dispatch(args, settings) -> None:
 async def cmd_list(args, settings) -> None:
     async with api.LiveKitAPI(settings.livekit_url, settings.livekit_api_key,
                               settings.livekit_api_secret.get_secret_value()) as lk:
-        for d in await lk.agent_dispatch.list_dispatch(room_name=args.room):
+        try:
+            dispatches = await lk.agent_dispatch.list_dispatch(room_name=args.room)
+        except api.TwirpError as exc:
+            if exc.code == "not_found":
+                print(f"room {args.room!r} does not exist (no dispatches)")
+                return
+            raise
+        for d in dispatches:
             print(f"{d.id} agent={d.agent_name} room={d.room} jobs={len(d.state.jobs)}")
+        if not dispatches:
+            print(f"no dispatches in room {args.room!r}")
 
 
 def main() -> None:

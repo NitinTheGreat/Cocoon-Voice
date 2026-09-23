@@ -126,16 +126,18 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Area | Status | Evidence / next action |
 | --- | --- | --- |
 | Phase decision | DONE | Standalone voice (phase 1) recorded above; phase 2 (LangGraph) PENDING until the user accepts the voice experience. |
-| Settings, providers, doctor | DONE (offline + Vertex live) | `pytest tests/test_config.py`; `python -m cocoon_voice.doctor`: Vertex ADC PASS, LiveKit PASS, Krisp constructs; AssemblyAI/Cartesia keys missing. |
-| Worker registration | DONE | `python -m cocoon_voice.agent start` registered `cocoon-voice` with LiveKit Cloud (2026-09-23). |
-| Wake gate, streaming guard, Porcupine router | IN_PROGRESS | Implemented; focused tests next. Acoustic wake BLOCKED on PICOVOICE_ACCESS_KEY + real `Hey Cat` .ppn. |
+| Settings, providers, doctor | DONE (offline + Vertex/LiveKit live) | `pytest`; `python -m cocoon_voice.doctor`: Vertex ADC PASS, LiveKit PASS, Krisp constructs. |
+| Worker registration | DONE | `python -m cocoon_voice.agent start` registered `cocoon-voice` (2026-09-23). |
+| Wake gate, turn policy, streaming guard, Porcupine plumbing, metrics | DONE (offline) | 127 tests incl. real `AgentSession` runs; see `docs/work-log.md`. |
+| Latency | PARTIAL | Vertex measured (warm TTFT p50 668 ms, n=9); STT/TTS/playout unmeasured. `docs/voice-latency-report.md`. |
 | Live dispatch + speech in Playground | BLOCKED | Needs ASSEMBLYAI_API_KEY and CARTESIA_API_KEY in `livekit-voice/.env`. |
+| Krisp effect, acoustic wake | BLOCKED | Krisp needs a live cloud session; Porcupine needs PICOVOICE_ACCESS_KEY + real `Hey Cat` .ppn. |
 
 ### Active work
 
 | Task | Owner / branch | Status | Files / contract impact | Next checkpoint |
 | --- | --- | --- | --- | --- |
-| Standalone voice pipeline (phase 1) | NitinTheGreat / `voice` | IN_PROGRESS | `livekit-voice/` only; no shared-contract change. | Wake/streaming/Porcupine tests, benchmark harness, docs. |
+| Standalone voice pipeline (phase 1) | NitinTheGreat / `voice` | IN_PROGRESS (awaiting keys) | `livekit-voice/` only; no shared-contract change. | Add provider keys → doctor → smoke → Playground checklist in README → record results. |
 
 ### Latest handoff
 
