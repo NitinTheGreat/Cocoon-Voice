@@ -42,8 +42,8 @@ from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
 from .cartesia_auth import CartesiaTokenRefresher, describe_status
 from .acoustic_wake import AcousticRouter, KeywordEngine, LiveKitWakeWordEngine, PorcupineEngine
-from .providers import (NoiseSetup, build_noise_cancellation, build_stt, build_tts, create_brain,
-                        krisp_filter_active, load_vad)
+from .providers import (NoiseSetup, build_noise_cancellation, build_stt, build_tts, check_noise_cancellation,
+                        create_brain, krisp_filter_active, load_vad)
 from .recording import InputRecorder, cleanup_recordings
 from .streaming import EpochCounter, GenerationStats, guarded_stream
 from .wake import WakeGate, WakeState
@@ -627,7 +627,7 @@ def main() -> None:
     if command in ("dev", "start", "console", "connect"):
         problems = settings.problems("worker")
         try:
-            build_noise_cancellation(settings)
+            check_noise_cancellation(settings)
         except ConfigError as exc:
             problems.append(str(exc))
         if problems:
@@ -644,6 +644,8 @@ def main() -> None:
                         removed)
         log.info("effective config %s", settings.safe_summary())
         log.info("effective wake mode: %s", settings.wake_mode_description())
+        log.info("worker-side enhancement: %s", "OFF (NOISE_CANCELLATION=none)" if settings.noise_cancellation == "none"
+                 else f"krisp {settings.noise_profile}")
         log.info("transcript logging: %s", "ON (local only)" if settings.log_transcripts else "off")
     cli.run_app(build_server(settings))
 

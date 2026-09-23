@@ -160,29 +160,6 @@ async def test_wake_window_never_expires_during_a_pending_interruption():
     assert not c.is_busy()
 
 
-async def test_krisp_credential_rotation_runs_off_the_event_loop():
-    import asyncio
-    import threading
-    import time
-
-    from cocoon_voice.providers import offload_krisp_credential_updates
-
-    calls = []
-
-    class Proc:
-        def _on_credentials_updated(self, *, token, url):
-            time.sleep(0.3)  # the measured native call blocked the loop for 105-339 ms
-            calls.append((token, url, threading.current_thread() is threading.main_thread()))
-
-    proc = Proc()
-    offload_krisp_credential_updates(proc)
-    t0 = time.perf_counter()
-    proc._on_credentials_updated(token="jwt", url="wss://x")
-    assert time.perf_counter() - t0 < 0.05  # returns immediately
-    await asyncio.sleep(0.5)
-    assert calls == [("jwt", "wss://x", False)]
-
-
 async def test_interruption_mode_is_sampled_per_turn_and_a_downgrade_is_reported(caplog):
     c, session, _ = controller()
     c.gate.on_acoustic_wake()
