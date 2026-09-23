@@ -123,6 +123,7 @@ async def test_configuration_errors_are_not_retried(tmp_path, error, message):
 
 @pytest.mark.parametrize("outcome,message", [
     (genai_errors.ServerError(503, {"error": {"message": "down"}}), "returned HTTP 503"),
+    (genai_errors.ClientError(499, {"error": {"status": "CANCELLED", "message": "x"}}), "exceeded its deadline"),
     (TimeoutError(), "could not reach Vertex AI"),
     (_response(None, "SAFETY"), "declined"),
     (_response(None, "MAX_TOKENS"), "complete structured answer"),

@@ -77,7 +77,10 @@ The server binds to `127.0.0.1`. To let a voice worker on another machine reach 
 
 Live mode **never** falls back to mock answers. If the provider fails, refuses or returns unusable output, the turn fails with `503 llm_unavailable` (retryable), and the voice worker tells the operator it cannot confirm yet. The model only classifies and words replies. Every mutation happens in validated Python functions in `store.py`, and the reply is composed only after the record is saved.
 
-**Vertex quota (observed 2026-09-24):** project `orbit-507316` currently allows only about 2 `gemini-3.8-flash` calls in quick succession before returning 429. Each turn makes 2 calls (route, then compose), so a live turn often ends in retryable `503 llm_unavailable` ("Vertex AI quota is exhausted"). Single calls took about 2–15 s. Ask for a quota increase, or set `VERTEX_MODEL` to another listed model, before a live voice demo.
+**Live load and capacity (observed 2026-09-24):**
+- A turn makes one model call: routing. The reply is worded from the saved action results unless `COCOON_LLM_COMPOSE=model`.
+- Calls are bounded: one in flight (`COCOON_LLM_MAX_CONCURRENCY`) with up to 8 waiting (`COCOON_LLM_MAX_WAITING`), and at most 3 attempts per call (`VERTEX_MAX_ATTEMPTS`) with 1–4 s jittered backoff, for 408/429/5xx/timeouts only. The SDK's own retry stays off.
+- On project `orbit-507316` / `global`, `gemini-3.8-flash` returned intermittent `429 RESOURCE_EXHAUSTED` with no quota identifier. 7 of 7 isolated calls succeeded in one window, and 3 of 5 turns failed in another, so this looks like shared capacity rather than a fixed per-project count. A failed turn is a retryable `503 llm_unavailable` and never a mock answer. Evidence: `docs/HANDOFF.md`.
 
 ## Develop without audio
 

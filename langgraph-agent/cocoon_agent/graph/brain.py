@@ -380,6 +380,8 @@ class VertexBrain:
                 if code not in _VERTEX_RETRYABLE or attempt == attempts:
                     if code == 429:
                         raise LLMUnavailable("Vertex AI capacity is exhausted (429); retry shortly") from exc
+                    if code == 499:  # CANCELLED: the per-call deadline (COCOON_LLM_TIMEOUT_SECONDS) expired
+                        raise LLMUnavailable("Vertex AI call exceeded its deadline; retry shortly") from exc
                     raise LLMUnavailable(f"Vertex AI returned HTTP {code}") from exc
                 hint = _retry_delay_hint(exc)
                 log.warning("vertex call retry attempt=%d/%d code=%s status=%s", attempt, attempts, code,
