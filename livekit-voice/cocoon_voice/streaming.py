@@ -137,6 +137,8 @@ async def guarded_stream(
                         break
                     if isinstance(item, BaseException):
                         raise item
+                    if isinstance(item, str) and not item:
+                        continue
                     if epochs.current != epoch:
                         stats.outcome = "stale"
                         return

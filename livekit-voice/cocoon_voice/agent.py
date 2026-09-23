@@ -368,6 +368,17 @@ class CatAgent(Agent):
             yield ev
 
 
+def session_conn_options(settings: VoiceSettings) -> SessionConnectOptions:
+    return SessionConnectOptions(
+        stt_conn_options=APIConnectOptions(max_retry=3, retry_interval=1.0, timeout=10.0),
+        # The SDK would retry an LLM stream even after chunks were spoken (_retry_on_chunk_sent=True),
+        # so SDK retries are off; streaming.guarded_stream retries only before the first chunk.
+        llm_conn_options=APIConnectOptions(max_retry=0, timeout=settings.llm_first_chunk_timeout_s + 4),
+        # TTS never retries after partial audio (SDK behaviour); this only covers failures before audio.
+        tts_conn_options=APIConnectOptions(max_retry=2, retry_interval=0.5, timeout=10.0),
+    )
+
+
 def build_session(settings: VoiceSettings, vad) -> AgentSession:
     return AgentSession(
         stt=build_stt(settings),
@@ -383,12 +394,7 @@ def build_session(settings: VoiceSettings, vad) -> AgentSession:
                           "false_interruption_timeout": settings.false_interruption_timeout_s},
             preemptive_generation={"enabled": settings.preemptive_generation},
         ),
-        conn_options=SessionConnectOptions(
-            stt_conn_options=APIConnectOptions(max_retry=3, retry_interval=1.0, timeout=10.0),
-            # LLM retries are done in streaming.guarded_stream, only before the first chunk.
-            llm_conn_options=APIConnectOptions(max_retry=0, timeout=settings.llm_first_chunk_timeout_s + 4),
-            tts_conn_options=APIConnectOptions(max_retry=2, retry_interval=0.5, timeout=10.0),
-        ),
+        conn_options=session_conn_options(settings),
         use_tts_aligned_transcript=True,  # interrupted replies keep only the words actually played
     )
 

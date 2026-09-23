@@ -2,6 +2,20 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 18:25 UTC — M3: streaming, interruption and recovery (branch `voice`)
+
+- **Finding:** a real `AgentSession` with default connection options retried a failed LLM stream three times
+  inside the SDK (`llm.py` "retrying in 0.1s/2.0s"), including after chunks were produced. Production options are now
+  a shared `session_conn_options()` (LLM `max_retry=0`) and tests use the same function.
+- **Behaviour now covered:** text forwarded chunk-by-chunk before the stream ends; retries (bounded, jittered) only
+  before the first chunk; no replay after partial output (real session: 1 call, partial answer kept, retry text
+  never spoken); first-chunk and mid-stream stall timeouts; empty output fallback; one-off thinking cue only when the
+  first text is later than `THINKING_CUE_DELAY_MS`; stale-epoch suppression; provider stream closed on
+  cancellation; fixed-phrase audio cache keyed by provider/model/voice/language/speed and persisted on disk.
+- **Checks run:** `pytest tests/test_streaming.py` → 13 passed; full suite 100 passed, 1 skipped.
+- **Limits:** barge-in stop latency and played-text truncation depend on live audio output (SDK
+  `use_tts_aligned_transcript` with Cartesia word timestamps); not measurable until Cartesia/AssemblyAI keys exist.
+
 ## 2026-09-23 18:05 UTC — M2: wake gate and turn policy tests (branch `voice`)
 
 - **Scope:** exact leading "Hey Cat" matcher (case/punctuation normalisation only, no fuzzy matching), ARMED/ACTIVE/
