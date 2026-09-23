@@ -125,7 +125,7 @@
             }
           },
           "422": {
-            "description": "Malformed request",
+            "description": "Malformed request (validation_error), or a NEW session whose machine_id (unknown_machine, checked first) or operator_id (unknown_operator) is not in the verified catalog, or whose site/shift has no trusted binding",
             "content": {
               "application/json": {
                 "schema": {
@@ -155,7 +155,17 @@
             }
           },
           "409": {
-            "description": "Key already bound to a different room/participant/operator/machine",
+            "description": "Key already bound to a different room/participant/operator/machine/site/shift",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "catalog_unavailable: no verified catalog loaded; new sessions refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -171,21 +181,16 @@
           }
         ],
         "x-implementation-status": "implemented",
-        "x-target-stage": "v1",
+        "x-target-stage": "I02a",
         "x-callers": [
           "voice_service",
           "simulator"
         ],
-        "x-idempotency": "client_session_key; conflicting immutable association → 409 session_conflict",
+        "x-idempotency": "client_session_key: an existing key is compared with its stored association first (200 or 409 session_conflict); only a new key is admitted against the verified catalog (422 unknown_machine, then unknown_operator; 503 catalog_unavailable).",
         "x-target-changes": [
           {
-            "stage": "I02",
-            "change": "Reject an unknown machine_id with 422 `unknown_machine` and an unknown operator_id with 422 `unknown_operator` (catalog from I03). v1 accepts any non-empty ID with 201; this is an intentional, documented tightening.",
-            "schema": "#/components/schemas/SessionCreateRequestTarget"
-          },
-          {
-            "stage": "I02",
-            "change": "Optional site_id/shift_id; response adds model, site, shift, service date, dataset manifest hash and clock mode.",
+            "stage": "I03/I07A",
+            "change": "Response adds machine_model, service_date and clock_mode.",
             "schema": "#/components/schemas/SessionTarget"
           }
         ]
@@ -4355,7 +4360,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -5229,7 +5234,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -5787,7 +5792,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -5988,7 +5993,10 @@
               "session_conflict",
               "llm_unavailable",
               "turn_failed",
-              "internal_error"
+              "internal_error",
+              "unknown_machine",
+              "unknown_operator",
+              "catalog_unavailable"
             ],
             "title": "Code"
           },
@@ -6397,7 +6405,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -7190,7 +7198,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -7965,7 +7973,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -8279,7 +8287,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -8580,7 +8588,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -9179,9 +9187,10 @@
               "llm_unavailable",
               "turn_failed",
               "internal_error",
-              "forbidden",
               "unknown_machine",
               "unknown_operator",
+              "catalog_unavailable",
+              "forbidden",
               "invalid_cursor",
               "replay_expired",
               "version_conflict",
@@ -9371,7 +9380,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -9927,6 +9936,48 @@
           "version": {
             "type": "string",
             "title": "Version"
+          },
+          "catalog": {
+            "type": "boolean",
+            "title": "Catalog",
+            "description": "Verified machine/operator catalog loaded; needed to admit new sessions. Existing sessions keep working without it.",
+            "default": false
+          },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Version",
+            "description": "Manifest SHA-256 of the loaded catalog."
+          },
+          "catalog_issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Issue",
+            "description": "Sanitized reason code when catalog is false."
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version",
+            "description": "Applied cocoon.db migration version."
           }
         },
         "additionalProperties": false,
@@ -10444,6 +10495,73 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "dataset_manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Manifest Sha256",
+            "description": "Verified catalog snapshot this session was admitted under. Null for sessions created before catalog binding existed (never attached retroactively)."
+          },
+          "binding_status": {
+            "type": "string",
+            "enum": [
+              "catalog_verified",
+              "legacy_unverified"
+            ],
+            "title": "Binding Status",
+            "description": "catalog_verified: IDs checked against dataset_manifest_sha256 at creation. legacy_unverified: pre-upgrade session; its IDs were never checked.",
+            "default": "legacy_unverified"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "shift_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift Id"
+          },
+          "context_status": {
+            "type": "string",
+            "enum": [
+              "unavailable",
+              "trusted_binding",
+              "legacy_unverified"
+            ],
+            "title": "Context Status",
+            "description": "unavailable: no trusted site/shift is known (not a default site). trusted_binding: site/shift matched a server-configured binding. legacy_unverified: pre-upgrade session.",
+            "default": "legacy_unverified"
+          },
+          "context_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Source",
+            "description": "Binding record that established site/shift."
           }
         },
         "additionalProperties": false,
@@ -10473,7 +10591,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -10558,7 +10676,34 @@
             "type": "string",
             "maxLength": 128,
             "minLength": 1,
-            "title": "Machine Id"
+            "title": "Machine Id",
+            "description": "Exact catalog asset ID for a NEW session (unknown → 422 unknown_machine). An existing client_session_key is resolved against its stored association first."
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id",
+            "description": "Optional. Accepted only together with shift_id and only if it matches a server-configured trusted binding; otherwise 422. Never authoritative on its own."
+          },
+          "shift_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shift Id",
+            "description": "Optional; see site_id."
           }
         },
         "additionalProperties": false,
@@ -10574,7 +10719,7 @@
       },
       "SessionCreateRequestTarget": {
         "additionalProperties": false,
-        "description": "Additive target of POST /v1/sessions. The five v1 fields are unchanged; site/shift are optional.\n\nTarget validation (I02, with the I03 catalog): unknown machine_id → 422 `unknown_machine`; unknown\noperator_id → 422 `unknown_operator`. The v1 runtime accepts any non-empty ID with 201. That is a recorded\ngap and an intentional, documented tightening, not the intended behaviour.",
+        "description": "POST /v1/sessions body. Since I02a the runtime model already carries everything targeted here: catalog\nadmission (unknown_machine / unknown_operator) and optional site_id/shift_id checked against trusted bindings.\nKept as a named target so the proposed spec and fixtures stay stable.",
         "properties": {
           "client_session_key": {
             "maxLength": 256,
@@ -10601,6 +10746,7 @@
             "type": "string"
           },
           "machine_id": {
+            "description": "Exact catalog asset ID for a NEW session (unknown → 422 unknown_machine). An existing client_session_key is resolved against its stored association first.",
             "maxLength": 128,
             "minLength": 1,
             "title": "Machine Id",
@@ -10609,10 +10755,6 @@
           "site_id": {
             "anyOf": [
               {
-                "examples": [
-                  "SITE_FIXTURE_A"
-                ],
-                "maxLength": 128,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
                 "type": "string"
               },
@@ -10621,15 +10763,12 @@
               }
             ],
             "default": null,
+            "description": "Optional. Accepted only together with shift_id and only if it matches a server-configured trusted binding; otherwise 422. Never authoritative on its own.",
             "title": "Site Id"
           },
           "shift_id": {
             "anyOf": [
               {
-                "examples": [
-                  "EXC_DEMO_001_2026-08-25"
-                ],
-                "maxLength": 128,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
                 "type": "string"
               },
@@ -10638,6 +10777,7 @@
               }
             ],
             "default": null,
+            "description": "Optional; see site_id.",
             "title": "Shift Id"
           }
         },
@@ -10973,7 +11113,7 @@
       },
       "SessionTarget": {
         "additionalProperties": false,
-        "description": "Additive target of the session resource.",
+        "description": "Additive target of the session resource. site/shift, dataset_manifest_sha256 and binding status are\nimplemented since I02a (inherited from the runtime model); these fields remain proposed.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -11008,6 +11148,77 @@
             "title": "Created At",
             "type": "string"
           },
+          "dataset_manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Verified catalog snapshot this session was admitted under. Null for sessions created before catalog binding existed (never attached retroactively).",
+            "title": "Dataset Manifest Sha256"
+          },
+          "binding_status": {
+            "default": "legacy_unverified",
+            "description": "catalog_verified: IDs checked against dataset_manifest_sha256 at creation. legacy_unverified: pre-upgrade session; its IDs were never checked.",
+            "enum": [
+              "catalog_verified",
+              "legacy_unverified"
+            ],
+            "title": "Binding Status",
+            "type": "string"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Site Id"
+          },
+          "shift_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Shift Id"
+          },
+          "context_status": {
+            "default": "legacy_unverified",
+            "description": "unavailable: no trusted site/shift is known (not a default site). trusted_binding: site/shift matched a server-configured binding. legacy_unverified: pre-upgrade session.",
+            "enum": [
+              "unavailable",
+              "trusted_binding",
+              "legacy_unverified"
+            ],
+            "title": "Context Status",
+            "type": "string"
+          },
+          "context_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Binding record that established site/shift.",
+            "title": "Context Source"
+          },
           "machine_model": {
             "anyOf": [
               {
@@ -11024,40 +11235,6 @@
             ],
             "title": "Machine Model"
           },
-          "site_id": {
-            "anyOf": [
-              {
-                "examples": [
-                  "SITE_FIXTURE_A"
-                ],
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Site Id"
-          },
-          "shift_id": {
-            "anyOf": [
-              {
-                "examples": [
-                  "EXC_DEMO_001_2026-08-25"
-                ],
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Shift Id"
-          },
           "service_date": {
             "anyOf": [
               {
@@ -11071,19 +11248,6 @@
             "default": null,
             "description": "Site-local date the shift belongs to.",
             "title": "Service Date"
-          },
-          "dataset_manifest_sha256": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Dataset Manifest Sha256"
           },
           "clock_mode": {
             "anyOf": [
@@ -11194,7 +11358,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -11660,7 +11824,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -11889,7 +12053,7 @@
             "title": "Site Zone Id"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -12243,7 +12407,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",
@@ -12339,7 +12503,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -12511,7 +12675,7 @@
             "type": "string"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
             "examples": [
               "EXC_DEMO_001",
               "DOZ_DEMO_001",
@@ -14616,7 +14780,7 @@
           "machine_id": {
             "anyOf": [
               {
-                "description": "Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); an unknown ID is rejected with 422 unknown_machine.",
+                "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
                 "examples": [
                   "EXC_DEMO_001",
                   "DOZ_DEMO_001",

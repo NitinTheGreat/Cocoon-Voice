@@ -11,11 +11,16 @@ cocoon_agent/
   service.py       per-session ordering, turn idempotency (200/202/409), telemetry episodes
   graph/builder.py typed StateGraph: load_context -> route -> {next_task | log_incident | training | explain_alert | cancel_pending} -> compose
   graph/brain.py   live router/wording (Claude via the Anthropic SDK) and the explicit MockBrain
-  store.py         SQLite schema, demo seed, idempotent writes (unique keys on turn_id / event_id)
+  store.py         SQLite repositories, demo seed, idempotent writes (unique keys on turn_id / event_id)
+  migrations.py    versioned cocoon.db migrations (schema_migrations ledger); see docs/MIGRATIONS.md
+  catalog.py       verified read-only machine/operator catalog + trusted site/shift bindings
+  backup.py        consistent SQLite backups (Online Backup API)
   rules.py         PROTOTYPE seatbelt rule on simulated telemetry
   contract/        PROPOSED target contract models (I01); exported to ../contracts/proposed, never imported by the app
-scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, export_openapi.py, export_proposed_contract.py
-tests/             contract drift, API behaviour, resilience/restart, mock brain, offline live-brain, proposed-contract checks
+scripts/           smoke.py, chat_cli.py, simulate_telemetry.py, reset_db.py, backup_db.py, export_openapi.py,
+                   export_proposed_contract.py
+tests/             contract drift, API behaviour, resilience/restart, mock brain, offline live-brain, proposed-contract,
+                   migrations, catalog and session admission (fixtures/: tiny synthetic catalog, NOT the dataset)
 data/              cocoon.db + checkpoints.db (git-ignored, created on first start)
 ```
 
@@ -54,7 +59,8 @@ python -m cocoon_agent            # or: cocoon-agent
 Stop the server with Ctrl+C. Settings come from `langgraph-agent/.env` whichever directory you start from.
 
 - `GET /healthz` returns `{"status":"ok"}`. It shows the process is up.
-- `GET /readyz` shows whether SQLite and the checkpointer are open, and the `llm_mode`. It returns 503 when the service is not ready.
+- `GET /readyz` shows whether SQLite and the checkpointer are open, whether the verified catalog is loaded (`catalog`, `catalog_version`, sanitized `catalog_issue`), the cocoon.db `schema_version` and the `llm_mode`. It returns 503 when the service is not ready, including when the catalog is missing or does not match its pinned hash. In that case the process still serves existing sessions but refuses new ones with 503 `catalog_unavailable`.
+- On start the server applies pending cocoon.db migrations (docs/MIGRATIONS.md). A migration error stops startup and leaves the database at its previous version. Back up a database you care about first: `python scripts/backup_db.py`.
 - Uvicorn always runs with `workers=1`, because per-session ordering depends on in-process locks.
 
 The server binds to `127.0.0.1`. To let a voice worker on another machine reach it, set `COCOON_HOST=0.0.0.0` behind a firewall or tunnel and use a long random `COCOON_SERVICE_TOKEN`.
@@ -75,10 +81,13 @@ python scripts/smoke.py                 # scripted end-to-end check of every flo
 python scripts/chat_cli.py              # interactive text chat; /state, /events, /quit
 python scripts/simulate_telemetry.py --room <room> --identity <participant>   # SIMULATED seatbelt scenario
 python scripts/simulate_telemetry.py --session-id ses_...  --scenario seatbelt-start
-python scripts/reset_db.py [--wipe]     # create schema and seed demo data idempotently; --wipe deletes data/ (stop server first)
+python scripts/reset_db.py [--wipe]     # apply migrations and seed demo data idempotently; --wipe deletes data/ (stop server first)
+python scripts/backup_db.py [--dest D] # consistent backup of cocoon.db + checkpoints.db (safe while running)
 ```
 
-The simulator resolves the session with the same `client_session_key` the worker uses (`lk:<room>:<identity>`, where operator defaults to identity and machine to `cat-320-demo`), so it targets the live voice session.
+The simulator resolves the session with the same `client_session_key` the worker uses (`lk:<room>:<identity>`), so it targets the live voice session. Its defaults are the catalog IDs `--machine EXC_DEMO_001 --operator OP_DEMO_1_1`, and they must match what the worker sent for that key. `smoke.py` and `chat_cli.py` use the same defaults; pass `--machine`/`--operator` for another catalog.
+
+**Catalog IDs are required for new sessions.** The server loads `DATASET_ROOT` (default `../Cocoon_Dataset_v1`, the untracked local development dataset) and checks it against `DATASET_MANIFEST_SHA256`. Without that folder, or with a different snapshot, `/readyz` is not ready and new sessions get 503. Existing `client_session_key`s keep their original association. Details and the client migration note: `docs/MIGRATIONS.md` and `../API_CONTRACT.md`.
 
 ## Demo flows (all work in mock mode)
 
@@ -94,13 +103,13 @@ The simulator resolves the session with the same `client_session_key` the worker
 ## State and persistence
 
 - The LangGraph thread ID is the application `session_id`, and checkpoints go to `data/checkpoints.db` through `AsyncSqliteSaver`. Only the new utterance goes into graph memory each turn, with message IDs `user:<turn_id>` and `ai:<turn_id>`, so a re-run replaces messages instead of duplicating them.
-- Business records go to `data/cocoon.db`: sessions, turns, tasks, lessons, incidents, training assignments, alerts, telemetry, announcements and deliveries. Schema creation and seeding are idempotent and run on every start.
+- Business records go to `data/cocoon.db`: sessions, turns, tasks, lessons, incidents, training assignments, alerts, telemetry, announcements and deliveries. Migrations and seeding are idempotent and run on every start. Verified catalog snapshots are recorded in `catalog_versions*`, and each new session stores the snapshot it was admitted under.
 - The pending question and the latest alert are explicit graph state. Telemetry transitions write the latest alert into the checkpoint as well as the database, so a later "Why?" resolves against it.
 
 ## Tests
 
 ```
-pytest                                  # 203 tests, no credentials, no network
+pytest                                  # 248 tests + 1 skipped on Windows without symlink rights; no credentials, no network
 python scripts/export_openapi.py --check           # runtime contract (what is served)
 python scripts/export_proposed_contract.py --check  # proposed target contract (not served)
 ```
@@ -120,7 +129,17 @@ The tests cover:
 - Records, pending question and completed turns surviving a restart.
 - Offline request-shape checks of the live Claude path, which cover the beta header, `fallbacks`, the JSON schema and refusal mapping. These do **not** call the provider.
 - Proposed-contract checks (`tests/test_proposed_contract.py`, 146 cases). They cover the generated target spec, 100 valid/invalid fixtures, event-sequence invariants, exchange examples and the chunked SSE fixture. They also confirm that v1 examples stay valid under the target models and that no proposed route is registered. These are schema/fixture checks only: no proposed route is implemented.
+- Migrations (`tests/test_migrations.py`): fresh database; adoption and upgrade of a populated copy of the verbatim v1 schema (`tests/fixtures/baseline_v1_schema.sql`) with every row preserved; legacy session retrieval and turn replay; rollback of a failing migration; newer/unknown/gapped schemas refused; bounded lock failure; immutability triggers; backup of an open WAL database.
+- Catalog and sessions (`tests/test_catalog.py`, `tests/test_sessions.py`):
+  - path resolution from several working directories;
+  - wrong pinned hash, changed or missing files, malformed or duplicate IDs, row counts, and files outside the root (the symlink case is skipped where symlinks are not permitted);
+  - all five assets, unknown-ID codes and their precedence;
+  - retries, conflicts and concurrent creators on separate connections;
+  - trusted and spoofed site/shift;
+  - catalog unavailability;
+  - version pinning across catalog changes.
+- The local dataset check runs only when `../Cocoon_Dataset_v1` exists.
 
 ## Environment variables
 
-Mock mode needs `COCOON_SERVICE_TOKEN` and nothing else. Live mode also needs `COCOON_LLM_MODE=live` and `ANTHROPIC_API_KEY`. Everything else has a default; see `.env.example`.
+Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live` and `ANTHROPIC_API_KEY`. Everything else has a default; see `.env.example`.

@@ -70,7 +70,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Malformed request
+          description: Malformed request (validation_error), or a NEW session whose machine_id (unknown_machine,
+            checked first) or operator_id (unknown_operator) is not in the verified catalog, or whose site/shift
+            has no trusted binding
           content:
             application/json:
               schema:
@@ -88,7 +90,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Session'
         '409':
-          description: Key already bound to a different room/participant/operator/machine
+          description: Key already bound to a different room/participant/operator/machine/site/shift
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'catalog_unavailable: no verified catalog loaded; new sessions refused'
           content:
             application/json:
               schema:
@@ -652,6 +660,9 @@ components:
           - llm_unavailable
           - turn_failed
           - internal_error
+          - unknown_machine
+          - unknown_operator
+          - catalog_unavailable
           title: Code
         message:
           type: string
@@ -914,6 +925,30 @@ components:
         version:
           type: string
           title: Version
+        catalog:
+          type: boolean
+          title: Catalog
+          description: Verified machine/operator catalog loaded; needed to admit new sessions. Existing sessions
+            keep working without it.
+          default: false
+        catalog_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Version
+          description: Manifest SHA-256 of the loaded catalog.
+        catalog_issue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Issue
+          description: Sanitized reason code when catalog is false.
+        schema_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Schema Version
+          description: Applied cocoon.db migration version.
       additionalProperties: false
       type: object
       required:
@@ -950,6 +985,48 @@ components:
           type: string
           format: date-time
           title: Created At
+        dataset_manifest_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dataset Manifest Sha256
+          description: Verified catalog snapshot this session was admitted under. Null for sessions created before
+            catalog binding existed (never attached retroactively).
+        binding_status:
+          type: string
+          enum:
+          - catalog_verified
+          - legacy_unverified
+          title: Binding Status
+          description: 'catalog_verified: IDs checked against dataset_manifest_sha256 at creation. legacy_unverified:
+            pre-upgrade session; its IDs were never checked.'
+          default: legacy_unverified
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        shift_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Shift Id
+        context_status:
+          type: string
+          enum:
+          - unavailable
+          - trusted_binding
+          - legacy_unverified
+          title: Context Status
+          description: 'unavailable: no trusted site/shift is known (not a default site). trusted_binding: site/shift
+            matched a server-configured binding. legacy_unverified: pre-upgrade session.'
+          default: legacy_unverified
+        context_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Context Source
+          description: Binding record that established site/shift.
       additionalProperties: false
       type: object
       required:
@@ -989,6 +1066,23 @@ components:
           maxLength: 128
           minLength: 1
           title: Machine Id
+          description: Exact catalog asset ID for a NEW session (unknown → 422 unknown_machine). An existing client_session_key
+            is resolved against its stored association first.
+        site_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          - type: 'null'
+          title: Site Id
+          description: Optional. Accepted only together with shift_id and only if it matches a server-configured
+            trusted binding; otherwise 422. Never authoritative on its own.
+        shift_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          - type: 'null'
+          title: Shift Id
+          description: Optional; see site_id.
       additionalProperties: false
       type: object
       required:

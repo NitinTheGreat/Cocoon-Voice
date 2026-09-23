@@ -4,7 +4,8 @@
     python scripts/simulate_telemetry.py --session-id ses_...
 
 The session is resolved with the same client_session_key the voice worker uses
-(lk:<room>:<identity>), so operator/machine must match what the worker sent.
+(lk:<room>:<identity>), so operator/machine must match what the worker sent. A NEW session needs catalog IDs
+(e.g. --machine EXC_DEMO_001 --operator OP_DEMO_1_1); an existing key keeps its original association.
 Works against the real backend or livekit-voice's mock backend (--base-url).
 """
 
@@ -36,8 +37,8 @@ def main() -> int:
     ap.add_argument("--session-id")
     ap.add_argument("--room")
     ap.add_argument("--identity")
-    ap.add_argument("--operator", help="defaults to --identity (the worker's default)")
-    ap.add_argument("--machine", default="cat-320-demo")
+    ap.add_argument("--operator", default="OP_DEMO_1_1", help="catalog operator ID")
+    ap.add_argument("--machine", default="EXC_DEMO_001", help="catalog asset ID")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="seatbelt")
     ap.add_argument("--interval", type=float, default=2.0, help="seconds between samples")
     ap.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"),
@@ -48,7 +49,7 @@ def main() -> int:
     if not sid:
         if not (args.room and args.identity):
             ap.error("pass --session-id, or --room and --identity")
-        sid = ensure_session(c, args.room, args.identity, args.operator or args.identity, args.machine)
+        sid = ensure_session(c, args.room, args.identity, args.operator, args.machine)
     start = datetime.now(timezone.utc)
     steps = SCENARIOS[args.scenario]
     print(f"SIMULATED telemetry -> session {sid}, scenario {args.scenario}, run {args.run_id}")

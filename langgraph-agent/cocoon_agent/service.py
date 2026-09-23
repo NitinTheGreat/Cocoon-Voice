@@ -22,16 +22,19 @@ from .api import schemas as s
 from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
+from .catalog import Catalog, SessionBindings
 from .rules import SEATBELT_RULE, seatbelt_condition
-from .store import Conflict, Store, utcnow
+from .store import Conflict, NewSessionBinding, Store, utcnow
 
 log = logging.getLogger("cocoon_agent.service")
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str, retryable: bool = False):
+    def __init__(self, status: int, code: str, message: str, retryable: bool = False,
+                 details: list[dict[str, str]] | None = None):
         super().__init__(message)
         self.status, self.code, self.message, self.retryable = status, code, message, retryable
+        self.details = details
 
 
 def payload_hash(obj: dict[str, Any]) -> str:
@@ -43,11 +46,15 @@ def thread_config(session_id: str) -> RunnableConfig:
 
 
 class CocoonService:
-    def __init__(self, settings: Settings, store: Store, graph, brain: Brain):
+    def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
+                 bindings: SessionBindings | None = None, catalog_issue: str | None = None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
         self.brain = brain
+        self.catalog = catalog  # immutable verified snapshot, loaded once at startup; None = not admitting
+        self.bindings = bindings
+        self.catalog_issue = catalog_issue
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._inflight: dict[tuple[str, str], asyncio.Task] = {}
 
@@ -55,9 +62,42 @@ class CocoonService:
 
     def create_session(self, req: s.SessionCreateRequest) -> tuple[s.Session, bool]:
         try:
-            return self.store.get_or_create_session(req)
+            return self.store.get_or_create_session(req, self._admit_new_session)
         except Conflict as exc:
             raise ApiError(409, "session_conflict", str(exc)) from exc
+
+    def _admit_new_session(self, req: s.SessionCreateRequest) -> NewSessionBinding:
+        """Rules for a NEW client_session_key only. Raising aborts the insert; nothing is written.
+
+        Precedence (deterministic): catalog availability, then machine_id, then operator_id, then site/shift.
+        When both IDs are unknown the code is unknown_machine and details name both fields."""
+        catalog = self.catalog
+        if catalog is None:
+            raise ApiError(503, "catalog_unavailable",
+                           "the verified machine/operator catalog is not loaded; new sessions cannot be admitted")
+        details = []
+        if not catalog.has_machine(req.machine_id):
+            details.append({"field": "body.machine_id", "issue": "not in the machine catalog"})
+        if not catalog.has_operator(req.operator_id):
+            details.append({"field": "body.operator_id", "issue": "not in the operator catalog"})
+        if details:
+            code = "unknown_machine" if details[0]["field"] == "body.machine_id" else "unknown_operator"
+            raise ApiError(422, code, "session association is not in the verified catalog", details=details)
+        if req.site_id is None and req.shift_id is None:
+            return NewSessionBinding(dataset_manifest_sha256=catalog.manifest_sha256, context_status="unavailable")
+        if req.site_id is None or req.shift_id is None:
+            raise ApiError(422, "validation_error", "site_id and shift_id must be supplied together",
+                           details=[{"field": "body.site_id" if req.site_id is None else "body.shift_id",
+                                     "issue": "required when the other is supplied"}])
+        binding = self.bindings.match(req.operator_id, req.machine_id, req.site_id, req.shift_id)             if self.bindings else None
+        if binding is None:
+            raise ApiError(422, "validation_error", "site_id/shift_id do not match a trusted binding",
+                           details=[{"field": "body.site_id", "issue": "no trusted binding for this association"}])
+        return NewSessionBinding(
+            dataset_manifest_sha256=catalog.manifest_sha256, context_status="trusted_binding",
+            site_id=binding.site_id, shift_id=binding.shift_id,
+            context_source=f"session-bindings:{self.bindings.sha256}:{binding.binding_id}",
+        )
 
     def require_session(self, session_id: str) -> s.Session:
         session = self.store.get_session(session_id)

@@ -14,19 +14,38 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _http import client, ensure_session  # noqa: E402
+from _http import client  # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url")
+    ap.add_argument("--machine", default="EXC_DEMO_001", help="catalog asset ID (default: Cat 320 demo asset)")
+    ap.add_argument("--operator", default="OP_DEMO_1_1",
+                    help="catalog operator ID (default exists in the local development dataset)")
     args = ap.parse_args()
     run = uuid.uuid4().hex[:6]
     c = client(args.base_url)
     ready = c.get("/readyz").json()
     print(f"readyz: {ready}")
-    sid = ensure_session(c, f"smoke-room-{run}", "smoke-operator", "smoke-operator", "cat-320-demo")
-    print(f"session: {sid}")
+    session_body = {"client_session_key": f"lk:smoke-room-{run}:smoke-operator", "room_name": f"smoke-room-{run}",
+                    "participant_identity": "smoke-operator", "operator_id": args.operator,
+                    "machine_id": args.machine}
+    created = c.post("/v1/sessions", json=session_body)
+    assert created.status_code == 201, created.text
+    session = created.json()
+    assert session["binding_status"] == "catalog_verified" and session["dataset_manifest_sha256"], session
+    assert session["context_status"] == "unavailable" and session["site_id"] is None, session
+    retry = c.post("/v1/sessions", json=session_body)
+    assert retry.status_code == 200 and retry.json() == session, retry.text
+    for field, value, code in (("machine_id", "cat-320-demo", "unknown_machine"),
+                               ("operator_id", "smoke-operator", "unknown_operator")):
+        bad = c.post("/v1/sessions", json={**session_body, "client_session_key": f"smoke-bad-{field}-{run}",
+                                            field: value})
+        assert bad.status_code == 422 and bad.json()["error"]["code"] == code, bad.text
+    sid = session["session_id"]
+    print(f"session: {sid} machine={args.machine} operator={args.operator} "
+          f"catalog={session['dataset_manifest_sha256'][:12]}... (unknown IDs -> 422 checked)")
 
     def say(tid: str, text: str) -> dict:
         r = c.post(f"/v1/sessions/{sid}/turns", json={"turn_id": f"{run}-{tid}", "text": text, "source": "text"})

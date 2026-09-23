@@ -32,6 +32,9 @@ ErrorCode = Literal[
     "llm_unavailable",
     "turn_failed",
     "internal_error",
+    "unknown_machine",
+    "unknown_operator",
+    "catalog_unavailable",
 ]
 
 
@@ -60,7 +63,20 @@ class SessionCreateRequest(ContractModel):
     room_name: str = Field(min_length=1, max_length=256)
     participant_identity: str = Field(min_length=1, max_length=256)
     operator_id: str = Field(min_length=1, max_length=128)
-    machine_id: str = Field(min_length=1, max_length=128)
+    machine_id: str = Field(
+        min_length=1, max_length=128,
+        description="Exact catalog asset ID for a NEW session (unknown → 422 unknown_machine). An existing "
+                    "client_session_key is resolved against its stored association first.")
+    site_id: str | None = Field(
+        default=None, pattern=ID_PATTERN,
+        description="Optional. Accepted only together with shift_id and only if it matches a server-configured "
+                    "trusted binding; otherwise 422. Never authoritative on its own.")
+    shift_id: str | None = Field(default=None, pattern=ID_PATTERN,
+                                 description="Optional; see site_id.")
+
+
+BindingStatus = Literal["catalog_verified", "legacy_unverified"]
+ContextStatus = Literal["unavailable", "trusted_binding", "legacy_unverified"]
 
 
 class Session(ContractModel):
@@ -72,6 +88,20 @@ class Session(ContractModel):
     machine_id: str
     state_version: int
     created_at: datetime
+    dataset_manifest_sha256: str | None = Field(
+        default=None, description="Verified catalog snapshot this session was admitted under. Null for sessions "
+                                  "created before catalog binding existed (never attached retroactively).")
+    binding_status: BindingStatus = Field(
+        default="legacy_unverified",
+        description="catalog_verified: IDs checked against dataset_manifest_sha256 at creation. legacy_unverified: "
+                    "pre-upgrade session; its IDs were never checked.")
+    site_id: str | None = None
+    shift_id: str | None = None
+    context_status: ContextStatus = Field(
+        default="legacy_unverified",
+        description="unavailable: no trusted site/shift is known (not a default site). trusted_binding: site/shift "
+                    "matched a server-configured binding. legacy_unverified: pre-upgrade session.")
+    context_source: str | None = Field(default=None, description="Binding record that established site/shift.")
 
 
 # --------------------------------------------------------------------------- domain records
@@ -323,3 +353,8 @@ class ReadyResponse(ContractModel):
     database: bool
     checkpointer: bool
     version: str
+    catalog: bool = Field(default=False, description="Verified machine/operator catalog loaded; needed to admit "
+                                                     "new sessions. Existing sessions keep working without it.")
+    catalog_version: str | None = Field(default=None, description="Manifest SHA-256 of the loaded catalog.")
+    catalog_issue: str | None = Field(default=None, description="Sanitized reason code when catalog is false.")
+    schema_version: int | None = Field(default=None, description="Applied cocoon.db migration version.")

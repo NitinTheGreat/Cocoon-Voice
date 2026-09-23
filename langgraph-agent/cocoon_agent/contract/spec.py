@@ -107,16 +107,14 @@ ROUTES: tuple[Route, ...] = (
     # ------------------------------------------------------------------ implemented v1 (runtime today)
     Route("get", "/healthz", "implemented", "v1", ("public",), "Liveness"),
     Route("get", "/readyz", "implemented", "v1", ("public",), "Readiness"),
-    Route("post", "/v1/sessions", "implemented", "v1", ("voice_service", "simulator"),
+    Route("post", "/v1/sessions", "implemented", "I02a", ("voice_service", "simulator"),
           "Create or retrieve a session by client_session_key",
-          idempotency="client_session_key; conflicting immutable association → 409 session_conflict",
+          idempotency="client_session_key: an existing key is compared with its stored association first "
+                      "(200 or 409 session_conflict); only a new key is admitted against the verified catalog "
+                      "(422 unknown_machine, then unknown_operator; 503 catalog_unavailable).",
           target_changes=(
-              {"stage": "I02", "change": "Reject an unknown machine_id with 422 `unknown_machine` and an unknown "
-                                         "operator_id with 422 `unknown_operator` (catalog from I03). v1 accepts "
-                                         "any non-empty ID with 201; this is an intentional, documented tightening.",
-               "schema": "SessionCreateRequestTarget"},
-              {"stage": "I02", "change": "Optional site_id/shift_id; response adds model, site, shift, service date, "
-                                         "dataset manifest hash and clock mode.", "schema": "SessionTarget"},
+              {"stage": "I03/I07A", "change": "Response adds machine_model, service_date and clock_mode.",
+               "schema": "SessionTarget"},
           )),
     Route("post", "/v1/sessions/{session_id}/turns", "implemented", "v1", ("voice_service", "operator"),
           "Submit one finalized utterance (JSON result)",

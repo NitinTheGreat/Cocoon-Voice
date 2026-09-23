@@ -59,7 +59,7 @@ Owner key: **Data** = dataset/rules stream; **Backend** = `langgraph-agent`; **C
 | DG-13 | Follow-on resources: detector outputs, manual corpus by model/version, walkaround checklist, score formula, instructor availability, branching scenarios. | ADD-01, ADD-14–18 | Data + content | content / external | Per-source licence and version | R01–R10 |
 | DG-14 | Five-task benchmark inputs: rows lack quantity, ground condition, model identity and machine link. They must stay physically separate and must not be filled in. | REQ-05b | Backend | frozen reference | `provided_unverified` | I03B, I07B |
 | DG-15 | WESAD: no WESAD file, metadata, checksum or derived profile exists anywhere in the dataset. | SYS-06, ADD-04 | Data | external | Real source version/checksum/terms, or visible `unmet` status | I03B |
-| DG-16 | Session ↔ dataset binding: the backend never reads the dataset (no dataset-root setting) and accepts any `machine_id`/`operator_id` (I00 probe: `NO_SUCH_MACHINE` → 201). | REQ-01a, SYS-08, SYS-13 | Backend | runtime/config | Manifest version + hash recorded per session | I02, I03A |
+| DG-16 | Session ↔ dataset binding. **Partly closed in I02a:** the backend reads the catalog read-only from `DATASET_ROOT`, verifies the pinned manifest hash, rejects unknown IDs for new sessions and stores the manifest hash per session. Still open: no reviewed snapshot (the pin is a provisional local dev snapshot), and no site/shift data to bind (DG-01). | REQ-01a, SYS-08, SYS-13 | Backend + Data | runtime/config | Manifest version + hash recorded per session (done for new sessions) | I02a (done), I03A |
 
 ## Contract status after I01
 
@@ -84,7 +84,7 @@ I01 defines the **shape** of each missing input in the proposed contract (`contr
 | DG-15 | `Provenance.origin` includes `assumption_based`; no WESAD artefact format yet | WESAD source, checksum and processing (I03B) |
 | DG-16 | Catalog `MachineId`; target 422 `unknown_machine`/`unknown_operator`; `SessionTarget.dataset_manifest_sha256` | Catalog loading and enforcement (I02, I03A) |
 
-## Local dataset snapshot recorded in I01
+## Local dataset snapshot recorded in I01 (re-verified and pinned in I02a)
 
 Observed on 2026-09-24 in the working tree, read-only. `Cocoon_Dataset_v1/` is still **untracked** on `backend`, and I01 left it unstaged and unchanged.
 
@@ -94,6 +94,8 @@ Observed on 2026-09-24 in the working tree, read-only. `Cocoon_Dataset_v1/` is s
 | `data/generated/manifest.json` SHA-256 | `5d7de31c1856daf4179110a653d175891a102a53263356843792dd383f40e42d` |
 | Snapshot fingerprint (SHA-256 of `CHECKSUMS.sha256`) | `bdd55830094dcb413daa1ee8858f4240d8a57b225d63cc27b6288d311bd2b3d1` |
 | Checksum verification | `sha256sum -c CHECKSUMS.sha256`: 33/33 OK |
+
+I02a recomputed both digests with the same procedure (identical values) and pinned the manifest digest as `DATASET_MANIFEST_SHA256` (see `MIGRATIONS.md`). The backend verifies it at every start. The package fingerprint stays documentation only.
 
 This fingerprint identifies a **local, checksum-validated snapshot**. It is not a reviewed Git revision and not confirmation from the data owner. Before I03 extends the dataset, the data owner still needs to review and version it (commit it or publish a reviewed hash).
 

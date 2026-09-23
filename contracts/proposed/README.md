@@ -47,7 +47,7 @@ The contract checks prove that schemas are well formed, fixtures behave as label
 
 This increment changes nothing in `livekit-voice/`. When phase-2 integration is assigned, the adapter should:
 
-1. Create or reuse the backend session from trusted room/participant context, sending a catalog `machine_id` (the target rejects unknown IDs with 422 `unknown_machine`).
+1. Create or reuse the backend session from trusted room/participant context, sending a catalog `machine_id` and `operator_id`. Since I02a, a new session with an unknown ID gets 422 `unknown_machine` / `unknown_operator`.
 2. Apply the wake gate and final-turn detection locally. Send one finalized utterance with one stable `turn_id`, reused on every retry, with `Accept: text/event-stream`.
 3. Parse SSE incrementally as above. Validate schema, session, turn, response, event identity and sequence. Track the last received event, the speech admitted to TTS and the reported playback separately.
 4. Feed only `speech.delta.data.text` of the current response to TTS. Never speak progress events, and never re-speak `turn.completed.speech`.

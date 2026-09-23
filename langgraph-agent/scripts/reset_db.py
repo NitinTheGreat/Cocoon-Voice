@@ -1,6 +1,8 @@
-"""Create the schema and seed demo data (idempotent). --wipe deletes this service's SQLite files first.
+"""Apply pending migrations and seed demo data (idempotent). --wipe deletes this service's SQLite files first.
 
     python scripts/reset_db.py [--wipe]
+
+--wipe is destructive and irreversible; back up first with scripts/backup_db.py (see docs/MIGRATIONS.md).
 """
 
 from __future__ import annotations
@@ -27,9 +29,10 @@ def main() -> None:
                     p.unlink()
                     print(f"deleted {p}")
     store = Store(settings.db_path)
-    store.init_schema()
+    applied = store.init_schema()
     store.seed_demo()
-    print(f"schema ready and demo data seeded in {settings.db_path}")
+    print(f"schema version {store.schema_version()} ready ({', '.join(applied) or 'no migrations pending'}); "
+          f"demo data seeded in {settings.db_path}")
     print(f"tasks={len(store.list_tasks())} lessons={len(store.list_lessons())}")
     store.close()
 

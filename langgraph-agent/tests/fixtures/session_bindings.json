@@ -1,0 +1,14 @@
+{
+  "schema": "cocoon.session-bindings.v1",
+  "origin": "synthetic_test_fixture: server-controlled demo binding; not dataset site/shift data",
+  "catalog_manifest_sha256": "024be1a5bd7ad58bc33350ef7a64ddc37269c604d89147087de06013951c4e3f",
+  "bindings": [
+    {
+      "binding_id": "BIND_TEST_1",
+      "operator_id": "OP_TEST_1",
+      "machine_id": "EXC_DEMO_001",
+      "site_id": "SITE_FIXTURE_A",
+      "shift_id": "SHIFT_FIXTURE_A_DAY1"
+    }
+  ]
+}

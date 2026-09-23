@@ -14,7 +14,8 @@ ShortText = Annotated[str, Field(min_length=1, max_length=500)]
 
 MachineId = Annotated[str, Field(
     pattern=ID_PATTERN, max_length=128,
-    description="Exact catalog asset ID. Validated against the dataset machine catalog at runtime (target I02/I03); "
+    description="Exact catalog asset ID. Checked against the verified catalog when a session is created (since "
+                "I02a); "
                 "an unknown ID is rejected with 422 unknown_machine.",
     examples=["EXC_DEMO_001", "DOZ_DEMO_001", "LDR_DEMO_001", "TRK_DEMO_001", "BHL_DEMO_001"],
 )]
@@ -59,10 +60,10 @@ ProposedErrorCode = Literal[
     # existing v1 codes (unchanged meaning)
     "unauthorized", "not_found", "validation_error", "idempotency_conflict", "session_conflict",
     "llm_unavailable", "turn_failed", "internal_error",
+    # implemented in I02a (runtime): new-session catalog admission
+    "unknown_machine", "unknown_operator", "catalog_unavailable",
     # proposed additions (additive per API_CONTRACT.md)
     "forbidden",               # 403: authenticated principal lacks scope for this resource
-    "unknown_machine",         # 422: machine_id is not in the catalog
-    "unknown_operator",        # 422: operator_id is not in the roster
     "invalid_cursor",          # 422: negative, future, foreign or inconsistent after/Last-Event-ID
     "replay_expired",          # 410: required stream history is past retention; use recovery.status_url
     "version_conflict",        # 409: expected_version is stale

@@ -71,21 +71,38 @@ pytest tests/test_contract.py
 | 401 | `unauthorized` | no |
 | 404 | `not_found` (unknown session, turn or announcement) | no |
 | 409 | `session_conflict`, `idempotency_conflict` | no (client bug) |
-| 422 | `validation_error` (with `details`) | no |
+| 422 | `validation_error` (with `details`); `unknown_machine`, `unknown_operator` (new sessions, since I02a) | no |
 | 500 | `internal_error` | yes, with the **same** IDs |
 | 503 | `llm_unavailable`, `turn_failed` | yes, with the **same** IDs |
+| 503 | `catalog_unavailable` (no verified catalog loaded; new sessions only) | no, until the server is fixed |
 
 ## Endpoints
 
 | Method and path | Purpose | Success |
 |---|---|---|
-| `POST /v1/sessions` | Create the session idempotently, keyed by `client_session_key` | `201` created, `200` existing. `409` if the key is already bound to a different room, participant, operator or machine. |
+| `POST /v1/sessions` | Create the session idempotently, keyed by `client_session_key` | `201` created, `200` existing. `409` if the key is already bound to a different room, participant, operator, machine, site or shift. A **new** key must name catalog IDs: `422 unknown_machine` (checked first) / `unknown_operator`; `503 catalog_unavailable` if no verified catalog is loaded. See "Client migration note (I02a)". |
 | `POST /v1/sessions/{session_id}/turns` | Submit one completed utterance and run LangGraph | `200` completed. `202` means the same `turn_id` is still processing. `409` means the ID was reused with different text or source. |
 | `GET /v1/sessions/{session_id}/turns/{turn_id}` | Read a turn's status and stored result | `200` with `status` `processing`, `completed` or `failed` |
 | `GET /v1/sessions/{session_id}/state` | Read tasks, incidents, training assignments, lessons, active and latest alert, pending question and `state_version` | `200` |
 | `POST /v1/sessions/{session_id}/telemetry` | Post one **simulated** sensor sample | `200`. A repeat of the same `event_id` returns `duplicate: true`. `409` if the payload differs. |
 | `GET /v1/sessions/{session_id}/events?after={cursor}&limit=20` | Read retained announcements with `sequence > after`. Reading does not consume them. | `200` with `next_cursor` and `has_more` |
 | `POST /v1/sessions/{session_id}/events/{event_id}/delivery` | Record a playback outcome, one record per `consumer_id` (last write wins) | `200` |
+
+### Client migration note (I02a)
+
+For the voice worker, simulator and any other caller of `POST /v1/sessions`. Writing this note does not mean the voice owner has read it or changed the worker. That handoff is still open.
+
+- `cat-320-demo` (and any other free-text machine or operator ID) is **no longer accepted for a new session**. There is no alias: use the exact catalog asset ID. With the local development catalog (`DATASET_MANIFEST_SHA256` `5d7de31c…40e42d`; provisional, not reviewed by the data owner), the five assets are `EXC_DEMO_001` (Cat 320), `DOZ_DEMO_001` (Cat D6), `LDR_DEMO_001` (Cat 950 GC), `TRK_DEMO_001` (Cat 793) and `BHL_DEMO_001` (Cat 420). Operators are `OP_DEMO_1_1` … `OP_DEMO_5_3`. Membership is not authorisation or a machine assignment.
+- Retries of an **existing** `client_session_key` keep their original association and get 200, even with old free-text IDs. To switch an old room/participant to catalog IDs, use a new `client_session_key`; the old session stays readable.
+- `site_id`/`shift_id` are optional. Send them only together, and only when the backend operator has configured a matching trusted binding; otherwise the answer is 422. Without them the session reports `context_status: unavailable`.
+- Responses add `dataset_manifest_sha256`, `binding_status` (`catalog_verified` or `legacy_unverified`), `site_id`, `shift_id`, `context_status` and `context_source`. The worker's models ignore unknown response fields.
+
+Valid new-session request against the development catalog:
+
+```json
+{"client_session_key": "lk:cocoon-demo-room:op-demo-1-1", "room_name": "cocoon-demo-room",
+ "participant_identity": "op-demo-1-1", "operator_id": "OP_DEMO_1_1", "machine_id": "EXC_DEMO_001"}
+```
 
 ### Turns: idempotency and retries
 
@@ -147,7 +164,7 @@ Example bodies are in `contracts/examples/`, including a completed turn, a turn 
 |---|---|---|---|---|---|
 | `GET /healthz` | implemented | v1 | public | Liveness | Unchanged. |
 | `GET /readyz` | implemented | v1 | public | Readiness of SQLite and the checkpointer | Unchanged. |
-| `POST /v1/sessions` | implemented | v1 | voice, simulator | Idempotent create by `client_session_key` | Target I02: unknown `machine_id` → 422 `unknown_machine`, unknown `operator_id` → 422 `unknown_operator`. Optional `site_id`/`shift_id`. See the decision below. |
+| `POST /v1/sessions` | implemented | I02a | voice, simulator | Idempotent create by `client_session_key`; new keys admitted against the verified catalog | **Implemented in I02a:** 422 `unknown_machine`/`unknown_operator`, 503 `catalog_unavailable`, optional `site_id`/`shift_id` checked against trusted bindings, and binding fields in the response. Still proposed: `machine_model`, `service_date`, `clock_mode`. |
 | `POST /v1/sessions/{session_id}/turns` | implemented | v1 | voice, operator | JSON turn: 200 completed, 202 processing, 409 conflict | Target I04/I08: optional `language`, `client_context`, `supersedes_turn_id`; response adds `action_results`, `response_id`. `actions` keeps the v1 shape. |
 | `GET /v1/sessions/{session_id}/turns/{turn_id}` | implemented | v1 | voice, operator | Authoritative status and saved result | Target I08: recovery fields (`last_sequence`, replay window, partial `generated_speech`). `cancelled` appears only for runs cancelled through the new cancel route. |
 | `GET /v1/sessions/{session_id}/state` | implemented | v1 | voice, operator | Bound operator snapshot | Target I02–I15: additive dashboard, structured incidents, operator alerts, learner progress, approvals, SOS and own wellbeing. Operator projection only. |
@@ -181,9 +198,9 @@ Field-level definitions are in `contracts/proposed/openapi.json` and the standal
 
 ### Compatibility decisions
 
-- **Unknown machine or operator (intentional tightening).** v1 accepts any non-empty `machine_id`/`operator_id` with 201 (observed in I00). That is a known gap, not the desired behaviour. Target (I02, using the I03 catalog): 422 with `code: unknown_machine` or `code: unknown_operator`, following the existing lowercase snake_case error-code convention. It changes behaviour for callers that send free-text IDs such as `cat-320-demo`. Migration: the voice worker and simulator must send a catalog asset ID (`EXC_DEMO_001`, `DOZ_DEMO_001`, `LDR_DEMO_001`, `TRK_DEMO_001`, `BHL_DEMO_001`) before I02 enforces it; I02 records the switch in its handoff.
+- **Unknown machine or operator (intentional tightening, IMPLEMENTED in I02a).** Before I02a, any non-empty `machine_id`/`operator_id` got 201 (observed in I00). A new session now needs catalog IDs: 422 `unknown_machine` (checked first; if both are unknown, the details name both fields) or `unknown_operator`. This follows the existing lowercase snake_case error-code convention. Retries of an existing `client_session_key` are compared with the stored association first, so pre-upgrade sessions stay retrievable. See the migration note below and `langgraph-agent/docs/MIGRATIONS.md`.
 - **Additive everywhere else.** The target request/response models for the seven routes subclass the v1 Pydantic models: every v1 field keeps its meaning and new fields are optional. `tests/test_proposed_contract.py` checks that every committed v1 example is still valid under its target model.
-- **New error codes** (additive): `forbidden` (403), `unknown_machine`, `unknown_operator`, `invalid_cursor` (422), `replay_expired` (410), `version_conflict`, `decision_conflict`, `approval_expired` (409), `consent_required` (403), `rate_limited` (429 with `Retry-After`), `payload_too_large` (413), `capability_unavailable` (503). Errors gain an optional `recovery` object (`status_url`, `resume_after`, `retry_after_ms`).
+- **New error codes** (additive). Implemented in I02a: `unknown_machine`, `unknown_operator` (422), `catalog_unavailable` (503). Proposed: `forbidden` (403), `invalid_cursor` (422), `replay_expired` (410), `version_conflict`, `decision_conflict`, `approval_expired` (409), `consent_required` (403), `rate_limited` (429 with `Retry-After`), `payload_too_large` (413), `capability_unavailable` (503). Errors gain an optional `recovery` object (`status_url`, `resume_after`, `retry_after_ms`).
 - **Action results.** v1 `actions[]` (discriminated by `type`) stays. The target adds `action_results[]` of `PublicActionResult`: `action_id`, `action_name` (finite allowlist), `status` (`completed`, `failed`, `unknown`), real `record_id`, safe `summary` and discriminated `details`. v1 → target names: `next_task` → `get_next_task`, `incident_logged` → `log_incident`, `information_requested` → `request_clarification`, `training_assigned` → `assign_lesson`, `training_status` → `get_training_status`, `alert_explained` → `explain_alert`, `pending_cancelled` → `cancel_pending`. `apply_schedule` and `notify_supervisor` are never turn actions: a turn can only complete `request_supervisor_approval` with `approval_status: pending`.
 - **Live LLM provider.** Vertex AI through ADC is the selected provider (`GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, `GOOGLE_GENAI_USE_VERTEXAI=true`, configurable `VERTEX_MODEL`). The current Anthropic implementation is a mismatch scheduled for replacement in I04. The HTTP contract does not depend on the provider.
 

@@ -1,6 +1,6 @@
 {
   "route": "POST /v1/sessions",
-  "note": "Known gap. v1 runtime today returns 201 (observed in I00). Target (I02) returns 422 unknown_machine.",
+  "note": "Implemented in I02a: a new session with an unknown machine gets 422 unknown_machine. Before I02a the runtime returned 201 (observed in I00).",
   "steps": [
     {
       "request": {
@@ -26,7 +26,7 @@
           }
         }
       },
-      "observed_v1_runtime_status": 201
+      "pre_I02a_runtime_status": 201
     }
   ]
 }

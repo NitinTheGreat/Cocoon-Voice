@@ -13,7 +13,7 @@
       "schema": "ProposedErrorResponse",
       "layer": "public",
       "expect": "valid",
-      "note": "TARGET (I02) response for an unknown machine. The v1 runtime currently returns 201."
+      "note": "Response for an unknown machine on a new session. Implemented in I02a (runtime example: contracts/examples/error_unknown_machine.response.json)."
     },
     {
       "file": "valid/me_operator.response.json",

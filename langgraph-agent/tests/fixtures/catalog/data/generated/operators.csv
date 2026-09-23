@@ -1,0 +1,4 @@
+operator_id,operator_skill,source_origin,is_simulated
+OP_TEST_1,beginner,synthetic_test_fixture,true
+OP_TEST_2,intermediate,synthetic_test_fixture,true
+OP_TEST_3,expert,synthetic_test_fixture,true

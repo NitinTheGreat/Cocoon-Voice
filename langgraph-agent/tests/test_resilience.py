@@ -52,8 +52,8 @@ class FlakyComposeBrain(MockBrain):
 
 async def _session(client: httpx.AsyncClient) -> str:
     r = await client.post("/v1/sessions", json={
-        "client_session_key": "lk:r:p", "room_name": "r", "participant_identity": "p", "operator_id": "op",
-        "machine_id": "m"})
+        "client_session_key": "lk:r:p", "room_name": "r", "participant_identity": "p", "operator_id": "OP_TEST_1",
+        "machine_id": "EXC_DEMO_001"})
     return r.json()["session_id"]
 
 

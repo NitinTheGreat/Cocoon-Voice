@@ -36,24 +36,17 @@ class MeResponse(Strict):
 
 
 class SessionCreateRequestTarget(s.SessionCreateRequest):
-    """Additive target of POST /v1/sessions. The five v1 fields are unchanged; site/shift are optional.
-
-    Target validation (I02, with the I03 catalog): unknown machine_id → 422 `unknown_machine`; unknown
-    operator_id → 422 `unknown_operator`. The v1 runtime accepts any non-empty ID with 201. That is a recorded
-    gap and an intentional, documented tightening, not the intended behaviour."""
-
-    site_id: SiteId | None = None
-    shift_id: ShiftId | None = None
+    """POST /v1/sessions body. Since I02a the runtime model already carries everything targeted here: catalog
+    admission (unknown_machine / unknown_operator) and optional site_id/shift_id checked against trusted bindings.
+    Kept as a named target so the proposed spec and fixtures stay stable."""
 
 
 class SessionTarget(s.Session):
-    """Additive target of the session resource."""
+    """Additive target of the session resource. site/shift, dataset_manifest_sha256 and binding status are
+    implemented since I02a (inherited from the runtime model); these fields remain proposed."""
 
     machine_model: str | None = Field(default=None, max_length=64, examples=["Cat 320"])
-    site_id: SiteId | None = None
-    shift_id: ShiftId | None = None
     service_date: date | None = Field(default=None, description="Site-local date the shift belongs to.")
-    dataset_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     clock_mode: Literal["live", "replay"] | None = None
 
 

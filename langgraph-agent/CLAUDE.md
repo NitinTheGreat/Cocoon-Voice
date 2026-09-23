@@ -82,7 +82,7 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 - Provide a text CLI or HTTP smoke script that runs the real backend without LiveKit dependencies or credentials. Keep the simulator similarly independent.
 - README must state exact installation, configuration, database initialization, startup, shutdown, and test commands, plus PowerShell/Bash differences. Record the working directory for each command.
 - Document selected environment variable names in `.env.example`: service token, database location, mock/live mode, provider key/model, and network settings. Never store values in this file.
-- **Commands currently verified** (I01, 2026-09-24, base `f8afb4d`, Python 3.11.15, mock mode, run from `langgraph-agent/`): `python -m pytest -q` (203 passed: 57 existing + 146 proposed-contract checks), `python scripts/export_openapi.py --check` (runtime contract up to date), `python scripts/export_proposed_contract.py --check` (proposed contract up to date), `python -m cocoon_agent` + `python scripts/smoke.py --base-url ...` (SMOKE OK). Environment and exact results are in `docs/HANDOFF.md`.
+- **Commands currently verified** (I02a, 2026-09-24, base `6bcbf88`, Python 3.11.15, mock mode, run from `langgraph-agent/`): `python -m pytest -q` (248 passed, 1 skipped: symlink test on Windows), `python scripts/export_openapi.py --check`, `python scripts/export_proposed_contract.py --check`, `python -m cocoon_agent` + `python scripts/smoke.py --base-url ...` (SMOKE OK against the pinned local dataset), `python scripts/backup_db.py`. Environment and exact results are in `docs/HANDOFF.md`.
 - Two contracts: `../contracts/openapi.yaml` is what runs (generated from `api/schemas.py`); `../contracts/proposed/` is the frozen target (generated from `cocoon_agent/contract/`, never imported by the app). Implement a proposed route by moving it into the app in its stage, then regenerate both.
 - Focus checks on contract conformance; persisted incident retrieval; duplicate/conflicting turns; pending follow-ups and session isolation; repeated/reset alerts; event delivery/cursors; restart persistence; and uncertain outcomes after timeouts.
 - Run only checks relevant to the change and required integration gates. Add tests for consequential behavior, not for documentation edits or trivial implementation details.
@@ -113,9 +113,9 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Area | Status | Evidence / next action |
 | --- | --- | --- |
 | Architecture | DESIGN AGREED | Independent HTTP services; FastAPI + LangGraph backend; LiveKit voice client. |
-| Existing code and dependencies | DONE (v1 prototype) | I00 installed pinned deps on Python 3.11.15; 57 tests pass. Versions are in `docs/HANDOFF.md`. |
+| Existing code and dependencies | DONE (v1 prototype + I02a storage) | Pinned deps on Python 3.11.15, unchanged. cocoon.db is versioned (`schema_migrations` v2, `docs/MIGRATIONS.md`). New sessions require the verified catalog (`DATASET_ROOT`, pinned `DATASET_MANIFEST_SHA256`: a provisional local snapshot, not data-owner reviewed). |
 | Canonical contract and consumer compatibility | DONE (7 v1 routes); target contract PROPOSED (I01) | Runtime: `export_openapi.py --check` passes. Target: `contracts/proposed/` with 18 proposed operations and 100 fixtures; `export_proposed_contract.py --check` and `test_proposed_contract.py` pass. Proposed routes are **not implemented**. |
-| Graph, persistence, actions, and proactive flow | DONE (v1 prototype, mock) | Seven-intent router, SQLite idempotency, prototype seatbelt rule and "Why?". No form requirement is fully met; see `docs/FEATURE_MATRIX.md`. |
+| Graph, persistence, actions, and proactive flow | DONE (v1 prototype, mock); I02 PARTIAL | Seven-intent router, SQLite idempotency, prototype seatbelt rule and "Why?". I02a added catalog-bound sessions (422 `unknown_machine`/`unknown_operator`; legacy sessions `legacy_unverified`; site/shift only from trusted bindings). Actor auth, consent and the action ledger are not done. |
 | Live LLM provider | DECIDED: Vertex (migration TODO in I04) | Vertex AI via ADC is selected (`GOOGLE_CLOUD_PROJECT=orbit-507316`, `GOOGLE_CLOUD_LOCATION=global`, configurable `VERTEX_MODEL`). The code still uses Anthropic; replacement and model/access verification happen in I04. Never read credential files. |
 | Commands, real HTTP integration, and live audio | PARTIAL | Mock-mode real HTTP smoke passed. The voice worker is not connected. Live audio is UNVERIFIED. |
 
@@ -125,11 +125,12 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | --- | --- | --- | --- | --- |
 | I00 scope audit | Naif Naqeeb / `backend` | DONE | `docs/FEATURE_MATRIX.md`, `docs/DATA_GAPS.md`, `docs/HANDOFF.md`, root plan; no contract change. | Assign I01. |
 | I01 contract freeze | Naif Naqeeb / `backend` | DONE (contract only) | `API_CONTRACT.md`, `contracts/proposed/**`, `cocoon_agent/contract/**`; runtime schemas unchanged. | Assign I02a. |
-| I02a catalog-bound sessions + migrations | Unassigned / `backend` | TODO | `store.py` migrations, settings, `POST /v1/sessions` 422 `unknown_machine`/`unknown_operator`; both contracts regenerated. | Data-owner snapshot confirmation; voice owner told about catalog IDs. |
+| I02a catalog-bound sessions + migrations | Naif Naqeeb / `backend` | DONE | migrations, catalog, session admission, backup script, both contracts regenerated. | Assign I02b. |
+| I02b actor auth + `/v1/me` | Unassigned / `backend` | TODO | hashed opaque actor tokens, provisioning CLI, principal resolution, `GET /v1/me`. | Service token unchanged; no default secrets. |
 
 ### Latest handoff
 
-- **Recorded:** 2026-09-24, I01 on `backend` from base `f8afb4d`. Full record, checks and migration notes are in `docs/HANDOFF.md`.
-- **Next action:** I02a, catalog-bound sessions on a versioned schema.
-- **Blocking information:** dataset snapshot not yet reviewed or versioned by its owner (local fingerprint in `docs/DATA_GAPS.md`); Vertex migration pending (I04); DG-01..DG-16 data, content and published guidance still missing; no client integration.
+- **Recorded:** 2026-09-24, I02a on `backend` from base `6bcbf88`. Full record, checks, restart evidence and handoffs are in `docs/HANDOFF.md`.
+- **Next action:** I02b, scoped actor authentication and `/v1/me`.
+- **Blocking information:** the dataset snapshot is pinned but not reviewed or versioned by its owner; the voice worker must switch to catalog IDs before remote integration (note in API_CONTRACT.md, not yet acknowledged); the Vertex migration is pending (I04); DG-01 site/shift and the other data/content/guidance gaps remain; no client integration.
 - **For every subsequent handoff record:** UTC time; owner/branch and base commit if known; task; changed paths; behavior now working; exact checks and results; contract changes; remaining risks/blockers; next actionable step. Never invent an identity, commit, command result, or completion claim.

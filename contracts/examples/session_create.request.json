@@ -1,7 +1,7 @@
 {
-  "client_session_key": "lk:cocoon-demo-room:operator-7",
+  "client_session_key": "lk:cocoon-demo-room:op-demo-1-1",
   "room_name": "cocoon-demo-room",
-  "participant_identity": "operator-7",
-  "operator_id": "operator-7",
-  "machine_id": "cat-320-demo"
+  "participant_identity": "op-demo-1-1",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001"
 }
