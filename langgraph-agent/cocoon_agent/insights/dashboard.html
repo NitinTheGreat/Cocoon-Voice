@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cocoon Insights</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f5f1; --card:#fff; --ink:#1d1d1b; --muted:#6b6a64; --accent:#f2b705; --line:#e4e2da; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --card:#1f1f1d; --ink:#f1f0ea; --muted:#a3a198; --line:#33322f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:20px 16px 8px; max-width:1100px; margin:auto; }
+  h1 { margin:0 0 4px; font-size:22px; } .muted { color:var(--muted); }
+  form { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  input, button { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
+  input { min-width:200px; flex:1; } button { background:var(--accent); color:#1d1d1b; border:0; font-weight:600; cursor:pointer; }
+  main { max-width:1100px; margin:auto; padding:8px 16px 32px; display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
+  .wide { grid-column:1 / -1; } .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px; }
+  .kpi b { display:block; font-size:24px; } h2 { font-size:15px; margin:0 0 8px; }
+  ul { margin:6px 0 0; padding-left:18px; } li { margin:3px 0; } #error { color:#c0392b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cocoon Insights</h1>
+  <div class="muted">One operator's voice-assistant usage: sessions, questions and topics.</div>
+  <form id="f">
+    <input id="emp" placeholder="Employee ID (e.g. OP_DEMO_1_1)" required>
+    <input id="tok" type="password" placeholder="Bearer token (service or operator token)" required>
+    <button>Load</button>
+  </form>
+  <div id="error"></div>
+</header>
+<main id="out" hidden>
+  <section class="card wide"><div class="kpis" id="kpis"></div></section>
+  <section class="card wide"><h2>Summary</h2><div id="summary"></div><ul id="recs"></ul><div class="muted" id="source"></div></section>
+  <section class="card"><h2>Questions per day (last 14 days)</h2><canvas id="c_day"></canvas></section>
+  <section class="card"><h2>Topics</h2><canvas id="c_topic"></canvas></section>
+  <section class="card"><h2>Hour of day (UTC)</h2><canvas id="c_hour"></canvas></section>
+  <section class="card"><h2>Backend actions</h2><canvas id="c_act"></canvas></section>
+  <section class="card wide"><h2>Recent questions</h2><ul id="recent"></ul></section>
+</main>
+<script>
+const charts = {};
+function draw(id, type, labels, data, opts = {}) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), { type, data: { labels, datasets: [{ data, backgroundColor:
+    ["#f2b705","#3a7ca5","#d1495b","#66a182","#8e6c8a","#edae49","#9a9a9a"], borderColor: "#f2b705" }] },
+    options: { plugins: { legend: { display: type === "doughnut" } }, ...opts } });
+}
+function text(el, value) { document.getElementById(el).textContent = value ?? ""; }
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault(); text("error", "");
+  const emp = document.getElementById("emp").value.trim(), tok = document.getElementById("tok").value.trim();
+  try {
+    const r = await fetch(`/v1/insights/users/${encodeURIComponent(emp)}/analytics`, { headers: { Authorization: `Bearer ${tok}` } });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body?.error?.message || `HTTP ${r.status}`);
+    const s = body.stats, e2 = body.employee || {};
+    document.getElementById("kpis").innerHTML = "";
+    for (const [k, v] of [["Machine", e2.machine_model || e2.machine_id || "—"], ["Sessions", s.total_sessions],
+                          ["Questions", s.total_questions], ["Answered", s.answered], ["Days active", s.days_active],
+                          ["Per session", s.avg_questions_per_session]]) {
+      const d = document.createElement("div"); d.className = "kpi"; d.innerHTML = `<span class="muted"></span><b></b>`;
+      d.children[0].textContent = k; d.children[1].textContent = v; document.getElementById("kpis").appendChild(d);
+    }
+    const sm = body.summary || {};
+    text("summary", sm.status === "ok" ? sm.text : `Summary unavailable: ${sm.reason || "unknown"}`);
+    text("source", `Summary source: ${sm.source || "?"} · llm_mode ${body.llm_mode}`);
+    const recs = document.getElementById("recs"); recs.innerHTML = "";
+    for (const rec of sm.recommendations || []) { const li = document.createElement("li"); li.textContent = rec; recs.appendChild(li); }
+    draw("c_day", "bar", s.questions_per_day.map(x => x.date.slice(5)), s.questions_per_day.map(x => x.count));
+    draw("c_topic", "doughnut", body.topics.distribution.map(x => x.label), body.topics.distribution.map(x => x.count));
+    draw("c_hour", "bar", s.questions_by_hour_utc.map(x => x.hour), s.questions_by_hour_utc.map(x => x.count));
+    draw("c_act", "bar", s.actions.map(x => x.type), s.actions.map(x => x.count), { indexAxis: "y" });
+    const recent = document.getElementById("recent"); recent.innerHTML = "";
+    for (const q of body.recent_questions) {
+      const li = document.createElement("li"); li.textContent = `${q.asked_at.slice(0, 16).replace("T", " ")} · ${q.question} → ${q.reply || "(" + q.status + ")"}`;
+      recent.appendChild(li);
+    }
+    document.getElementById("out").hidden = false;
+  } catch (err) { text("error", String(err.message || err)); }
+});
+</script>
+</body>
+</html>
