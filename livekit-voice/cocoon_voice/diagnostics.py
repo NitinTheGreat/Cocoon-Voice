@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections import deque
+
+import numpy as np
 
 from .observability import percentile
 
@@ -43,6 +46,62 @@ class LoopLagMonitor:
         return {"n": len(values), "p50_ms": percentile(values, 50), "p95_ms": percentile(values, 95),
                 "p99_ms": percentile(values, 99), "max_ms": round(max(values), 1) if values else None,
                 f"over_{int(self.warn_ms)}ms": self.blocks_over_warn}
+
+
+class SttInputMonitor:
+    """Classifies a quiet STT window so the three failure kinds are not confused.
+
+    - no audio frames reached the STT node (not subscribed, track muted/unpublished, input stalled)
+    - audio frames arrived but were silent (muted microphone, nobody speaking, or filtered to silence)
+    - speech-level audio was sent but the STT returned no events (provider side)
+    "AssemblyAI no messages received" from the plugin alone only means the provider sent nothing, which is
+    normal while the operator is silent; the plugin does not reconnect because of it.
+    """
+
+    SILENT_DBFS = -50.0
+
+    def __init__(self, window_s: float = 15.0) -> None:
+        self.window_s = window_s
+        self._reset()
+
+    def _reset(self) -> None:
+        self.frames = 0
+        self.audio_s = 0.0
+        self.peak = 0
+        self.events = 0
+        self.finals = 0
+
+    def on_frame(self, frame) -> None:
+        self.frames += 1
+        self.audio_s += frame.samples_per_channel / max(1, frame.sample_rate)
+        data = np.frombuffer(frame.data, dtype=np.int16)
+        if data.size:
+            self.peak = max(self.peak, int(data.max()), -int(data.min()))
+
+    def on_event(self, *, final: bool) -> None:
+        self.events += 1
+        self.finals += int(final)
+
+    def close_window(self) -> tuple[str, str] | None:
+        """(kind, message) for a window without STT events, or None if STT produced events; then resets.
+
+        kind: "no_audio" | "silent_audio" | "no_transcripts"
+        """
+        try:
+            if self.events:
+                return None
+            if self.frames == 0:
+                return "no_audio", (f"no audio frames reached STT in {self.window_s:.0f}s "
+                                    "(participant track not subscribed, muted/unpublished, or input stalled)")
+            peak_dbfs = 20 * math.log10(max(self.peak, 1) / 32768)
+            if peak_dbfs < self.SILENT_DBFS:
+                return "silent_audio", (f"{self.audio_s:.0f}s of audio reached STT but it was silent "
+                                        f"(peak {peak_dbfs:.0f} dBFS): microphone muted, nobody speaking, "
+                                        "or filtered to silence")
+            return "no_transcripts", (f"{self.audio_s:.0f}s of audio with speech-level peaks ({peak_dbfs:.0f} dBFS) "
+                                      "was sent to STT but no transcripts or speech events came back")
+        finally:
+            self._reset()
 
 
 class TtsPacing:

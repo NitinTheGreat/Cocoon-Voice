@@ -37,7 +37,7 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 
 from . import speech_policy as sp
 from .config import ConfigError, VoiceSettings, get_settings
-from .diagnostics import LoopLagMonitor, TtsPacing
+from .diagnostics import LoopLagMonitor, SttInputMonitor, TtsPacing
 from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
 from .cartesia_auth import CartesiaTokenRefresher, describe_status
@@ -93,6 +93,7 @@ class VoiceController:
         self.overlap_verdicts = {"interruption": 0, "backchannel": 0, "agent_ended": 0}
         self.interruption_pending = False  # user audio overlapped our speech; SDK decides resume vs. new turn
         self.noise_processor = None
+        self.stt_input = SttInputMonitor()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -109,6 +110,7 @@ class VoiceController:
         session.on("error", self._on_error)
         self._spawn(self._timeout_loop())
         self._spawn(self.loop_lag.run())
+        self._spawn(self._stt_input_loop())
 
     def effective_interruption(self) -> str:
         """What the SDK actually runs (a configured 'adaptive' is not proof the detector is active)."""
@@ -345,9 +347,10 @@ class VoiceController:
 
     async def transcribe(self, agent: Agent, audio: AsyncIterable[rtc.AudioFrame],
                          model_settings: ModelSettings) -> AsyncIterable[stt.SpeechEvent]:
-        source = self.recorder.tap(audio) if self.recorder else audio
-        if self.router is None:  # transcript mode: STT hears the room continuously (idle cost applies)
+        source = self._tap_stt_input(self.recorder.tap(audio) if self.recorder else audio)
+        if self.router is None:  # transcript/off mode: STT hears the room continuously, also while ARMED
             async for ev in Agent.default.stt_node(agent, source, model_settings):
+                self._count_stt_event(ev)
                 yield ev
             return
         feeder = self._spawn(self.router.run(source))
@@ -358,10 +361,34 @@ class VoiceController:
                     return
                 log.info("acoustic wake: STT segment opened")
                 async for ev in Agent.default.stt_node(agent, segment, model_settings):
+                    self._count_stt_event(ev)
                     yield ev
                 log.info("STT segment closed (gate %s)", self.gate.state.value)
         finally:
             feeder.cancel()
+
+    async def _tap_stt_input(self, audio: AsyncIterable[rtc.AudioFrame]) -> AsyncIterable[rtc.AudioFrame]:
+        async for frame in audio:
+            self.stt_input.on_frame(frame)
+            yield frame
+
+    def _count_stt_event(self, ev) -> None:
+        if isinstance(ev, stt.SpeechEvent):
+            self.stt_input.on_event(final=ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT)
+
+    async def _stt_input_loop(self) -> None:
+        last_kind: str | None = None
+        while True:
+            await asyncio.sleep(self.stt_input.window_s)
+            diagnosis = self.stt_input.close_window()
+            if diagnosis is None or (self.router is not None and self.gate.state != WakeState.ACTIVE):
+                last_kind = None  # STT produced events, or an acoustic mode keeps STT closed while ARMED
+                continue
+            kind, message = diagnosis
+            # a silent operator is normal: report each kind once until it changes; always report lost transcripts
+            if kind != last_kind or kind == "no_transcripts":
+                log.info("stt input: %s", message)
+            last_kind = kind
 
     def _on_acoustic_wake(self) -> None:
         self._text_since_wake = False
@@ -431,9 +458,10 @@ class VoiceController:
         if getattr(item, "interrupted", False):
             self.metrics.interruption_confirmed()
             # With TTS-aligned transcripts the SDK stores only the words actually played.
-            log.info("assistant reply interrupted; history keeps %d played chars", len(item.text_content or ""))
+            log.info("playback interrupted: history keeps %d played chars", len(item.text_content or ""))
         else:  # finished (or resumed after a false interruption): an overlap was not an interruption
             self.metrics.interruption_abandoned()
+            log.info("playback completed: %d chars", len(item.text_content or ""))
 
     def _on_sdk_metrics(self, ev) -> None:
         m = ev.metrics
@@ -647,6 +675,12 @@ def main() -> None:
         log.info("worker-side enhancement: %s", "OFF (NOISE_CANCELLATION=none)" if settings.noise_cancellation == "none"
                  else f"krisp {settings.noise_profile}")
         log.info("transcript logging: %s", "ON (local only)" if settings.log_transcripts else "off")
+        # LiveKit's CLI installs its own console handler (text for `dev`, JSON for `start`). Drop the startup
+        # handler so every record is printed once, in one format.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        logging.getLogger("cocoon_voice").setLevel(settings.log_level)
     cli.run_app(build_server(settings))
 
 
