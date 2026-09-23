@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import queue
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -90,12 +92,17 @@ class SessionMetrics:
         self.reconnects = 0
         self._current: TurnTimeline | None = None
         self._pending_interrupt: float | None = None
+        self._stop_candidate_ms: float | None = None  # output stopped during user speech; cause not yet known
         self._dir = metrics_dir
         self._log_transcripts = log_transcripts
         self._file: Path | None = None
+        self._queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
+        self._writer: threading.Thread | None = None
         if metrics_dir is not None:
             metrics_dir.mkdir(parents=True, exist_ok=True)
             self._file = metrics_dir / f"session-{time.strftime('%Y%m%dT%H%M%S')}-{self.session_id}.jsonl"
+            self._writer = threading.Thread(target=self._write_loop, name="metrics-writer", daemon=True)
+            self._writer.start()
             self._write({"type": "session_start", "config": config})
 
     # ------------------------------------------------------------------ turns
@@ -117,8 +124,13 @@ class SessionMetrics:
         if self._current is not None and self._current.outcome == "open":
             self._current.outcome = outcome
             self._flush(self._current)
-            log.info("turn %s outcome=%s timings_ms=%s", self._current.turn_id, outcome,
-                     self._current.durations_ms())
+            if outcome.startswith("gated:"):
+                # routed away before the brain: not an answered turn (the route line says why)
+                log.info("turn %s not answered (%s)", self._current.turn_id, outcome)
+            else:
+                # generation outcome only; playback status is logged separately ("playback ...")
+                log.info("turn %s generation=%s timings_ms=%s", self._current.turn_id, outcome,
+                         self._current.durations_ms())
         self._current = None
 
     def _flush(self, turn: TurnTimeline) -> None:
@@ -132,15 +144,23 @@ class SessionMetrics:
         self._pending_interrupt = time.perf_counter()
 
     def output_stopped(self) -> None:
+        # Playout also stops when a reply ends naturally or the SDK pauses it for a possible false
+        # interruption; only interruption_confirmed() (reply stored as interrupted) makes it a sample.
         if self._pending_interrupt is not None:
-            ms = round((time.perf_counter() - self._pending_interrupt) * 1000, 1)
-            self.interruptions.append(InterruptionSample(ms))
-            self._write({"type": "interruption", "detected_to_stop_ms": ms})
-            log.info("interruption output stop after %.0f ms", ms)
+            self._stop_candidate_ms = round((time.perf_counter() - self._pending_interrupt) * 1000, 1)
             self._pending_interrupt = None
+
+    def interruption_confirmed(self) -> None:
+        if self._stop_candidate_ms is None:
+            return
+        ms, self._stop_candidate_ms = self._stop_candidate_ms, None
+        self.interruptions.append(InterruptionSample(ms))
+        self._write({"type": "interruption", "detected_to_stop_ms": ms})
+        log.info("interruption: output stopped %.0f ms after user speech onset", ms)
 
     def interruption_abandoned(self) -> None:
         self._pending_interrupt = None
+        self._stop_candidate_ms = None
 
     def provider_error(self, category: str) -> None:
         self.provider_errors[category] = self.provider_errors.get(category, 0) + 1
@@ -160,17 +180,28 @@ class SessionMetrics:
             self.end_turn("closed")
         summary = self.summary()
         self._write({"type": "session_summary", **summary})
+        if self._writer is not None:
+            self._queue.put(None)
+            self._writer.join(timeout=2)
         return summary
 
     def _write(self, record: dict) -> None:
+        """Queue a record; a writer thread does the file I/O so the audio event loop never blocks on disk."""
         if self._file is None:
             return
-        record = {"ts": time.time(), "session": self.session_id, **record}
-        try:
-            with self._file.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record) + "\n")
-        except OSError:
-            pass
+        self._queue.put(json.dumps({"ts": time.time(), "session": self.session_id, **record}, default=str))
+
+    def _write_loop(self) -> None:
+        assert self._file is not None
+        with self._file.open("a", encoding="utf-8") as fh:
+            while True:
+                line = self._queue.get()
+                if line is None:
+                    fh.flush()
+                    return
+                fh.write(line + "\n")
+                if self._queue.empty():
+                    fh.flush()
 
 
 def summarize(turns: list[TurnTimeline], interruptions_ms: list[float], errors: dict[str, int],

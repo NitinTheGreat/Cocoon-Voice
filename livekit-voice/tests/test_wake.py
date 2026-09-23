@@ -71,7 +71,7 @@ def test_repeated_wake_is_debounced_and_duplicate_finals_ignored():
     gate, clock = make()
     assert gate.on_utterance("Hey Cat").action == "ack"
     clock.now += 0.5
-    assert gate.on_utterance("hey cat.").reason == "duplicate final transcript"
+    assert gate.on_utterance("hey cat.").action == "ignore"  # duplicate wake phrase: debounced, no second ack
     clock.now += 1.2  # 1.7 s: past duplicate window, inside 2 s debounce
     assert gate.on_utterance("Hey Cat!").action == "ignore"
     clock.now += 5
@@ -119,12 +119,35 @@ def test_own_playback_echo_cannot_wake_the_armed_gate():
     assert d.action == "ignore" and "echo" in d.reason and gate.state == WakeState.ARMED
 
 
-def test_backchannels_during_assistant_speech_do_not_trigger_replies():
+def test_committed_backchannels_and_duplicates_are_never_dropped_into_silence():
+    """Regression (M10): by the time a turn reaches the gate the SDK has already interrupted the reply.
+
+    Ignoring "yeah" or a duplicate final here left the operator in silence. Backchannels are handled
+    earlier by adaptive interruption; a committed turn is answered exactly once.
+    """
     gate, clock = make()
     wake(gate, clock)
-    assert gate.on_utterance("yeah", overlapped_agent_speech=True).action == "ignore"
+    assert gate.on_utterance("yeah", overlapped_agent_speech=True).action == "respond"
     clock.now += 2
     assert gate.on_utterance("no, the left track", overlapped_agent_speech=True).action == "respond"
+    first = gate.on_utterance("what about the boom")
+    clock.now += 0.4
+    dup = gate.on_utterance("What about the boom?")
+    assert first.action == dup.action == "respond" and "duplicate" in dup.reason
+
+
+def test_single_word_controls_stay_commands():
+    gate, clock = make()
+    wake(gate, clock)
+    for word in ("stop", "wait", "hold on"):
+        clock.now += 2
+        assert gate.on_utterance(word.capitalize() + ".").action == "stop"
+    clock.now += 2
+    assert gate.on_utterance("okay, but I meant the other machine").action == "respond"  # not a backchannel
+    clock.now += 2
+    assert gate.on_utterance("yes").action == "respond"  # a real answer
+    clock.now += 2
+    assert gate.on_utterance("wait until the engine cools down?").action == "respond"  # not a bare command
 
 
 def test_porcupine_mode_activates_only_acoustically():

@@ -120,12 +120,35 @@ class NoiseSetup:
     degraded: bool
 
 
-def build_noise_cancellation(settings: VoiceSettings) -> NoiseSetup:
-    """Krisp through LiveKit Cloud. Never silently disabled: failure raises unless degraded mode is allowed."""
+def krisp_filter_active(processor) -> bool | None:
+    """True once Krisp VIVA has credentials and a live filter (it passes audio through unfiltered before that)."""
+    inner = getattr(processor, "_inner", None)
+    if inner is None:
+        return None
+    return getattr(inner, "_credentials", None) is not None and getattr(inner, "_filter", None) is not None
+
+
+def check_noise_cancellation(settings: VoiceSettings) -> None:
+    """Startup validation without constructing a native filter (one filter is built per session)."""
     if settings.noise_cancellation == "none":
         if not settings.allow_degraded_audio or settings.voice_profile == "production":
             raise ConfigError("NOISE_CANCELLATION=none requires ALLOW_DEGRADED_AUDIO=true in development")
-        return NoiseSetup(None, "DEGRADED:none (explicitly disabled)", True)
+        return
+    if _NOISE_IMPORT_ERROR is not None and not (settings.allow_degraded_audio
+                                                and settings.voice_profile != "production"):
+        raise ConfigError(f"NOISE_CANCELLATION=krisp could not be initialised ({type(_NOISE_IMPORT_ERROR).__name__})")
+
+
+def build_noise_cancellation(settings: VoiceSettings) -> NoiseSetup:
+    """Krisp through LiveKit Cloud, built once per session and passed to the SDK's room input.
+
+    NOISE_CANCELLATION=none (with ALLOW_DEGRADED_AUDIO=true) disables worker-side enhancement completely:
+    no processor is built or passed, and nothing re-enables it. Krisp frame processing and credential
+    updates run where the SDK calls them (per frame on the event loop); this module does not move them.
+    """
+    if settings.noise_cancellation == "none":
+        check_noise_cancellation(settings)
+        return NoiseSetup(None, "DEGRADED:none (worker-side enhancement disabled by NOISE_CANCELLATION=none)", True)
     try:
         if _NOISE_IMPORT_ERROR is not None:
             raise _NOISE_IMPORT_ERROR
