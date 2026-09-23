@@ -219,6 +219,81 @@ ACTOR_TOKENS: tuple[str, ...] = (
 )
 
 
+ASSIGNED_TASKS: tuple[str, ...] = (
+    # Server-controlled demo site data (seeded by scripts/seed_demo.py from a tracked synthetic fixture).
+    """CREATE TABLE sites (
+    site_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    utc_offset TEXT NOT NULL,
+    fixture_version TEXT NOT NULL,
+    provenance TEXT NOT NULL
+)""",
+    """CREATE TABLE site_zones (
+    site_zone_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    name TEXT NOT NULL,
+    zone_type TEXT NOT NULL,
+    outdoor INTEGER NOT NULL CHECK (outdoor IN (0, 1))
+)""",
+    """CREATE TABLE shifts (
+    shift_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    operator_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    service_date TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    catalog_manifest_sha256 TEXT NOT NULL,
+    fixture_version TEXT NOT NULL,
+    UNIQUE (operator_id, machine_id, service_date)
+)""",
+    # Per-shift task assignments with a versioned lifecycle (the three shared seed tasks stay untouched).
+    """CREATE TABLE task_assignments (
+    task_id TEXT PRIMARY KEY,
+    shift_id TEXT NOT NULL REFERENCES shifts(shift_id),
+    operator_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    site_zone_id TEXT NOT NULL REFERENCES site_zones(site_zone_id),
+    scheduled_order INTEGER NOT NULL,
+    scheduled_start_at TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    details TEXT NOT NULL,
+    work_quantity REAL,
+    work_unit TEXT,
+    weather_json TEXT NOT NULL,
+    duration_minutes INTEGER,
+    duration_source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'in_progress', 'completed')),
+    version INTEGER NOT NULL DEFAULT 1,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    UNIQUE (shift_id, scheduled_order)
+)""",
+    # One row per committed domain command (tap or graph tool): identity, fingerprint, outcome and result.
+    """CREATE TABLE command_log (
+    scope TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    turn_id TEXT,
+    outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed', 'unknown')),
+    record_type TEXT,
+    record_id TEXT,
+    summary TEXT NOT NULL,
+    state_version INTEGER,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (scope, command_id)
+)""",
+    "CREATE INDEX command_log_by_turn ON command_log(session_id, turn_id)",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -230,6 +305,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline_v1", BASELINE_STATEMENTS),
     Migration(2, "catalog_bound_sessions", CATALOG_BOUND_SESSIONS),
     Migration(3, "actor_tokens", ACTOR_TOKENS),
+    Migration(4, "assigned_tasks", ASSIGNED_TASKS),
 )
 
 

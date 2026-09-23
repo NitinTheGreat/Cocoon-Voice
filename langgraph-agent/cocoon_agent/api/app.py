@@ -264,6 +264,23 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
     async def get_turn(session_id: str, turn_id: str, service: Service) -> s.TurnResult:
         return service.get_turn(session_id, turn_id)
 
+    # ------------------------------------------------------------------ commands (taps; same service as the graph tools)
+
+    @app.post("/v1/sessions/{session_id}/commands", response_model=s.SessionCommandResult, tags=["commands"],
+              **v1({409: {"model": s.ErrorResponse, "description": (
+                  "idempotency_conflict (command_id reused with a different payload), version_conflict "
+                  "(expected_version is stale; details give the current version) or invalid_transition "
+                  "(the task is not in a state this command accepts)")}}, access=OwnedSession))
+    async def submit_command(session_id: str, body: s.SessionCommand, service: Service, principal: Caller,
+                             session: Annotated[s.Session, OwnedSession]) -> s.SessionCommandResult:
+        return service.execute_command(principal, session, body)
+
+    @app.get("/v1/sessions/{session_id}/commands/{command_id}", response_model=s.SessionCommandResult,
+             tags=["commands"], **v1(access=OwnedSession))
+    async def get_command(session_id: str, command_id: str, service: Service, principal: Caller,
+                          session: Annotated[s.Session, OwnedSession]) -> s.SessionCommandResult:
+        return service.get_command(principal, session, command_id)
+
     # ------------------------------------------------------------------ state
 
     @app.get("/v1/sessions/{session_id}/state", response_model=s.SessionState, tags=["state"],

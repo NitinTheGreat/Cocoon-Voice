@@ -133,7 +133,7 @@ def test_populated_v2_database_upgrades_to_v3_without_changes(tmp_path):
             c.close()
 
     before = snapshot()
-    assert store.init_schema() == ["applied:3"]
+    assert store.init_schema() == [f"applied:{m.version}" for m in MIGRATIONS[2:]]
     assert store.init_schema() == []
     store.close()
     assert snapshot() == before

@@ -27,7 +27,9 @@ from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
 from .rules import SEATBELT_RULE, seatbelt_condition
-from .store import Conflict, NewSessionBinding, Store, utcnow
+from .store import (
+    Conflict, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
+)
 
 log = logging.getLogger("cocoon_agent.service")
 
@@ -87,6 +89,12 @@ class CocoonService:
             code = "unknown_machine" if details[0]["field"] == "body.machine_id" else "unknown_operator"
             raise ApiError(422, code, "session association is not in the verified catalog", details=details)
         if req.site_id is None and req.shift_id is None:
+            auto = self._current_trusted_binding(req.operator_id, req.machine_id)
+            if auto is not None:
+                return NewSessionBinding(
+                    dataset_manifest_sha256=catalog.manifest_sha256, context_status="trusted_binding",
+                    site_id=auto.site_id, shift_id=auto.shift_id,
+                    context_source=f"session-bindings:{self.bindings.sha256}:{auto.binding_id}:auto")
             return NewSessionBinding(dataset_manifest_sha256=catalog.manifest_sha256, context_status="unavailable")
         if req.site_id is None or req.shift_id is None:
             raise ApiError(422, "validation_error", "site_id and shift_id must be supplied together",
@@ -103,6 +111,61 @@ class CocoonService:
             site_id=binding.site_id, shift_id=binding.shift_id,
             context_source=f"session-bindings:{self.bindings.sha256}:{binding.binding_id}",
         )
+
+    def _current_trusted_binding(self, operator_id: str, machine_id: str):
+        """Server-side choice (never client metadata): the single trusted binding for this operator/machine whose
+        seeded shift is for today's date at the site (site-local wall clock). None when there is no binding file,
+        no such shift, or more than one candidate."""
+        if self.bindings is None:
+            return None
+        now = utcnow()
+        candidates = []
+        for b in self.bindings.bindings:
+            if b.operator_id != operator_id or b.machine_id != machine_id:
+                continue
+            shift = self.store.get_shift(b.shift_id)
+            if shift and shift.site_id == b.site_id and shift.service_date == shift.local_date(now):
+                candidates.append(b)
+        return candidates[0] if len(candidates) == 1 else None
+
+    # ------------------------------------------------------------------ task commands (taps and graph tools)
+
+    def execute_command(self, principal: Principal, session: s.Session,
+                        req: s.SessionCommand) -> s.SessionCommandResult:
+        """Tap path. The same domain mutation as the graph tools; identity is scoped to the calling principal."""
+        fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
+                                    "payload": req.payload.model_dump(mode="json"),
+                                    "expected_version": req.expected_version})
+        result, duplicate = self.run_task_command(
+            scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind, fingerprint=fingerprint,
+            session=session, turn_id=None, task_id=req.payload.task_id, expected_version=req.expected_version)
+        return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
+                                      status="completed", duplicate=duplicate)
+
+    def run_task_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
+                         turn_id: str | None, task_id: str | None, expected_version: int | None) -> tuple[dict, bool]:
+        try:
+            return self.store.run_command(
+                scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
+                turn_id=turn_id, mutate=Store.task_transition(session, kind, task_id, expected_version))
+        except Conflict as exc:
+            raise ApiError(409, "idempotency_conflict", str(exc)) from exc
+        except NotFound as exc:
+            raise ApiError(404, "not_found", str(exc)) from exc
+        except VersionConflict as exc:
+            raise ApiError(409, "version_conflict", str(exc), details=[
+                {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
+        except InvalidTransition as exc:
+            raise ApiError(409, "invalid_transition", str(exc), details=[
+                {"field": "body.kind", "issue": f"task status is {exc.current_status}"}]) from exc
+
+    def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
+        row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
+        if row is None or row["session_id"] != session.session_id:
+            raise ApiError(404, "not_found", "command not found")
+        result = json.loads(row["result_json"])
+        return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
+                                      status="completed", duplicate=True)
 
     # ------------------------------------------------------------------ authentication and authorisation
 
@@ -282,6 +345,8 @@ class CocoonService:
             active_alerts=self.store.active_alerts(session_id),
             latest_alert=self.store.latest_alert(session_id),
             pending_question=s.PendingQuestion.model_validate(pending) if pending else None,
+            shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
+            assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
         )
 
     # ------------------------------------------------------------------ telemetry

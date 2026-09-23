@@ -13,7 +13,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from ..api import schemas as s
-from ..store import Store
+from ..store import InvalidTransition, NotFound, Store
 from .brain import Brain, TurnContext
 
 
@@ -79,18 +79,57 @@ def build_graph(store: Store, brain: Brain):
         return {"route": decision.model_dump()}
 
     def choose(state: CocoonState) -> Literal[
-        "next_task", "log_incident", "training", "explain_alert", "cancel_pending", "compose"
+        "tasks", "log_incident", "training", "explain_alert", "cancel_pending", "compose"
     ]:
         intent = state["route"]["intent"]
         if intent == "answer_pending":
             return "log_incident"  # the only pending question kind in v1
+        if intent in ("next_task", "list_tasks", "start_task", "complete_task"):
+            return "tasks"
         if intent == "smalltalk":
             return "compose"
         return intent
 
-    async def next_task(state: CocoonState) -> CocoonState:
-        task = store.next_task()
-        action = s.NextTaskAction(type="next_task", task=task)
+    async def tasks(state: CocoonState) -> CocoonState:
+        """Tasks branch. Bound sessions use their trusted shift's assignments; unbound/legacy sessions keep the
+        shared demo queue for next_task. Writes go through the same command executor as the tap route."""
+        session = _session(state)
+        intent = state["route"]["intent"]
+        if not session.shift_id:
+            if intent == "next_task":
+                return {"actions": [s.NextTaskAction(type="next_task", task=store.next_task()).model_dump(mode="json")]}
+            if intent == "list_tasks":
+                action = s.AssignedTasksAction(type="assigned_tasks", scope="all", tasks=[], shift_bound=False)
+            else:
+                action = s.TaskRejectedAction(type="task_rejected", reason="no_shift",
+                                              for_action="task.start" if intent == "start_task" else "task.complete")
+            return {"actions": [action.model_dump(mode="json")]}
+        assigned = store.list_assigned_tasks(session.shift_id)
+        if intent in ("next_task", "list_tasks"):
+            if intent == "next_task":
+                in_progress = [t for t in assigned if t.status == "in_progress"]
+                chosen = (in_progress or [t for t in assigned if t.status == "scheduled"])[:1]
+            else:
+                chosen = assigned
+            action = s.AssignedTasksAction(type="assigned_tasks", scope="next" if intent == "next_task" else "all",
+                                           tasks=chosen, shift_bound=True)
+            return {"actions": [action.model_dump(mode="json")]}
+        kind = "task.start" if intent == "start_task" else "task.complete"
+        command_id = f"{state['turn_id']}:{kind}"
+        try:
+            result, duplicate = store.run_command(
+                scope=f"turn:{session.session_id}", command_id=command_id, kind=kind,
+                fingerprint=f"{kind}:selector", session_id=session.session_id, turn_id=state["turn_id"],
+                mutate=Store.task_transition(session, kind, None, None))
+        except NotFound:
+            action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason="no_eligible_task")
+            return {"actions": [action.model_dump(mode="json")]}
+        except InvalidTransition as exc:
+            action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason="invalid_transition",
+                                          current_status=exc.current_status)
+            return {"actions": [action.model_dump(mode="json")]}
+        action = s.TaskTransitionAction(type="task_started" if kind == "task.start" else "task_completed",
+                                        task=result["task"], command_id=command_id, created=not duplicate)
         return {"actions": [action.model_dump(mode="json")]}
 
     async def log_incident(state: CocoonState) -> CocoonState:
@@ -141,7 +180,7 @@ def build_graph(store: Store, brain: Brain):
     g = StateGraph(CocoonState)
     g.add_node("load_context", load_context)
     g.add_node("route", route)
-    g.add_node("next_task", next_task)
+    g.add_node("tasks", tasks)
     g.add_node("log_incident", log_incident)
     g.add_node("training", training)
     g.add_node("explain_alert", explain_alert)
@@ -150,7 +189,7 @@ def build_graph(store: Store, brain: Brain):
     g.add_edge(START, "load_context")
     g.add_edge("load_context", "route")
     g.add_conditional_edges("route", choose)
-    for node in ("next_task", "log_incident", "training", "explain_alert", "cancel_pending"):
+    for node in ("tasks", "log_incident", "training", "explain_alert", "cancel_pending"):
         g.add_edge(node, "compose")
     g.add_edge("compose", END)
     return g

@@ -7,10 +7,10 @@ regenerate the committed spec with `python scripts/export_openapi.py`.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Union
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$"
 
@@ -37,6 +37,8 @@ ErrorCode = Literal[
     "catalog_unavailable",
     "forbidden",
     "auth_unavailable",
+    "version_conflict",
+    "invalid_transition",
 ]
 
 
@@ -115,6 +117,60 @@ class Task(ContractModel):
     details: str
     priority: Literal["low", "normal", "high"]
     status: Literal["pending", "in_progress", "done"]
+
+
+class TaskConditions(ContractModel):
+    source: Literal["synthetic_demo_fixture"] = Field(
+        description="Where the conditions come from. Only a synthetic fixture exists until live weather (Batch C).")
+    summary: str | None = None
+    temperature_c: float | None = None
+
+
+class TaskDuration(ContractModel):
+    minutes: int | None = None
+    source: Literal["demo_supplied_estimate"] = Field(
+        description="A supplied demo figure, not a calibrated prediction (the estimator is Batch C).")
+
+
+class AssignedTask(ContractModel):
+    """A task assigned to the session's operator/machine for its trusted shift. Versioned for command concurrency."""
+
+    task_id: str
+    shift_id: str
+    machine_id: str
+    site_zone_id: str
+    zone_name: str
+    scheduled_order: int
+    scheduled_start_at: datetime
+    scheduled_start_local: str = Field(description="HH:MM at the site (site UTC offset).")
+    task_type: str
+    title: str
+    details: str
+    work_quantity: float | None = None
+    work_unit: str | None = None
+    status: Literal["scheduled", "in_progress", "completed"]
+    version: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    weather: TaskConditions
+    duration: TaskDuration
+
+
+class ShiftInfo(ContractModel):
+    shift_id: str
+    site_id: str
+    site_name: str
+    timezone: str
+    service_date: str
+    start_at: datetime
+    end_at: datetime
+    utc_offset: str = Field(pattern=r"^[+-]\d{2}:\d{2}$", description="Site offset used for the service date.")
+    source: Literal["synthetic_demo_fixture"]
+
+    def local_date(self, when: datetime) -> str:
+        sign = 1 if self.utc_offset[0] == "+" else -1
+        hours, minutes = int(self.utc_offset[1:3]), int(self.utc_offset[4:6])
+        return (when.astimezone(timezone.utc) + sign * timedelta(hours=hours, minutes=minutes)).date().isoformat()
 
 
 class Incident(ContractModel):
@@ -225,6 +281,31 @@ class PendingCancelledAction(ContractModel):
     cancelled: Literal["log_incident"] | None
 
 
+class AssignedTasksAction(ContractModel):
+    """Read of the shift's assigned tasks (next task or full list)."""
+
+    type: Literal["assigned_tasks"]
+    scope: Literal["next", "all"]
+    tasks: list[AssignedTask]
+    shift_bound: bool = Field(description="False when the session has no trusted shift; tasks is then empty.")
+
+
+class TaskTransitionAction(ContractModel):
+    type: Literal["task_started", "task_completed"]
+    task: AssignedTask
+    command_id: str
+    created: bool = Field(description="False when this exact command was already committed (retry).")
+
+
+class TaskRejectedAction(ContractModel):
+    """A task command that changed nothing, with the reason (no shift, no eligible task, illegal transition)."""
+
+    type: Literal["task_rejected"]
+    for_action: Literal["task.start", "task.complete"]
+    reason: Literal["no_shift", "no_eligible_task", "invalid_transition"]
+    current_status: str | None = None
+
+
 ActionResult = Annotated[
     Union[
         NextTaskAction,
@@ -234,6 +315,9 @@ ActionResult = Annotated[
         TrainingStatusAction,
         AlertExplainedAction,
         PendingCancelledAction,
+        AssignedTasksAction,
+        TaskTransitionAction,
+        TaskRejectedAction,
     ],
     Field(discriminator="type"),
 ]
@@ -272,6 +356,10 @@ class SessionState(ContractModel):
     active_alerts: list[Alert]
     latest_alert: Alert | None
     pending_question: PendingQuestion | None
+    shift: ShiftInfo | None = Field(
+        default=None, description="The session's trusted shift (synthetic demo fixture), or null when unbound.")
+    assigned_tasks: list[AssignedTask] = Field(
+        default_factory=list, description="Tasks of the trusted shift. `tasks` stays the legacy shared demo list.")
 
 
 # --------------------------------------------------------------------------- telemetry
@@ -390,3 +478,43 @@ class ReadyResponse(ContractModel):
     catalog_version: str | None = Field(default=None, description="Manifest SHA-256 of the loaded catalog.")
     catalog_issue: str | None = Field(default=None, description="Sanitized reason code when catalog is false.")
     schema_version: int | None = Field(default=None, description="Applied cocoon.db migration version.")
+
+
+# --------------------------------------------------------------------------- commands (taps and graph tools)
+
+CommandKind = Literal["task.start", "task.complete"]
+
+
+class CommandPayload(ContractModel):
+    task_id: StableId | None = None
+
+
+class SessionCommand(ContractModel):
+    """POST /v1/sessions/{session_id}/commands. A subset of the proposed cocoon.command.v1 envelope: the binding is
+    taken from the authenticated session (never from the body); `expected_version` guards against stale taps."""
+
+    schema_version: Literal["cocoon.command.v1"] = "cocoon.command.v1"
+    command_id: StableId = Field(description="Unique per caller; an identical retry returns the saved result.")
+    kind: CommandKind
+    captured_at: AwareDatetime | None = Field(default=None, description="Device time of the tap (informational).")
+    expected_version: int | None = Field(default=None, ge=1)
+    payload: CommandPayload
+
+    @model_validator(mode="after")
+    def _payload_for_kind(self) -> "SessionCommand":
+        if self.kind.startswith("task.") and not self.payload.task_id:
+            raise ValueError("task commands need payload.task_id")
+        return self
+
+
+class SessionCommandResult(ContractModel):
+    command_id: str
+    kind: str
+    status: Literal["completed"]
+    duplicate: bool = Field(description="True when this identical command was already committed.")
+    record_type: str | None = None
+    record_id: str | None = None
+    summary: str
+    state_version: int
+    task: AssignedTask | None = None
+    created_at: datetime

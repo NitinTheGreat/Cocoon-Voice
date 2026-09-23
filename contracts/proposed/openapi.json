@@ -1779,16 +1779,10 @@
     "/v1/sessions/{session_id}/commands": {
       "post": {
         "tags": [
-          "target"
+          "commands"
         ],
-        "summary": "Submit a typed command (tap, voice-confirmed or offline sync)",
-        "operationId": "post_sessions_session_id_commands_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I02/I15",
-        "x-callers": [
-          "operator",
-          "voice_service"
-        ],
+        "summary": "Submit Command",
+        "operationId": "submit_command_v1_sessions__session_id__commands_post",
         "security": [
           {
             "HTTPBearer": []
@@ -1801,142 +1795,130 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Session Id"
             }
-          },
-          {
-            "name": "X-Request-ID",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9._:\\-]{1,128}$"
-            },
-            "description": "Tracing only; echoed back. Never part of idempotency identity."
           }
         ],
-        "x-idempotency": "command_id unique per issuing subject across sessions and reconnects. Identical retry returns the stored CommandResult (duplicate:true); a different payload under the same id → 409 idempotency_conflict; a stale expected_version → 409 with status conflict.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Command"
+                "$ref": "#/components/schemas/SessionCommand"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Completed (or identical duplicate)",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommandResult"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Durably queued; not completed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommandResult"
+                  "$ref": "#/components/schemas/SessionCommandResult"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated principal lacks scope (`forbidden`, `consent_required`)",
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Unknown or out-of-scope resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Version conflict (CommandResult) or reused command_id (error)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/CommandResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProposedErrorResponse"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (`validation_error`, `invalid_cursor`, `unknown_machine`, ...)",
+            "description": "Malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
-          "429": {
-            "description": "Admission limit reached (`rate_limited`); Retry-After set",
+          "500": {
+            "description": "Unexpected server error (retryable)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
-            },
-            "headers": {
-              "Retry-After": {
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "idempotency_conflict (command_id reused with a different payload), version_conflict (expected_version is stale; details give the current version) or invalid_transition (the task is not in a state this command accepts)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "B1",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ],
+        "x-idempotency": "command_id unique per calling principal; identical retry returns the stored result (duplicate: true); a different payload → 409 idempotency_conflict; stale expected_version → 409 version_conflict; illegal lifecycle step → 409 invalid_transition.",
+        "x-target-changes": [
+          {
+            "stage": "B2",
+            "change": "Incident draft kinds (incident.edit/confirm/dismiss).",
+            "schema": "#/components/schemas/SessionCommand"
+          },
+          {
+            "stage": "I15",
+            "change": "Full cocoon.command.v1 envelope with device binding, offline queueing (202) and the remaining kinds.",
+            "schema": "#/components/schemas/Command"
+          }
+        ]
       }
     },
     "/v1/sessions/{session_id}/commands/{command_id}": {
       "get": {
         "tags": [
-          "target"
+          "commands"
         ],
-        "summary": "Authoritative command result after a lost response",
-        "operationId": "get_sessions_session_id_commands_command_id_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I02/I15",
-        "x-callers": [
-          "operator",
-          "voice_service"
-        ],
+        "summary": "Get Command",
+        "operationId": "get_command_v1_sessions__session_id__commands__command_id__get",
         "security": [
           {
             "HTTPBearer": []
@@ -1949,7 +1931,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Session Id"
             }
           },
           {
@@ -1958,53 +1940,96 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Command Id"
             }
           }
         ],
-        "x-idempotency": "Read-only; never re-executes.",
         "responses": {
           "200": {
-            "description": "Command result",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommandResult"
+                  "$ref": "#/components/schemas/SessionCommandResult"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated principal lacks scope (`forbidden`, `consent_required`)",
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Unknown or out-of-scope resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "B1",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ],
+        "x-idempotency": "Read-only; never re-executes.",
+        "x-target-changes": [
+          {
+            "stage": "I15",
+            "change": "Queued/failed/conflict states for offline commands.",
+            "schema": "#/components/schemas/CommandResult"
+          }
+        ]
       }
     },
     "/v1/sessions/{session_id}/presence": {
@@ -4128,6 +4153,181 @@
         "title": "ApprovalStatusView",
         "type": "object"
       },
+      "AssignedTask": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "shift_id": {
+            "type": "string",
+            "title": "Shift Id"
+          },
+          "machine_id": {
+            "type": "string",
+            "title": "Machine Id"
+          },
+          "site_zone_id": {
+            "type": "string",
+            "title": "Site Zone Id"
+          },
+          "zone_name": {
+            "type": "string",
+            "title": "Zone Name"
+          },
+          "scheduled_order": {
+            "type": "integer",
+            "title": "Scheduled Order"
+          },
+          "scheduled_start_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Scheduled Start At"
+          },
+          "scheduled_start_local": {
+            "type": "string",
+            "title": "Scheduled Start Local",
+            "description": "HH:MM at the site (site UTC offset)."
+          },
+          "task_type": {
+            "type": "string",
+            "title": "Task Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "details": {
+            "type": "string",
+            "title": "Details"
+          },
+          "work_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Quantity"
+          },
+          "work_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Unit"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "in_progress",
+              "completed"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "weather": {
+            "$ref": "#/components/schemas/TaskConditions"
+          },
+          "duration": {
+            "$ref": "#/components/schemas/TaskDuration"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_id",
+          "shift_id",
+          "machine_id",
+          "site_zone_id",
+          "zone_name",
+          "scheduled_order",
+          "scheduled_start_at",
+          "scheduled_start_local",
+          "task_type",
+          "title",
+          "details",
+          "status",
+          "version",
+          "weather",
+          "duration"
+        ],
+        "title": "AssignedTask",
+        "description": "A task assigned to the session's operator/machine for its trusted shift. Versioned for command concurrency."
+      },
+      "AssignedTasksAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "assigned_tasks",
+            "title": "Type"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "next",
+              "all"
+            ],
+            "title": "Scope"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/AssignedTask"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "shift_bound": {
+            "type": "boolean",
+            "title": "Shift Bound",
+            "description": "False when the session has no trusted shift; tasks is then empty."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "scope",
+          "tasks",
+          "shift_bound"
+        ],
+        "title": "AssignedTasksAction",
+        "description": "Read of the shift's assigned tasks (next task or full list)."
+      },
       "CancelRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4590,6 +4790,28 @@
         ],
         "title": "CommandBinding",
         "type": "object"
+      },
+      "CommandPayload": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CommandPayload"
       },
       "CommandResult": {
         "additionalProperties": false,
@@ -6173,7 +6395,9 @@
               "unknown_operator",
               "catalog_unavailable",
               "forbidden",
-              "auth_unavailable"
+              "auth_unavailable",
+              "version_conflict",
+              "invalid_transition"
             ],
             "title": "Code"
           },
@@ -10831,6 +11055,149 @@
         "title": "SessionAssociation",
         "description": "An association the caller actually holds. For an operator: one of their own catalog_verified sessions,\ncreated by the trusted service. Catalog membership alone is never listed as an association."
       },
+      "SessionCommand": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "cocoon.command.v1",
+            "title": "Schema Version",
+            "default": "cocoon.command.v1"
+          },
+          "command_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Command Id",
+            "description": "Unique per caller; an identical retry returns the saved result.",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task.start",
+              "task.complete"
+            ],
+            "title": "Kind"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured At",
+            "description": "Device time of the tap (informational)."
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/CommandPayload"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "command_id",
+          "kind",
+          "payload"
+        ],
+        "title": "SessionCommand",
+        "description": "POST /v1/sessions/{session_id}/commands. A subset of the proposed cocoon.command.v1 envelope: the binding is\ntaken from the authenticated session (never from the body); `expected_version` guards against stale taps."
+      },
+      "SessionCommandResult": {
+        "properties": {
+          "command_id": {
+            "type": "string",
+            "title": "Command Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "const": "completed",
+            "title": "Status"
+          },
+          "duplicate": {
+            "type": "boolean",
+            "title": "Duplicate",
+            "description": "True when this identical command was already committed."
+          },
+          "record_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Type"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "state_version": {
+            "type": "integer",
+            "title": "State Version"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignedTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "command_id",
+          "kind",
+          "status",
+          "duplicate",
+          "summary",
+          "state_version",
+          "created_at"
+        ],
+        "title": "SessionCommandResult"
+      },
       "SessionCreateRequest": {
         "properties": {
           "client_session_key": {
@@ -11048,6 +11415,25 @@
                 "type": "null"
               }
             ]
+          },
+          "shift": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session's trusted shift (synthetic demo fixture), or null when unbound."
+          },
+          "assigned_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/AssignedTask"
+            },
+            "type": "array",
+            "title": "Assigned Tasks",
+            "description": "Tasks of the trusted shift. `tasks` stays the legacy shared demo list."
           }
         },
         "additionalProperties": false,
@@ -11140,6 +11526,26 @@
                 "type": "null"
               }
             ]
+          },
+          "shift": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The session's trusted shift (synthetic demo fixture), or null when unbound."
+          },
+          "assigned_tasks": {
+            "description": "Tasks of the trusted shift. `tasks` stays the legacy shared demo list.",
+            "items": {
+              "$ref": "#/components/schemas/AssignedTask"
+            },
+            "title": "Assigned Tasks",
+            "type": "array"
           },
           "server_time": {
             "anyOf": [
@@ -11463,6 +11869,65 @@
         ],
         "title": "SessionTarget",
         "type": "object"
+      },
+      "ShiftInfo": {
+        "properties": {
+          "shift_id": {
+            "type": "string",
+            "title": "Shift Id"
+          },
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "service_date": {
+            "type": "string",
+            "title": "Service Date"
+          },
+          "start_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start At"
+          },
+          "end_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "End At"
+          },
+          "utc_offset": {
+            "type": "string",
+            "pattern": "^[+-]\\d{2}:\\d{2}$",
+            "title": "Utc Offset",
+            "description": "Site offset used for the service date."
+          },
+          "source": {
+            "type": "string",
+            "const": "synthetic_demo_fixture",
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "shift_id",
+          "site_id",
+          "site_name",
+          "timezone",
+          "service_date",
+          "start_at",
+          "end_at",
+          "utc_offset",
+          "source"
+        ],
+        "title": "ShiftInfo"
       },
       "SleepSummary": {
         "additionalProperties": false,
@@ -13226,6 +13691,117 @@
         "title": "TaskCompleteCommand",
         "type": "object"
       },
+      "TaskConditions": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "const": "synthetic_demo_fixture",
+            "title": "Source",
+            "description": "Where the conditions come from. Only a synthetic fixture exists until live weather (Batch C)."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature C"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "TaskConditions"
+      },
+      "TaskDuration": {
+        "properties": {
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minutes"
+          },
+          "source": {
+            "type": "string",
+            "const": "demo_supplied_estimate",
+            "title": "Source",
+            "description": "A supplied demo figure, not a calibrated prediction (the estimator is Batch C)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "TaskDuration"
+      },
+      "TaskRejectedAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "task_rejected",
+            "title": "Type"
+          },
+          "for_action": {
+            "type": "string",
+            "enum": [
+              "task.start",
+              "task.complete"
+            ],
+            "title": "For Action"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_shift",
+              "no_eligible_task",
+              "invalid_transition"
+            ],
+            "title": "Reason"
+          },
+          "current_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "for_action",
+          "reason"
+        ],
+        "title": "TaskRejectedAction",
+        "description": "A task command that changed nothing, with the reason (no shift, no eligible task, illegal transition)."
+      },
       "TaskStartCommand": {
         "additionalProperties": false,
         "properties": {
@@ -13297,6 +13873,39 @@
         ],
         "title": "TaskStartCommand",
         "type": "object"
+      },
+      "TaskTransitionAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "task_started",
+              "task_completed"
+            ],
+            "title": "Type"
+          },
+          "task": {
+            "$ref": "#/components/schemas/AssignedTask"
+          },
+          "command_id": {
+            "type": "string",
+            "title": "Command Id"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created",
+            "description": "False when this exact command was already committed (retry)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "task",
+          "command_id",
+          "created"
+        ],
+        "title": "TaskTransitionAction"
       },
       "TelemetryBatchRequest": {
         "additionalProperties": false,
@@ -14545,16 +15154,29 @@
                 },
                 {
                   "$ref": "#/components/schemas/PendingCancelledAction"
+                },
+                {
+                  "$ref": "#/components/schemas/AssignedTasksAction"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskTransitionAction"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskRejectedAction"
                 }
               ],
               "discriminator": {
                 "propertyName": "type",
                 "mapping": {
                   "alert_explained": "#/components/schemas/AlertExplainedAction",
+                  "assigned_tasks": "#/components/schemas/AssignedTasksAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
+                  "task_completed": "#/components/schemas/TaskTransitionAction",
+                  "task_rejected": "#/components/schemas/TaskRejectedAction",
+                  "task_started": "#/components/schemas/TaskTransitionAction",
                   "training_assigned": "#/components/schemas/TrainingAssignedAction",
                   "training_status": "#/components/schemas/TrainingStatusAction"
                 }
@@ -14690,10 +15312,14 @@
               "discriminator": {
                 "mapping": {
                   "alert_explained": "#/components/schemas/AlertExplainedAction",
+                  "assigned_tasks": "#/components/schemas/AssignedTasksAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
+                  "task_completed": "#/components/schemas/TaskTransitionAction",
+                  "task_rejected": "#/components/schemas/TaskRejectedAction",
+                  "task_started": "#/components/schemas/TaskTransitionAction",
                   "training_assigned": "#/components/schemas/TrainingAssignedAction",
                   "training_status": "#/components/schemas/TrainingStatusAction"
                 },
@@ -14720,6 +15346,15 @@
                 },
                 {
                   "$ref": "#/components/schemas/PendingCancelledAction"
+                },
+                {
+                  "$ref": "#/components/schemas/AssignedTasksAction"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskTransitionAction"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskRejectedAction"
                 }
               ]
             },

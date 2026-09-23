@@ -48,6 +48,22 @@ class Conflict(Exception):
     """A stable ID was reused with a different payload."""
 
 
+class NotFound(Exception):
+    """The record does not exist in the caller's scope (never reveals whether it exists elsewhere)."""
+
+
+class VersionConflict(Exception):
+    def __init__(self, current_version: int):
+        super().__init__(f"stale version; current version is {current_version}")
+        self.current_version = current_version
+
+
+class InvalidTransition(Exception):
+    def __init__(self, current_status: str, message: str):
+        super().__init__(message)
+        self.current_status = current_status
+
+
 @dataclass(frozen=True)
 class NewSessionBinding:
     """What admission established for a new session. Site/shift are None unless a trusted binding matched."""
@@ -280,6 +296,120 @@ class Store:
     def get_lesson(self, lesson_id: str) -> s.Lesson | None:
         row = self._one("SELECT * FROM lessons WHERE lesson_id = ?", (lesson_id,))
         return s.Lesson(**dict(row)) if row else None
+
+    # ------------------------------------------------------------------ demo site, shifts and assigned tasks
+
+    _SEED_COLUMNS = {
+        "sites": "site_id, name, timezone, utc_offset, fixture_version, provenance",
+        "site_zones": "site_zone_id, site_id, name, zone_type, outdoor",
+        "shifts": "shift_id, site_id, operator_id, machine_id, service_date, start_at, end_at, catalog_manifest_sha256,"
+                  " fixture_version",
+        "task_assignments": "task_id, shift_id, operator_id, machine_id, site_zone_id, scheduled_order,"
+                            " scheduled_start_at, task_type, title, details, work_quantity, work_unit, weather_json,"
+                            " duration_minutes, duration_source, updated_at, provenance",
+    }
+    # Columns compared when a seeded row already exists (lifecycle/updated_at may legitimately have changed).
+    _SEED_COMPARE = {"sites": 4, "site_zones": 5, "shifts": 8, "task_assignments": 15}
+
+    def seed_demo_site(self, rows: dict[str, list[tuple[str, tuple]]]) -> dict[str, Any]:
+        """Insert missing rows; keep identical existing rows; refuse (whole seed rolls back) on differing rows."""
+        report: dict[str, Any] = {"inserted": {}, "reused": {}}
+        with self._tx() as c:
+            for table in ("sites", "site_zones", "shifts", "task_assignments"):
+                cols = self._SEED_COLUMNS[table]
+                n = self._SEED_COMPARE[table]
+                inserted = reused = 0
+                for key_col, values in rows.get(table, []):
+                    existing = c.execute(f"SELECT {cols} FROM {table} WHERE {key_col} = ?", (values[0],)).fetchone()
+                    if existing is None:
+                        marks = ", ".join("?" * len(values))
+                        c.execute(f"INSERT INTO {table}({cols}) VALUES ({marks})", values)
+                        inserted += 1
+                    elif tuple(existing)[:n] != tuple(values)[:n]:
+                        raise Conflict(f"{table} row {values[0]} already exists with different content")
+                    else:
+                        reused += 1
+                report["inserted"][table], report["reused"][table] = inserted, reused
+        return report
+
+    def get_shift(self, shift_id: str) -> s.ShiftInfo | None:
+        row = self._one("SELECT sh.*, si.name AS site_name, si.timezone, si.utc_offset FROM shifts sh"
+                        " JOIN sites si USING (site_id)"
+                        " WHERE sh.shift_id = ?", (shift_id,))
+        return _shift(row) if row else None
+
+    def list_assigned_tasks(self, shift_id: str) -> list[s.AssignedTask]:
+        rows = self._all(_TASK_SQL + " WHERE t.shift_id = ? ORDER BY t.scheduled_order", (shift_id,))
+        return [_assigned_task(r) for r in rows]
+
+    def get_command(self, scope: str, command_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT * FROM command_log WHERE scope = ? AND command_id = ?", (scope, command_id))
+        return dict(row) if row else None
+
+    def commands_for_turn(self, session_id: str, turn_id: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._all("SELECT * FROM command_log WHERE session_id = ? AND turn_id = ?"
+                                           " ORDER BY created_at, command_id", (session_id, turn_id))]
+
+    def run_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session_id: str,
+                    turn_id: str | None, mutate: Callable[[sqlite3.Connection], dict[str, Any]]) -> tuple[dict, bool]:
+        """Execute one domain write exactly once per (scope, command_id), in one short transaction.
+
+        The mutation and its command_log row commit together. An identical retry returns the saved result
+        (duplicate=True); a different payload under the same id raises Conflict. `mutate` raises NotFound /
+        VersionConflict / InvalidTransition to reject without side effects."""
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM command_log WHERE scope = ? AND command_id = ?", (scope, command_id)).fetchone()
+            if row is not None:
+                if row["fingerprint"] != fingerprint:
+                    raise Conflict("command_id was already used with a different payload")
+                return json.loads(row["result_json"]), True
+            outcome = mutate(c)
+            c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
+            version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
+            result = {**outcome, "command_id": command_id, "kind": kind, "state_version": version,
+                      "created_at": iso(utcnow())}
+            c.execute("INSERT INTO command_log(scope, command_id, kind, fingerprint, session_id, turn_id, outcome,"
+                      " record_type, record_id, summary, state_version, result_json, created_at)"
+                      " VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)",
+                      (scope, command_id, kind, fingerprint, session_id, turn_id, outcome.get("record_type"),
+                       outcome.get("record_id"), outcome["summary"], version, json.dumps(result, default=str),
+                       result["created_at"]))
+            return result, False
+
+    @staticmethod
+    def task_transition(session: s.Session, kind: str, task_id: str | None,
+                        expected_version: int | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for task.start / task.complete, scoped to the session's trusted shift."""
+        needed = {"task.start": "scheduled", "task.complete": "in_progress"}[kind]
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            if not session.shift_id:
+                raise NotFound("this session has no assigned shift")
+            if task_id:
+                row = c.execute(_TASK_SQL + " WHERE t.task_id = ? AND t.shift_id = ?",
+                                (task_id, session.shift_id)).fetchone()
+            else:  # voice: "start the next task" / "I've finished"
+                row = c.execute(_TASK_SQL + " WHERE t.shift_id = ? AND t.status = ? ORDER BY t.scheduled_order LIMIT 1",
+                                (session.shift_id, needed)).fetchone()
+            if row is None or row["operator_id"] != session.operator_id or row["machine_id"] != session.machine_id:
+                raise NotFound("no such task in this session's shift" if task_id else f"no {needed} task in this shift")
+            if expected_version is not None and row["version"] != expected_version:
+                raise VersionConflict(row["version"])
+            if row["status"] != needed:
+                raise InvalidTransition(row["status"], f"task is {row['status']}; {kind} needs a {needed} task")
+            now = iso(utcnow())
+            if kind == "task.start":
+                c.execute("UPDATE task_assignments SET status = 'in_progress', version = version + 1, started_at = ?,"
+                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+            else:
+                c.execute("UPDATE task_assignments SET status = 'completed', version = version + 1, completed_at = ?,"
+                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+            task = _assigned_task(c.execute(_TASK_SQL + " WHERE t.task_id = ?", (row["task_id"],)).fetchone())
+            verb = "Started" if kind == "task.start" else "Completed"
+            return {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
+                    "task": task.model_dump(mode="json")}
+
+        return mutate
 
     # ------------------------------------------------------------------ incidents
 
@@ -559,6 +689,39 @@ class AlertTemplate:
 
 
 # ---------------------------------------------------------------------- row mappers
+
+_TASK_SQL = ("SELECT t.*, z.name AS zone_name, si.utc_offset FROM task_assignments t"
+             " JOIN site_zones z ON z.site_zone_id = t.site_zone_id"
+             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id")
+
+
+def _local_hhmm(when: datetime, utc_offset: str) -> str:
+    sign = 1 if utc_offset[0] == "+" else -1
+    local = when.astimezone(timezone.utc) + sign * timedelta(hours=int(utc_offset[1:3]), minutes=int(utc_offset[4:6]))
+    return local.strftime("%H:%M")
+
+
+def _assigned_task(r: sqlite3.Row) -> s.AssignedTask:
+    weather = json.loads(r["weather_json"])
+    return s.AssignedTask(
+        task_id=r["task_id"], shift_id=r["shift_id"], machine_id=r["machine_id"], site_zone_id=r["site_zone_id"],
+        zone_name=r["zone_name"], scheduled_order=r["scheduled_order"],
+        scheduled_start_at=parse_dt(r["scheduled_start_at"]),
+        scheduled_start_local=_local_hhmm(parse_dt(r["scheduled_start_at"]), r["utc_offset"]),
+        task_type=r["task_type"], title=r["title"],
+        details=r["details"], work_quantity=r["work_quantity"], work_unit=r["work_unit"], status=r["status"],
+        version=r["version"], started_at=parse_dt(r["started_at"]), completed_at=parse_dt(r["completed_at"]),
+        weather=s.TaskConditions(source=weather["source"], summary=weather.get("summary"),
+                                 temperature_c=weather.get("temperature_c")),
+        duration=s.TaskDuration(minutes=r["duration_minutes"], source=r["duration_source"]),
+    )
+
+
+def _shift(r: sqlite3.Row) -> s.ShiftInfo:
+    return s.ShiftInfo(shift_id=r["shift_id"], site_id=r["site_id"], site_name=r["site_name"], timezone=r["timezone"],
+                       service_date=r["service_date"], start_at=parse_dt(r["start_at"]), end_at=parse_dt(r["end_at"]),
+                       utc_offset=r["utc_offset"], source="synthetic_demo_fixture")
+
 
 # Never selects token_sha256: token metadata leaving the store cannot carry the digest.
 _TOKEN_META_SQL = (

@@ -2,6 +2,26 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## B1: assigned tasks and the shared command path
+
+- **Schema v4:** `sites`, `site_zones`, `shifts`, `task_assignments` (versioned lifecycle) and `command_log`
+  (scope + command ID, fingerprint, outcome, record reference, summary, state version, saved result). The three
+  shared seed tasks are untouched; legacy and unbound sessions still use them for "next task".
+- **Seeding:** `scripts/seed_demo.py` loads the tracked synthetic fixture into the database and writes the trusted
+  bindings file for one service date. It is idempotent and never overwrites differing rows.
+- **Binding:** a bound session gets its shift and tasks. Binding is explicit (`site_id` + `shift_id` matching a
+  trusted binding) or automatic on the server (exactly one trusted binding for that operator/machine for today at
+  the site).
+- **One command path:** voice ("start the next task", "I finished the task") and `POST .../commands` (`task.start` /
+  `task.complete`). Identity is scoped per principal or per turn; an identical retry returns the saved result, a
+  reused ID with a different payload is 409 `idempotency_conflict`, and a stale version or illegal step is 409
+  `version_conflict` / `invalid_transition`. An operator only reaches their own shift's tasks; supervisors get 403.
+- **Checks:** `tests/test_tasks.py` (7): idempotent seeding and refusal to overwrite, auto and explicit binding, the
+  voice lifecycle and same-turn retry, tap rules shared with voice, isolation across all 5 assets and operators,
+  unbound legacy behaviour, and a populated v3 → v4 upgrade. Existing migration, session, auth, API, resilience and
+  contract tests pass (version assertions now derive from the migration list). Both contract checks were
+  regenerated and are clean.
+
 ## Batch A (fast track): connect voice through the existing JSON APIs
 
 - **Recorded:** 2026-09-24. Branch `backend`. Order per `BACKEND_FAST_TRACK_PLAN.md`: voice integration comes before I02c/I02d. The user's commit `c779e26` ("check apis") holds the Gemini-on-Vertex integration and git-ignores `Cocoon_Dataset_v1/`. Batch A adds `4d324fc` (bounded Vertex calls, one model call per turn) and the commit containing this entry (499 mapping, voice handoff, docs).

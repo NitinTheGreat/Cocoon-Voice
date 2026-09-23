@@ -114,6 +114,34 @@ The simulator resolves the session with the same `client_session_key` the worker
 - Business records go to `data/cocoon.db`: sessions, turns, tasks, lessons, incidents, training assignments, alerts, telemetry, announcements and deliveries. Migrations and seeding are idempotent and run on every start. Verified catalog snapshots are recorded in `catalog_versions*`, and each new session stores the snapshot it was admitted under.
 - The pending question and the latest alert are explicit graph state. Telemetry transitions write the latest alert into the checkpoint as well as the database, so a later "Why?" resolves against it.
 
+## Demo site, shifts and assigned tasks (Batch B)
+
+`demo/demo_site_v1.json` is a tracked **synthetic** fixture: one site, 5 zones, and a 07:00–15:00 shift for each of the
+5 catalog machines with its demo operator (`EXC_DEMO_001`/`OP_DEMO_1_1` … `BHL_DEMO_001`/`OP_DEMO_5_1`), plus 1–3
+scheduled tasks each. Task types and units follow the dataset's task history. Conditions and durations are labelled
+`synthetic_demo_fixture` and `demo_supplied_estimate`; they are not live weather or calibrated estimates. Seeding is
+idempotent: it adds or reuses rows, refuses to overwrite a differing row, never wipes the database and never touches
+the dataset CSVs. It also writes the trusted site/shift bindings file read by the server.
+
+```bash
+python scripts/seed_demo.py                              # today at the site; or --service-date 2026-09-24
+SESSION_BINDINGS_PATH=data/demo/session_bindings.json python -m cocoon_agent
+```
+
+```powershell
+python scripts\seed_demo.py
+$env:SESSION_BINDINGS_PATH = "data\demo\session_bindings.json"; python -m cocoon_agent
+```
+
+- **Binding a session to its shift.** A new session is bound to its shift when it sends a matching
+  `site_id`/`shift_id`. If it sends neither, the server binds it automatically when exactly one trusted binding for
+  that operator and machine is for today's date at the site (`context_source` ends in `:auto`).
+- **What a bound session gets.** `shift` and `assigned_tasks` in `/state`; voice "what's my next task", "what are my
+  tasks", "start the next task" and "I finished the task"; and tap commands on
+  `POST /v1/sessions/{session_id}/commands` (`task.start` / `task.complete`, with optional `expected_version`).
+- **Shared rules.** Voice and taps go through one command service that records each committed command once, with
+  the same ownership, legal-transition and version checks.
+
 ## Actor tokens (local prototype auth, I02b)
 
 The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.

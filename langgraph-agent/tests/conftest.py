@@ -114,3 +114,32 @@ def write_catalog(root: Path, machines: str | None = None, operators: str | None
     data = (json.dumps(manifest, indent=2) + "\n").encode()
     (gen / "manifest.json").write_bytes(data)
     return hashlib.sha256(data).hexdigest()
+
+
+DEMO_OPERATORS = ("OP_DEMO_1_1", "OP_DEMO_2_1", "OP_DEMO_3_1", "OP_DEMO_4_1", "OP_DEMO_5_1")
+DEMO_PAIRS = dict(zip(MACHINES, DEMO_OPERATORS))
+
+
+def seeded_demo(tmp_path: Path, service_date: str | None = None, **overrides):
+    """A disposable catalog (fixture machines + the five demo operators), seeded with demo/demo_site_v1.json.
+
+    Returns (settings, report). Test-only: the fixture's pinned manifest hash is replaced by this catalog's hash."""
+    from cocoon_agent.catalog import load_catalog
+    from cocoon_agent.demo_site import load_fixture, seed, site_today
+    from cocoon_agent.store import Store
+
+    root = tmp_path / "demo_catalog"
+    ops = "operator_id\n" + "".join(f"{o}\n" for o in DEMO_OPERATORS)
+    digest = write_catalog(root, operators=ops)
+    settings = make_settings(tmp_path, DATASET_ROOT=str(root), DATASET_MANIFEST_SHA256=digest,
+                             SESSION_BINDINGS_PATH=str(tmp_path / "bindings.json"), **overrides)
+    doc = load_fixture()
+    doc["catalog_manifest_sha256"] = digest
+    store = Store(settings.db_path)
+    store.init_schema()
+    store.seed_demo()
+    catalog = load_catalog(root, digest)
+    store.register_catalog(catalog)
+    report = seed(store, catalog, doc, service_date or site_today(doc), tmp_path / "bindings.json")
+    store.close()
+    return settings, report

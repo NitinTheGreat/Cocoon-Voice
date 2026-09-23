@@ -25,7 +25,8 @@ from ..config import Settings
 log = logging.getLogger("cocoon_agent.brain")
 
 Intent = Literal[
-    "next_task", "log_incident", "training", "explain_alert", "answer_pending", "cancel_pending", "smalltalk"
+    "next_task", "list_tasks", "start_task", "complete_task",
+    "log_incident", "training", "explain_alert", "answer_pending", "cancel_pending", "smalltalk",
 ]
 
 
@@ -83,6 +84,10 @@ _EXPLAIN = re.compile(r"\bwhy\b|\b(explain|what was) (the |that )?(alert|warning
 _INCIDENT = re.compile(r"\b(incident|report|log)\b")
 _TRAINING = re.compile(r"\b(training|lesson|lessons|course)\b")
 _NEXT_TASK = re.compile(r"\b(next task|next job|what'?s next|what should i do|my task|what do i do)\b")
+_LIST_TASKS = re.compile(r"\b(all|list|today'?s|my) (tasks|jobs)\b|\bwhat are my (tasks|jobs)\b")
+_START_TASK = re.compile(r"\b(start|begin|starting|beginning)\b.*\b(task|job|next one|it)\b")
+_COMPLETE_TASK = re.compile(r"\b(finished|finish|completed|complete|done with|done)\b.*\b(task|job|it|that)\b"
+                            r"|\b(i'?m|i am) (done|finished)\b|\btask (is )?(done|complete|finished)\b")
 _ASSIGN = re.compile(r"\b(assign|start|give me|sign me up|enrol|enroll|begin|take)\b")
 _LESSON_WORDS = {
     "L1": re.compile(r"\b(lesson (1|one)|seat ?belt|rops|rollover)\b"),
@@ -117,6 +122,12 @@ class MockBrain:
             lesson = next((lid for lid, rx in _LESSON_WORDS.items() if rx.search(t)), None)
             action = "assign" if (_ASSIGN.search(t) or lesson) else "status"
             return RouteDecision(intent="training", training_action=action, lesson_id=lesson)
+        if _START_TASK.search(t):
+            return RouteDecision(intent="start_task")
+        if _COMPLETE_TASK.search(t):
+            return RouteDecision(intent="complete_task")
+        if _LIST_TASKS.search(t):
+            return RouteDecision(intent="list_tasks")
         if _NEXT_TASK.search(t):
             return RouteDecision(intent="next_task")
         if ctx.pending:
@@ -161,7 +172,38 @@ def _template(a: dict[str, Any]) -> str:
         return f"I warned you because {alert['explanation'][0].lower()}{alert['explanation'][1:]}"
     if kind == "pending_cancelled":
         return "Okay, I've dropped that." if a["cancelled"] else "There was nothing to cancel."
+    if kind == "assigned_tasks":
+        return _tasks_speech(a)
+    if kind in ("task_started", "task_completed"):
+        task = a["task"]
+        if kind == "task_started":
+            return f"Started {task['title']} in {task['zone_name']}."
+        return f"Marked {task['title']} as complete."
+    if kind == "task_rejected":
+        if a["reason"] == "no_shift":
+            return "I don't have an assigned shift for this session, so I can't change your tasks."
+        if a["reason"] == "no_eligible_task":
+            return ("There's no scheduled task left to start." if a["for_action"] == "task.start"
+                    else "You don't have a task in progress to complete.")
+        return f"I can't do that: the task is {a.get('current_status') or 'in another state'}."
     raise ValueError(f"unknown action type {kind}")
+
+
+def _tasks_speech(a: dict[str, Any]) -> str:
+    if not a["shift_bound"]:
+        return "I don't have an assigned shift for this session, so I can't list your tasks."
+    tasks = a["tasks"]
+    if a["scope"] == "next":
+        if not tasks:
+            return "All your tasks for this shift are done."
+        t = tasks[0]
+        if t["status"] == "in_progress":
+            return f"You're on {t['title']} in {t['zone_name']}."
+        return f"Your next task is {t['title']} in {t['zone_name']}, scheduled for {t['scheduled_start_local']}."
+    if not tasks:
+        return "You have no tasks assigned for this shift."
+    parts = [f"{t['title']} ({t['status'].replace('_', ' ')})" for t in tasks]
+    return f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}: " + "; ".join(parts) + "."
 
 
 # ---------------------------------------------------------------------- shared live prompts + legacy Claude
@@ -169,6 +211,9 @@ def _template(a: dict[str, Any]) -> str:
 ROUTER_SYSTEM = """You route utterances from a construction equipment operator to Cocoon, a voice assistant in the cab.
 Choose exactly one intent:
 - next_task: the operator asks what to do next or for their next task.
+- list_tasks: the operator asks for all of today's tasks.
+- start_task: the operator says they are starting the next task (or "it").
+- complete_task: the operator says they finished the current task.
 - log_incident: the operator wants to report or log an incident, damage, hazard or near miss. Fill incident_description only if they actually described what happened; otherwise leave it null.
 - training: the operator asks about training or lessons. training_action is "assign" when they want a lesson assigned or started, "status" when they ask what is assigned. Set lesson_id only if a catalog lesson is identifiable.
 - explain_alert: the operator asks why Cocoon warned them or about the latest alert, including a bare "why?" right after a warning.
