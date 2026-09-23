@@ -204,13 +204,13 @@ ROUTES: tuple[Route, ...] = (
           target_changes=({"stage": "I13", "change": "site_ids from trusted supervisor site grants (none exist "
                                                      "yet; always empty in I02b)."},)),
     Route("post", "/v1/sessions/{session_id}/commands", "implemented", "B1", ("operator", "voice_service"),
-          "Submit a task command (tap); the same domain service as the voice tools",
+          "Submit a task (task.start/complete, B1) or incident-draft command (incident.edit/confirm/dismiss, B2); "
+          "the same domain service as the voice tools",
           idempotency="command_id unique per calling principal; identical retry returns the stored result "
                       "(duplicate: true); a different payload → 409 idempotency_conflict; stale expected_version → "
-                      "409 version_conflict; illegal lifecycle step → 409 invalid_transition.",
+                      "409 version_conflict; illegal lifecycle step (e.g. confirming a confirmed incident) → 409 "
+                      "invalid_transition.",
           target_changes=(
-              {"stage": "B2", "change": "Incident draft kinds (incident.edit/confirm/dismiss).",
-               "schema": "SessionCommand"},
               {"stage": "I15", "change": "Full cocoon.command.v1 envelope with device binding, offline queueing "
                                          "(202) and the remaining kinds.", "schema": "Command"},
           )),

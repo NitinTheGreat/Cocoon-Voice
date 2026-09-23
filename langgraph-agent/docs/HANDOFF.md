@@ -2,6 +2,24 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## B2: operator workflows, structured incidents and truthful action outcomes
+
+- **Schema v5:** structured incident columns (status draft/confirmed/dismissed, origin, severity + basis, site/zone +
+  basis, location text, occurred_at + basis, episode link, version), `approval_requests` (pending supervisor review)
+  and `turns.route_json` (the turn's saved classification). Legacy incidents become confirmed operator reports.
+- **Routing:** one structured decision per turn adds `branch` and parameters; the graph gains draft review /
+  confirm / dismiss / "yes" handling and an honest `capability_unavailable` reply. A bare "yes" acts only when
+  exactly one workflow is waiting. A retried turn reuses the saved decision (no second model call).
+- **Writes:** incident report, escalation request and draft transitions go through the B1 command log with
+  turn-scoped IDs, so each mutation and its action record commit together. Turn results carry `branch` and
+  `action_records`; a failed turn lists what was saved (error `details` and `GET .../turns/{id}`), and a retry runs
+  only what is missing. Taps: `incident.edit/confirm/dismiss` with `expected_version`.
+- **Checks:** `tests/test_incidents.py` (5): structured fields and one report per turn, pending escalation, asked
+  description carrying the escalation, a forced crash after the incident commit (kept, not repeated on retry),
+  draft isolation/confirm/dismiss/version/ownership by voice and tap, unsupported capability. Migration upgrade
+  tests extended for the new columns. Full suite and both contract drift checks pass. Live Vertex classification of
+  the new fields is not observed.
+
 ## B1: assigned tasks and the shared command path
 
 - **Schema v4:** `sites`, `site_zones`, `shifts`, `task_assignments` (versioned lifecycle) and `command_log`

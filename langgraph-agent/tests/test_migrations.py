@@ -65,14 +65,24 @@ def make_populated_baseline(path: Path) -> None:
     conn.close()
 
 
+# Columns later migrations add to legacy tables (compared separately, never part of the legacy row check).
+ADDED_COLUMNS = {
+    "sessions": ("dataset_manifest_sha256", "site_id", "shift_id", "binding_status", "context_status",
+                 "context_source"),
+    "incidents": ("status", "origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis",
+                  "location_text", "occurred_at", "occurred_basis", "episode_id", "version", "confirmed_at",
+                  "dismissed_at"),
+    "turns": ("route_json",),
+}
+
+
 def dump(path: Path) -> dict[str, list[tuple]]:
     conn = sqlite3.connect(path)
     try:
         out = {}
         for table in LEGACY_TABLES:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
-            legacy_cols = [c for c in cols if c not in ("dataset_manifest_sha256", "site_id", "shift_id",
-                                                        "binding_status", "context_status", "context_source")]
+            legacy_cols = [c for c in cols if c not in ADDED_COLUMNS.get(table, ())]
             out[table] = conn.execute(f"SELECT {', '.join(legacy_cols)} FROM {table} ORDER BY 1").fetchall()
         out["sqlite_sequence"] = conn.execute("SELECT * FROM sqlite_sequence").fetchall()
         return out
@@ -129,6 +139,11 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
                        " context_source FROM sessions WHERE session_id = 'ses_legacy'").fetchone()
     conn.close()
     assert row == (None, None, None, "legacy_unverified", "legacy_unverified", None)  # no fabricated provenance
+    conn = sqlite3.connect(db)
+    # a legacy report was saved immediately as a report: it stays a confirmed operator report, nothing invented
+    assert conn.execute("SELECT status, origin, severity, site_zone_id, version FROM incidents"
+                        " WHERE incident_number = 1").fetchone() == ("confirmed", "operator_reported", None, None, 1)
+    conn.close()
 
 
 def test_legacy_session_stays_retrievable_and_old_retries_replay(tmp_path):

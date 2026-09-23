@@ -7,6 +7,7 @@ stable client IDs (turn_id, event_id), not with an in-memory cache.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -274,6 +275,15 @@ class Store:
                 (json.dumps(result), now, now, session_id, turn_id),
             )
 
+    def save_turn_route(self, session_id: str, turn_id: str, route: dict[str, Any]) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE turns SET route_json = ? WHERE session_id = ? AND turn_id = ? AND route_json IS NULL",
+                      (json.dumps(route), session_id, turn_id))
+
+    def turn_route(self, session_id: str, turn_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT route_json FROM turns WHERE session_id = ? AND turn_id = ?", (session_id, turn_id))
+        return json.loads(row["route_json"]) if row and row["route_json"] else None
+
     def fail_turn(self, session_id: str, turn_id: str, error: dict[str, Any]) -> None:
         with self._tx() as c:
             c.execute(
@@ -348,7 +358,13 @@ class Store:
 
     def commands_for_turn(self, session_id: str, turn_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in self._all("SELECT * FROM command_log WHERE session_id = ? AND turn_id = ?"
-                                           " ORDER BY created_at, command_id", (session_id, turn_id))]
+                                           " ORDER BY state_version, command_id", (session_id, turn_id))]
+
+    def action_records(self, session_id: str, turn_id: str) -> list[s.ActionRecord]:
+        return [s.ActionRecord(action_id=r["command_id"], kind=r["kind"], outcome=r["outcome"],
+                               record_type=r["record_type"], record_id=r["record_id"], summary=r["summary"],
+                               state_version=r["state_version"], created_at=parse_dt(r["created_at"]))
+                for r in self.commands_for_turn(session_id, turn_id)]
 
     def run_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session_id: str,
                     turn_id: str | None, mutate: Callable[[sqlite3.Connection], dict[str, Any]]) -> tuple[dict, bool]:
@@ -430,9 +446,137 @@ class Store:
             row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
             return _incident(row), True
 
-    def list_incidents(self, session_id: str) -> list[s.Incident]:
-        rows = self._all("SELECT * FROM incidents WHERE session_id = ? ORDER BY incident_number", (session_id,))
+    def list_incidents(self, session_id: str, status: str = "confirmed") -> list[s.Incident]:
+        rows = self._all("SELECT * FROM incidents WHERE session_id = ? AND status = ? ORDER BY incident_number",
+                         (session_id, status))
         return [_incident(r) for r in rows]
+
+    def get_incident(self, session_id: str, incident_id: str) -> s.Incident | None:
+        row = self._one("SELECT * FROM incidents WHERE session_id = ? AND incident_id = ?", (session_id, incident_id))
+        return _incident(row) if row else None
+
+    def list_pending_approvals(self, session_id: str) -> list[s.ApprovalRequest]:
+        rows = self._all("SELECT * FROM approval_requests WHERE session_id = ? AND status = 'pending'"
+                         " ORDER BY created_at", (session_id,))
+        return [_approval(r) for r in rows]
+
+    @staticmethod
+    def incident_report(session: s.Session, turn_id: str, description: str, severity: str | None,
+                        location_text: str | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's report: a new confirmed incident per turn (matching text never merges two
+        intentional reports). Identity comes from the session; "where" is the stated place, else the active task's
+        zone, each with its basis; "when" is the time of the report unless stated otherwise; severity only if stated."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incidents WHERE session_id = ? AND source_turn_id = ?",
+                            (session.session_id, turn_id)).fetchone()
+            reused = row is not None  # written before the command log existed (pre-v5 retry)
+            if row is None:
+                now = iso(utcnow())
+                zone, zone_basis = _resolve_zone(c, session, location_text)
+                number = c.execute(
+                    "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
+                    " status, origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
+                    " occurred_at, occurred_basis, confirmed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 'confirmed', 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, now, severity,
+                     "reported" if severity else None, session.site_id, zone, zone_basis, location_text, now, now),
+                ).lastrowid
+                c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (f"INC-{number:04d}", number))
+                row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
+            inc = _incident(row)
+            return {"record_type": "incident", "record_id": inc.incident_id, "reused": reused,
+                    "summary": f"Logged incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+
+        return mutate
+
+    @staticmethod
+    def insert_auto_draft(c: sqlite3.Connection, session: s.Session, episode_id: str, description: str,
+                          severity: str, occurred_at: datetime) -> str:
+        """An automatic draft for one alert episode (at most one per episode). Not a confirmed incident."""
+        row = c.execute("SELECT incident_id FROM incidents WHERE episode_id = ?", (episode_id,)).fetchone()
+        if row is not None:
+            return row["incident_id"]
+        zone, zone_basis = _resolve_zone(c, session, None)
+        number = c.execute(
+            "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at, status,"
+            " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, occurred_at, occurred_basis,"
+            " episode_id) VALUES (?, ?, ?, ?, ?, ?, 'draft', 'auto_draft', ?, 'rule_default', ?, ?, ?, ?,"
+            " 'observation_time', ?)",
+            (session.session_id, session.operator_id, session.machine_id, description, f"episode:{episode_id}",
+             iso(utcnow()), severity, session.site_id, zone, zone_basis, iso(occurred_at), episode_id),
+        ).lastrowid
+        incident_id = f"INC-{number:04d}"
+        c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
+        return incident_id
+
+    @staticmethod
+    def incident_transition(session: s.Session, kind: str, incident_id: str, expected_version: int | None,
+                            edits: dict[str, Any] | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for incident.edit / incident.confirm / incident.dismiss. Only this session's drafts change;
+        a confirmed or dismissed report is final. The incident keeps its ID when confirmed."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incidents WHERE incident_id = ? AND session_id = ?",
+                            (incident_id, session.session_id)).fetchone()
+            if row is None:
+                raise NotFound("no such incident in this session")
+            if expected_version is not None and row["version"] != expected_version:
+                raise VersionConflict(row["version"])
+            if row["status"] != "draft":
+                raise InvalidTransition(row["status"], f"incident is {row['status']}; {kind} needs a draft")
+            now = iso(utcnow())
+            if kind == "incident.confirm":
+                c.execute("UPDATE incidents SET status = 'confirmed', confirmed_at = ?, version = version + 1"
+                          " WHERE incident_id = ?", (now, incident_id))
+                verb = "Confirmed"
+            elif kind == "incident.dismiss":
+                c.execute("UPDATE incidents SET status = 'dismissed', dismissed_at = ?, version = version + 1"
+                          " WHERE incident_id = ?", (now, incident_id))
+                verb = "Dismissed"
+            else:
+                e = edits or {}
+                sets, args = [], []
+                if e.get("description"):
+                    sets.append("description = ?"), args.append(e["description"])
+                if e.get("severity"):
+                    sets += ["severity = ?", "severity_basis = 'reported'"]
+                    args.append(e["severity"])
+                if e.get("location_text"):
+                    zone, basis = _resolve_zone(c, session, e["location_text"])
+                    sets += ["location_text = ?", "site_zone_id = ?", "zone_basis = ?"]
+                    args += [e["location_text"], zone if basis == "reported" else row["site_zone_id"],
+                             basis if basis == "reported" else row["zone_basis"]]
+                if not sets:
+                    raise InvalidTransition(row["status"], "incident.edit needs at least one field to change")
+                c.execute(f"UPDATE incidents SET {', '.join(sets)}, version = version + 1 WHERE incident_id = ?",
+                          (*args, incident_id))
+                verb = "Edited"
+            inc = _incident(c.execute("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone())
+            return {"record_type": "incident", "record_id": incident_id,
+                    "summary": f"{verb} incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+
+        return mutate
+
+    @staticmethod
+    def escalation_request(session: s.Session, incident_id: str) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """A pending supervisor-review request linked to one incident (one per incident). Not a notification."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM approval_requests WHERE kind = 'incident_escalation' AND incident_id = ?",
+                            (incident_id,)).fetchone()
+            if row is None:
+                approval_id = "APR-" + uuid.uuid4().hex[:12]
+                c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id,"
+                          " created_at) VALUES (?, ?, ?, 'incident_escalation', ?, ?)",
+                          (approval_id, session.session_id, session.operator_id, incident_id, iso(utcnow())))
+                row = c.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
+            approval = _approval(row)
+            return {"record_type": "approval_request", "record_id": approval.approval_id,
+                    "summary": f"Requested supervisor review of {incident_id} (pending).",
+                    "approval": approval.model_dump(mode="json")}
+
+        return mutate
 
     # ------------------------------------------------------------------ training
 
@@ -762,12 +906,48 @@ def _task(r: sqlite3.Row) -> s.Task:
     return s.Task(task_id=r["task_id"], title=r["title"], details=r["details"], priority=r["priority"], status=r["status"])
 
 
+_INCIDENT_V5 = ("status", "origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis",
+                "location_text", "occurred_basis", "episode_id", "version")
+
+
 def _incident(r: sqlite3.Row) -> s.Incident:
+    # Rows read before migration 5 (only during an upgrade) lack the structured columns: model defaults apply.
+    extra = {k: r[k] for k in _INCIDENT_V5 if k in r.keys()}
+    if "occurred_at" in r.keys():
+        extra.update(occurred_at=parse_dt(r["occurred_at"]), confirmed_at=parse_dt(r["confirmed_at"]))
     return s.Incident(
         incident_id=r["incident_id"], incident_number=r["incident_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], description=r["description"],
-        source_turn_id=r["source_turn_id"], created_at=parse_dt(r["created_at"]),
+        source_turn_id=r["source_turn_id"], created_at=parse_dt(r["created_at"]), **extra,
     )
+
+
+def _approval(r: sqlite3.Row) -> s.ApprovalRequest:
+    return s.ApprovalRequest(approval_id=r["approval_id"], kind=r["kind"], incident_id=r["incident_id"],
+                             status=r["status"], created_at=parse_dt(r["created_at"]))
+
+
+_ZONE_STOPWORDS = {"to", "the", "of", "road", "access", "north", "south", "east", "west", "yard", "strip"}
+
+
+def _resolve_zone(c: sqlite3.Connection, session: s.Session,
+                  location_text: str | None) -> tuple[str | None, str | None]:
+    """Site zone for an incident: the one zone the operator named, else the zone of the task in progress."""
+    if not session.site_id:
+        return None, None
+    if location_text:
+        words = set(re.findall(r"[a-z]+", location_text.lower()))
+        hits = [z["site_zone_id"] for z in c.execute("SELECT site_zone_id, name FROM site_zones WHERE site_id = ?",
+                                                     (session.site_id,))
+                if words & (set(z["name"].lower().split()) - _ZONE_STOPWORDS)]
+        if len(hits) == 1:
+            return hits[0], "reported"
+    if session.shift_id:
+        row = c.execute("SELECT site_zone_id FROM task_assignments WHERE shift_id = ? AND status = 'in_progress'"
+                        " ORDER BY scheduled_order LIMIT 1", (session.shift_id,)).fetchone()
+        if row is not None:
+            return row["site_zone_id"], "active_task"
+    return None, None
 
 
 def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:

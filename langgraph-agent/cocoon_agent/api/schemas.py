@@ -173,7 +173,13 @@ class ShiftInfo(ContractModel):
         return (when.astimezone(timezone.utc) + sign * timedelta(hours=hours, minutes=minutes)).date().isoformat()
 
 
+Severity = Literal["low", "medium", "high", "critical"]
+
+
 class Incident(ContractModel):
+    """A report. `description` is the "what". Structured fields are additive; each `*_basis` says where a value came
+    from (reported by the operator, taken from recorded context, or a stated default) so nothing looks invented."""
+
     incident_id: str
     incident_number: int
     session_id: str
@@ -181,6 +187,43 @@ class Incident(ContractModel):
     machine_id: str
     description: str
     source_turn_id: str
+    created_at: datetime
+    status: Literal["draft", "confirmed", "dismissed"] = "confirmed"
+    origin: Literal["operator_reported", "auto_draft"] = "operator_reported"
+    severity: Severity | None = Field(default=None, description="Null = not stated (never guessed).")
+    severity_basis: Literal["reported", "rule_default"] | None = None
+    site_id: str | None = None
+    site_zone_id: str | None = None
+    zone_basis: Literal["reported", "active_task", "shift_zone"] | None = None
+    location_text: str | None = None
+    occurred_at: datetime | None = None
+    occurred_basis: Literal["time_of_report", "observation_time"] | None = None
+    episode_id: str | None = Field(default=None, description="Alert episode behind an automatic draft.")
+    version: int = 1
+    confirmed_at: datetime | None = None
+
+
+class ApprovalRequest(ContractModel):
+    """A request for supervisor review. `pending` until a supervisor decision route exists (Batch D); creating it
+    is not a notification and not an approval."""
+
+    approval_id: str
+    kind: Literal["incident_escalation"]
+    incident_id: str
+    status: Literal["pending", "approved", "rejected", "expired"]
+    created_at: datetime
+
+
+class ActionRecord(ContractModel):
+    """Durable outcome of one write in this turn (committed together with the write)."""
+
+    action_id: str
+    kind: str
+    outcome: Literal["completed", "failed", "unknown"]
+    record_type: str | None = None
+    record_id: str | None = None
+    summary: str
+    state_version: int | None = None
     created_at: datetime
 
 
@@ -224,6 +267,9 @@ class PendingQuestion(ContractModel):
     kind: Literal["incident_description"]
     for_action: Literal["log_incident"]
     asked_in_turn_id: str
+    notify_supervisor: bool = Field(default=False, description="The report was asked to go to a supervisor too.")
+    severity: Severity | None = None
+    location_text: str | None = None
 
 
 # --------------------------------------------------------------------------- turns
@@ -297,6 +343,37 @@ class TaskTransitionAction(ContractModel):
     created: bool = Field(description="False when this exact command was already committed (retry).")
 
 
+class IncidentDraftAction(ContractModel):
+    type: Literal["incident_confirmed", "incident_dismissed"]
+    incident: Incident
+    created: bool
+
+
+class EscalationRequestedAction(ContractModel):
+    type: Literal["escalation_requested"]
+    approval: ApprovalRequest
+    created: bool
+
+
+class IncidentDraftsAction(ContractModel):
+    type: Literal["incident_drafts"]
+    drafts: list[Incident]
+
+
+class ClarificationAction(ContractModel):
+    """Nothing was changed: several workflows could match, or there is nothing to act on."""
+
+    type: Literal["clarification_needed"]
+    for_action: Literal["confirm_draft", "dismiss_draft", "explain_alert", "affirm"]
+    reason: Literal["several_candidates", "nothing_pending"]
+    options: list[str] = Field(default_factory=list)
+
+
+class CapabilityUnavailableAction(ContractModel):
+    type: Literal["capability_unavailable"]
+    capability: str = Field(max_length=60)
+
+
 class TaskRejectedAction(ContractModel):
     """A task command that changed nothing, with the reason (no shift, no eligible task, illegal transition)."""
 
@@ -318,6 +395,11 @@ ActionResult = Annotated[
         AssignedTasksAction,
         TaskTransitionAction,
         TaskRejectedAction,
+        IncidentDraftAction,
+        IncidentDraftsAction,
+        EscalationRequestedAction,
+        ClarificationAction,
+        CapabilityUnavailableAction,
     ],
     Field(discriminator="type"),
 ]
@@ -340,6 +422,11 @@ class TurnResult(ContractModel):
     poll_url: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
+    branch: Literal["tasks", "safety_incidents", "training", "general_assistance"] | None = Field(
+        default=None, description="Workflow branch the turn was classified into.")
+    action_records: list[ActionRecord] = Field(
+        default_factory=list, description="Writes committed by this turn, also on a failed turn: a failure after a "
+                                          "committed write never means nothing was saved.")
 
 
 # --------------------------------------------------------------------------- state
@@ -360,6 +447,9 @@ class SessionState(ContractModel):
         default=None, description="The session's trusted shift (synthetic demo fixture), or null when unbound.")
     assigned_tasks: list[AssignedTask] = Field(
         default_factory=list, description="Tasks of the trusted shift. `tasks` stays the legacy shared demo list.")
+    incident_drafts: list[Incident] = Field(
+        default_factory=list, description="Unconfirmed drafts (status draft). `incidents` lists confirmed reports only.")
+    pending_approvals: list[ApprovalRequest] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- telemetry
@@ -482,11 +572,15 @@ class ReadyResponse(ContractModel):
 
 # --------------------------------------------------------------------------- commands (taps and graph tools)
 
-CommandKind = Literal["task.start", "task.complete"]
+CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss"]
 
 
 class CommandPayload(ContractModel):
     task_id: StableId | None = None
+    incident_id: StableId | None = None
+    description: str | None = Field(default=None, min_length=1, max_length=1000)
+    severity: Severity | None = None
+    location_text: str | None = Field(default=None, max_length=300)
 
 
 class SessionCommand(ContractModel):
@@ -504,6 +598,8 @@ class SessionCommand(ContractModel):
     def _payload_for_kind(self) -> "SessionCommand":
         if self.kind.startswith("task.") and not self.payload.task_id:
             raise ValueError("task commands need payload.task_id")
+        if self.kind.startswith("incident.") and not self.payload.incident_id:
+            raise ValueError("incident commands need payload.incident_id")
         return self
 
 
@@ -517,4 +613,5 @@ class SessionCommandResult(ContractModel):
     summary: str
     state_version: int
     task: AssignedTask | None = None
+    incident: Incident | None = None
     created_at: datetime

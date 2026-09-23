@@ -141,6 +141,13 @@ $env:SESSION_BINDINGS_PATH = "data\demo\session_bindings.json"; python -m cocoon
   `POST /v1/sessions/{session_id}/commands` (`task.start` / `task.complete`, with optional `expected_version`).
 - **Shared rules.** Voice and taps go through one command service that records each committed command once, with
   the same ownership, legal-transition and version checks.
+- **Incidents (B2).** "Log an incident: hose leaking near the stockpile yard, high severity, and tell my supervisor"
+  saves a structured report (what, where + site zone, when, severity, each with its basis; identity from the session)
+  and a linked supervisor-review request that stays `pending` (no notification or decision exists yet). A missing
+  description is asked for. Drafts are listed separately in `/state.incident_drafts`; "confirm/dismiss the draft",
+  a bare "yes" (only when exactly one thing is waiting) and taps `incident.edit` / `incident.confirm` /
+  `incident.dismiss` change them once. Every turn result carries `branch` and `action_records` (also on a failed
+  turn); retrying a failed `turn_id` reuses what was saved and runs only what is missing.
 
 ## Actor tokens (local prototype auth, I02b)
 

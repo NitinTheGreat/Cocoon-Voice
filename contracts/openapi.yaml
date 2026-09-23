@@ -726,6 +726,53 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
+    ActionRecord:
+      properties:
+        action_id:
+          type: string
+          title: Action Id
+        kind:
+          type: string
+          title: Kind
+        outcome:
+          type: string
+          enum:
+          - completed
+          - failed
+          - unknown
+          title: Outcome
+        record_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Type
+        record_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Id
+        summary:
+          type: string
+          title: Summary
+        state_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: State Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - action_id
+      - kind
+      - outcome
+      - summary
+      - created_at
+      title: ActionRecord
+      description: Durable outcome of one write in this turn (committed together with the write).
     Alert:
       properties:
         alert_id:
@@ -857,6 +904,43 @@ components:
       - speech
       - created_at
       title: Announcement
+    ApprovalRequest:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        kind:
+          type: string
+          const: incident_escalation
+          title: Kind
+        incident_id:
+          type: string
+          title: Incident Id
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - expired
+          title: Status
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - kind
+      - incident_id
+      - status
+      - created_at
+      title: ApprovalRequest
+      description: 'A request for supervisor review. `pending` until a supervisor decision route exists (Batch D);
+        creating it
+
+        is not a notification and not an approval.'
     AssignedTask:
       properties:
         task_id:
@@ -981,6 +1065,55 @@ components:
       - shift_bound
       title: AssignedTasksAction
       description: Read of the shift's assigned tasks (next task or full list).
+    CapabilityUnavailableAction:
+      properties:
+        type:
+          type: string
+          const: capability_unavailable
+          title: Type
+        capability:
+          type: string
+          maxLength: 60
+          title: Capability
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - capability
+      title: CapabilityUnavailableAction
+    ClarificationAction:
+      properties:
+        type:
+          type: string
+          const: clarification_needed
+          title: Type
+        for_action:
+          type: string
+          enum:
+          - confirm_draft
+          - dismiss_draft
+          - explain_alert
+          - affirm
+          title: For Action
+        reason:
+          type: string
+          enum:
+          - several_candidates
+          - nothing_pending
+          title: Reason
+        options:
+          items:
+            type: string
+          type: array
+          title: Options
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - for_action
+      - reason
+      title: ClarificationAction
+      description: 'Nothing was changed: several workflows could match, or there is nothing to act on.'
     CommandPayload:
       properties:
         task_id:
@@ -991,6 +1124,37 @@ components:
             - lk-item_4f2c9a
           - type: 'null'
           title: Task Id
+        incident_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Incident Id
+        description:
+          anyOf:
+          - type: string
+            maxLength: 1000
+            minLength: 1
+          - type: 'null'
+          title: Description
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        location_text:
+          anyOf:
+          - type: string
+            maxLength: 300
+          - type: 'null'
+          title: Location Text
       additionalProperties: false
       type: object
       title: CommandPayload
@@ -1123,6 +1287,24 @@ components:
       required:
       - error
       title: ErrorResponse
+    EscalationRequestedAction:
+      properties:
+        type:
+          type: string
+          const: escalation_requested
+          title: Type
+        approval:
+          $ref: '#/components/schemas/ApprovalRequest'
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - approval
+      - created
+      title: EscalationRequestedAction
     EventsPage:
       properties:
         session_id:
@@ -1186,6 +1368,94 @@ components:
           type: string
           format: date-time
           title: Created At
+        status:
+          type: string
+          enum:
+          - draft
+          - confirmed
+          - dismissed
+          title: Status
+          default: confirmed
+        origin:
+          type: string
+          enum:
+          - operator_reported
+          - auto_draft
+          title: Origin
+          default: operator_reported
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+          description: Null = not stated (never guessed).
+        severity_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - rule_default
+          - type: 'null'
+          title: Severity Basis
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        site_zone_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Zone Id
+        zone_basis:
+          anyOf:
+          - type: string
+            enum:
+            - reported
+            - active_task
+            - shift_zone
+          - type: 'null'
+          title: Zone Basis
+        location_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Text
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+        occurred_basis:
+          anyOf:
+          - type: string
+            enum:
+            - time_of_report
+            - observation_time
+          - type: 'null'
+          title: Occurred Basis
+        episode_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Episode Id
+          description: Alert episode behind an automatic draft.
+        version:
+          type: integer
+          title: Version
+          default: 1
+        confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Confirmed At
       additionalProperties: false
       type: object
       required:
@@ -1198,6 +1468,47 @@ components:
       - source_turn_id
       - created_at
       title: Incident
+      description: 'A report. `description` is the "what". Structured fields are additive; each `*_basis` says where
+        a value came
+
+        from (reported by the operator, taken from recorded context, or a stated default) so nothing looks invented.'
+    IncidentDraftAction:
+      properties:
+        type:
+          type: string
+          enum:
+          - incident_confirmed
+          - incident_dismissed
+          title: Type
+        incident:
+          $ref: '#/components/schemas/Incident'
+        created:
+          type: boolean
+          title: Created
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - incident
+      - created
+      title: IncidentDraftAction
+    IncidentDraftsAction:
+      properties:
+        type:
+          type: string
+          const: incident_drafts
+          title: Type
+        drafts:
+          items:
+            $ref: '#/components/schemas/Incident'
+          type: array
+          title: Drafts
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - drafts
+      title: IncidentDraftsAction
     IncidentLoggedAction:
       properties:
         type:
@@ -1372,6 +1683,26 @@ components:
         asked_in_turn_id:
           type: string
           title: Asked In Turn Id
+        notify_supervisor:
+          type: boolean
+          title: Notify Supervisor
+          description: The report was asked to go to a supervisor too.
+          default: false
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        location_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location Text
       additionalProperties: false
       type: object
       required:
@@ -1569,6 +1900,9 @@ components:
           enum:
           - task.start
           - task.complete
+          - incident.edit
+          - incident.confirm
+          - incident.dismiss
           title: Kind
         captured_at:
           anyOf:
@@ -1631,6 +1965,10 @@ components:
         task:
           anyOf:
           - $ref: '#/components/schemas/AssignedTask'
+          - type: 'null'
+        incident:
+          anyOf:
+          - $ref: '#/components/schemas/Incident'
           - type: 'null'
         created_at:
           type: string
@@ -1758,6 +2096,17 @@ components:
           type: array
           title: Assigned Tasks
           description: Tasks of the trusted shift. `tasks` stays the legacy shared demo list.
+        incident_drafts:
+          items:
+            $ref: '#/components/schemas/Incident'
+          type: array
+          title: Incident Drafts
+          description: Unconfirmed drafts (status draft). `incidents` lists confirmed reports only.
+        pending_approvals:
+          items:
+            $ref: '#/components/schemas/ApprovalRequest'
+          type: array
+          title: Pending Approvals
       additionalProperties: false
       type: object
       required:
@@ -2185,11 +2534,22 @@ components:
             - $ref: '#/components/schemas/AssignedTasksAction'
             - $ref: '#/components/schemas/TaskTransitionAction'
             - $ref: '#/components/schemas/TaskRejectedAction'
+            - $ref: '#/components/schemas/IncidentDraftAction'
+            - $ref: '#/components/schemas/IncidentDraftsAction'
+            - $ref: '#/components/schemas/EscalationRequestedAction'
+            - $ref: '#/components/schemas/ClarificationAction'
+            - $ref: '#/components/schemas/CapabilityUnavailableAction'
             discriminator:
               propertyName: type
               mapping:
                 alert_explained: '#/components/schemas/AlertExplainedAction'
                 assigned_tasks: '#/components/schemas/AssignedTasksAction'
+                capability_unavailable: '#/components/schemas/CapabilityUnavailableAction'
+                clarification_needed: '#/components/schemas/ClarificationAction'
+                escalation_requested: '#/components/schemas/EscalationRequestedAction'
+                incident_confirmed: '#/components/schemas/IncidentDraftAction'
+                incident_dismissed: '#/components/schemas/IncidentDraftAction'
+                incident_drafts: '#/components/schemas/IncidentDraftsAction'
                 incident_logged: '#/components/schemas/IncidentLoggedAction'
                 information_requested: '#/components/schemas/InformationRequestedAction'
                 next_task: '#/components/schemas/NextTaskAction'
@@ -2239,6 +2599,24 @@ components:
             format: date-time
           - type: 'null'
           title: Completed At
+        branch:
+          anyOf:
+          - type: string
+            enum:
+            - tasks
+            - safety_incidents
+            - training
+            - general_assistance
+          - type: 'null'
+          title: Branch
+          description: Workflow branch the turn was classified into.
+        action_records:
+          items:
+            $ref: '#/components/schemas/ActionRecord'
+          type: array
+          title: Action Records
+          description: 'Writes committed by this turn, also on a failed turn: a failure after a committed write
+            never means nothing was saved.'
       additionalProperties: false
       type: object
       required:

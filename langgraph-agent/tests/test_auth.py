@@ -123,12 +123,16 @@ def test_populated_v2_database_upgrades_to_v3_without_changes(tmp_path):
     session, _ = store.get_or_create_session(req, lambda _r: NewSessionBinding(FIXTURE_MANIFEST_SHA256, "unavailable"))
     store.create_incident(session, "hose", "t1")
 
-    def snapshot():
+    tables = ("sessions", "incidents", "catalog_versions", "catalog_version_machines", "catalog_version_operators",
+              "tasks", "lessons")
+    c = sqlite3.connect(settings.db_path)
+    v2_columns = {t: [r[1] for r in c.execute(f"PRAGMA table_info({t})")] for t in tables}
+    c.close()
+
+    def snapshot():  # the v2 columns only; later migrations may add columns but never change these values
         c = sqlite3.connect(settings.db_path)
         try:
-            return {t: c.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall()
-                    for t in ("sessions", "incidents", "catalog_versions", "catalog_version_machines",
-                              "catalog_version_operators", "tasks", "lessons")}
+            return {t: c.execute(f"SELECT {', '.join(v2_columns[t])} FROM {t} ORDER BY 1").fetchall() for t in tables}
         finally:
             c.close()
 

@@ -136,18 +136,24 @@ class CocoonService:
         fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
                                     "payload": req.payload.model_dump(mode="json"),
                                     "expected_version": req.expected_version})
-        result, duplicate = self.run_task_command(
+        if req.kind.startswith("task."):
+            mutate, noun = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version), "task"
+        else:
+            edits = req.payload.model_dump(include={"description", "severity", "location_text"}, exclude_none=True)
+            mutate = Store.incident_transition(session, req.kind, req.payload.incident_id, req.expected_version, edits)
+            noun = "incident"
+        result, duplicate = self.run_domain_command(
             scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind, fingerprint=fingerprint,
-            session=session, turn_id=None, task_id=req.payload.task_id, expected_version=req.expected_version)
+            session=session, mutate=mutate, noun=noun)
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
                                       status="completed", duplicate=duplicate)
 
-    def run_task_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
-                         turn_id: str | None, task_id: str | None, expected_version: int | None) -> tuple[dict, bool]:
+    def run_domain_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
+                           mutate, noun: str) -> tuple[dict, bool]:
         try:
             return self.store.run_command(
                 scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
-                turn_id=turn_id, mutate=Store.task_transition(session, kind, task_id, expected_version))
+                turn_id=None, mutate=mutate)
         except Conflict as exc:
             raise ApiError(409, "idempotency_conflict", str(exc)) from exc
         except NotFound as exc:
@@ -157,7 +163,7 @@ class CocoonService:
                 {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
         except InvalidTransition as exc:
             raise ApiError(409, "invalid_transition", str(exc), details=[
-                {"field": "body.kind", "issue": f"task status is {exc.current_status}"}]) from exc
+                {"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]) from exc
 
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
@@ -275,6 +281,7 @@ class CocoonService:
             return s.TurnResult(
                 session_id=session_id, turn_id=turn_id, status="failed", error=s.ErrorBody(**row.error),
                 created_at=row.created_at, llm_mode=self.brain.mode,
+                action_records=self.store.action_records(session_id, turn_id),
             )
         return self._processing(session_id, turn_id, row.created_at)
 
@@ -303,7 +310,8 @@ class CocoonService:
                 result = s.TurnResult(
                     session_id=session_id, turn_id=req.turn_id, status="completed", speech=final["speech"],
                     actions=final.get("actions", []), state_version=version, llm_mode=self.brain.mode,
-                    created_at=created_at, completed_at=utcnow(),
+                    created_at=created_at, completed_at=utcnow(), branch=(final.get("route") or {}).get("branch"),
+                    action_records=self.store.action_records(session_id, req.turn_id),
                 )
                 self.store.complete_turn(session_id, req.turn_id, result.model_dump(mode="json"))
                 log.info(
@@ -313,20 +321,35 @@ class CocoonService:
                 )
                 return result
         except ApiError as exc:
+            self._note_saved_actions(session_id, req.turn_id, exc)
             self.store.fail_turn(session_id, req.turn_id, self._error_dict(exc, request_id))
             log.warning("turn failed session=%s turn=%s code=%s", session_id, req.turn_id, exc.code)
             raise
         except Exception as exc:
             log.exception("turn crashed session=%s turn=%s", session_id, req.turn_id)
             err = ApiError(500, "internal_error", "turn processing failed", retryable=True)
+            self._note_saved_actions(session_id, req.turn_id, err)
             self.store.fail_turn(session_id, req.turn_id, self._error_dict(err, request_id))
             raise err from exc
         finally:
             self._inflight.pop(key, None)
 
+    def _note_saved_actions(self, session_id: str, turn_id: str, exc: ApiError) -> None:
+        """A failure after committed writes must not read as "nothing was saved": name them in the error. Retrying
+        the same turn_id reuses them (turn-scoped command IDs) and only runs what is still missing."""
+        records = self.store.action_records(session_id, turn_id)
+        if records:
+            exc.message = (f"{exc.message}; {len(records)} action(s) were saved before the failure and will not be "
+                           "repeated on retry")
+            exc.details = (exc.details or []) + [
+                {"field": "action_records", "issue": f"{r.kind} {r.outcome}: {r.record_id or '-'}"} for r in records]
+
     @staticmethod
     def _error_dict(exc: ApiError, request_id: str) -> dict[str, Any]:
-        return {"code": exc.code, "message": exc.message, "retryable": exc.retryable, "request_id": request_id}
+        out = {"code": exc.code, "message": exc.message, "retryable": exc.retryable, "request_id": request_id}
+        if exc.details:
+            out["details"] = exc.details
+        return out
 
     # ------------------------------------------------------------------ state
 
@@ -340,6 +363,8 @@ class CocoonService:
             llm_mode=self.brain.mode,
             tasks=self.store.list_tasks(),
             incidents=self.store.list_incidents(session_id),
+            incident_drafts=self.store.list_incidents(session_id, "draft"),
+            pending_approvals=self.store.list_pending_approvals(session_id),
             training_assignments=self.store.list_assignments(session),
             available_lessons=self.store.list_lessons(),
             active_alerts=self.store.active_alerts(session_id),

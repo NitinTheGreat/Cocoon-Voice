@@ -294,6 +294,41 @@ ASSIGNED_TASKS: tuple[str, ...] = (
 )
 
 
+STRUCTURED_INCIDENTS: tuple[str, ...] = (
+    # Existing rows were saved immediately as reports, so they are confirmed operator reports (the defaults).
+    """ALTER TABLE incidents ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'
+    CHECK (status IN ('draft', 'confirmed', 'dismissed'))""",
+    """ALTER TABLE incidents ADD COLUMN origin TEXT NOT NULL DEFAULT 'operator_reported'
+    CHECK (origin IN ('operator_reported', 'auto_draft'))""",
+    "ALTER TABLE incidents ADD COLUMN severity TEXT CHECK (severity IN ('low', 'medium', 'high', 'critical'))",
+    "ALTER TABLE incidents ADD COLUMN severity_basis TEXT",
+    "ALTER TABLE incidents ADD COLUMN site_id TEXT",
+    "ALTER TABLE incidents ADD COLUMN site_zone_id TEXT",
+    "ALTER TABLE incidents ADD COLUMN zone_basis TEXT",
+    "ALTER TABLE incidents ADD COLUMN location_text TEXT",
+    "ALTER TABLE incidents ADD COLUMN occurred_at TEXT",
+    "ALTER TABLE incidents ADD COLUMN occurred_basis TEXT",
+    "ALTER TABLE incidents ADD COLUMN episode_id TEXT",
+    "ALTER TABLE incidents ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE incidents ADD COLUMN confirmed_at TEXT",
+    "ALTER TABLE incidents ADD COLUMN dismissed_at TEXT",
+    "CREATE UNIQUE INDEX one_draft_per_episode ON incidents(episode_id) WHERE episode_id IS NOT NULL",
+    # The routing decision of a turn, saved once, so a retried turn repeats the same plan without a new model call.
+    "ALTER TABLE turns ADD COLUMN route_json TEXT",
+    # A request for supervisor review. Pending until a supervisor decision route exists (Batch D).
+    """CREATE TABLE approval_requests (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('incident_escalation')),
+    incident_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, incident_id)
+)""",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -306,6 +341,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(2, "catalog_bound_sessions", CATALOG_BOUND_SESSIONS),
     Migration(3, "actor_tokens", ACTOR_TOKENS),
     Migration(4, "assigned_tasks", ASSIGNED_TASKS),
+    Migration(5, "structured_incidents", STRUCTURED_INCIDENTS),
 )
 
 
