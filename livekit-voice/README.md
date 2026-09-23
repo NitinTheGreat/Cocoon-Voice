@@ -146,6 +146,26 @@ A worker that starts has already passed settings validation, since startup refus
 
 **Common trap:** because the worker registers with an explicit `agent_name`, LiveKit does **not** auto-dispatch it. A registered worker receives no job unless something dispatches exactly `cocoon-voice` in the **same project**. The usual causes are a name mismatch or the browser being on another project. A token-embedded dispatch fires only when the join *creates* the room.
 
+### Remote LangGraph brain (`VOICE_BRAIN=remote_langgraph`)
+
+- **Flow:** each final, wake-approved utterance is sent as one backend turn to `POST /v1/sessions/{id}/turns`, with
+  `turn_id=lk-<chat item id>` reused for every retry and 202 poll. Only the returned `speech` is spoken. The
+  backend returns the whole reply at once; there is no token streaming yet.
+- **Setup:** in `livekit-voice/.env` set `VOICE_BRAIN=remote_langgraph`, `COCOON_BACKEND_URL`,
+  `COCOON_SERVICE_TOKEN` (the same value as `langgraph-agent/.env`), `COCOON_DEFAULT_MACHINE_ID=EXC_DEMO_001` and
+  `COCOON_DEFAULT_OPERATOR_ID=OP_DEMO_1_1`. Keep `PREEMPTIVE_GENERATION=false`.
+- **Start order:** start the backend (`langgraph-agent`: `python -m cocoon_agent`, then check `/readyz` for
+  `"status":"ready"` and `"catalog":true`), then the worker.
+- **Log lines:**
+  - `remote brain: bound to backend session ...`
+  - `backend turn lk-... outcome=completed|unknown|rejected|config_error|stale|cancelled`
+  - `announcement ... played` / the delivery report
+- **Failures:**
+  - Configuration errors (401/403, 422 unknown machine/operator, 503 catalog_unavailable) are not retried.
+  - Retryable 503s back off, respecting `Retry-After`, with the same `turn_id`.
+  - An unconfirmed outcome is spoken as "... I can't confirm that yet".
+  - A barge-in stops playback only; the backend has no cancel route, so the turn may still complete there.
+
 ### Continuous-listening Playground mode (no wake phrase, worker enhancement off)
 
 A local diagnostic mode: every final transcript goes to the agent, and worker-side Krisp is disabled to isolate

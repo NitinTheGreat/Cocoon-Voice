@@ -60,6 +60,10 @@ python -m cocoon_agent            # or: cocoon-agent
 
 Stop the server with Ctrl+C. Settings come from `langgraph-agent/.env` whichever directory you start from.
 
+With the optional PostgreSQL insights add-on (onboarding, question history, analytics), start
+`python -m cocoon_agent.insights` instead. It is the same app with extra `/v1/insights/*` routes; see
+[docs/INSIGHTS.md](docs/INSIGHTS.md).
+
 - `GET /healthz` returns `{"status":"ok"}`. It shows the process is up.
 - `GET /readyz` shows whether SQLite and the checkpointer are open, whether the verified catalog is loaded (`catalog`, `catalog_version`, sanitized `catalog_issue`), the cocoon.db `schema_version` and the `llm_mode`. It returns 503 when the service is not ready, including when the catalog is missing or does not match its pinned hash. In that case the process still serves existing sessions but refuses new ones with 503 `catalog_unavailable`.
 - On start the server applies pending cocoon.db migrations (docs/MIGRATIONS.md). A migration error stops startup and leaves the database at its previous version. Back up a database you care about first: `python scripts/backup_db.py`.

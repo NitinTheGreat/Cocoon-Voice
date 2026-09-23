@@ -22,6 +22,7 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    FlushSentinel,
     APIConnectOptions,
     JobContext,
     JobProcess,
@@ -42,11 +43,15 @@ from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
 from .cartesia_auth import CartesiaTokenRefresher, describe_status
 from .acoustic_wake import AcousticRouter, KeywordEngine, LiveKitWakeWordEngine, PorcupineEngine
+from .announcements import AnnouncementPump
+from .backend_client import BackendClient, BackendConfigError
+from .bridge import CONFIG_SPEECH, TurnBridge, last_message, turn_id_for
+from .remote_bridge import MissingOperatorId, SessionSpeaker, parse_job_metadata, session_request
 from .providers import (NoiseSetup, build_noise_cancellation, build_stt, build_tts, check_noise_cancellation,
                         create_brain, krisp_filter_active, load_vad)
 from .recording import InputRecorder, cleanup_recordings
 from .streaming import EpochCounter, GenerationStats, guarded_stream
-from .wake import WakeGate, WakeState
+from .wake import WakeGate, WakeState, normalize
 
 log = logging.getLogger("cocoon_voice.agent")
 
@@ -94,6 +99,10 @@ class VoiceController:
         self.interruption_pending = False  # user audio overlapped our speech; SDK decides resume vs. new turn
         self.noise_processor = None
         self.stt_input = SttInputMonitor()
+        self.tts_audio_s = 0.0  # total synthesized audio (announcement delivery checks it)
+        # remote brain (VOICE_BRAIN=remote_langgraph): set by run_session; None = not connected
+        self.bridge: TurnBridge | None = None
+        self._remote_last: tuple[str, str, str, float] | None = None  # (normalized text, turn_id, text, time)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -276,10 +285,14 @@ class VoiceController:
             # e.g. a preemptive generation for idle speech: never call the brain while armed
             return
         epoch = self.epochs.next()
-        ctx = sp.bounded_context(chat_ctx, self.s.max_context_turns)
         turn = self.metrics.current
         if turn:
             turn.mark("llm_request")
+        if self.s.voice_brain == "remote_langgraph":
+            async for chunk in self._remote_reply(chat_ctx, epoch, turn):
+                yield chunk
+            return
+        ctx = sp.bounded_context(chat_ctx, self.s.max_context_turns)
         stats = GenerationStats(epoch=epoch)
         self.llm_in_flight += 1
         try:
@@ -308,6 +321,65 @@ class VoiceController:
                      stats.outcome, stats.attempts, stats.ms(stats.first_chunk_at), stats.cue_at is not None,
                      stats.chars)
 
+    async def _remote_reply(self, chat_ctx: llm.ChatContext, epoch: int, turn) -> AsyncIterable[Any]:
+        """One wake-approved final utterance -> one logical backend turn; only its speech reaches TTS.
+
+        The backend returns the whole reply in one JSON response (no token streaming). No worker-side model
+        is called and no answer is invented: failures map to fixed, honest phrases.
+        """
+        msg = last_message(chat_ctx)
+        text = (msg.text_content or "").strip() if msg is not None and msg.role == "user" else ""
+        if not text:
+            log.info("remote brain: no new user message at the end of the context; nothing submitted")
+            return
+        if self.bridge is None:
+            log.error("remote brain: not connected to the backend (see startup log); turn not submitted")
+            yield CONFIG_SPEECH
+            return
+        turn_id, norm, now = turn_id_for(msg), normalize(text), time.monotonic()
+        last = self._remote_last
+        if last is not None and last[0] == norm and now - last[3] < 3.0:
+            # the same words committed twice (duplicate final): replay the stored backend result under the
+            # original turn_id and payload instead of creating a second backend turn
+            turn_id, text = last[1], last[2]
+            log.info("remote brain: duplicate final transcript; replaying backend turn %s", turn_id)
+        else:
+            self._remote_last = (norm, turn_id, text, now)
+        started = time.perf_counter()
+        self.llm_in_flight += 1
+        task = asyncio.ensure_future(self.bridge.reply_for_turn(turn_id, text))
+        outcome = "cancelled"
+        cue = False
+        try:
+            if self.s.thinking_cue_enabled:
+                done, _ = await asyncio.wait({task}, timeout=self.s.thinking_cue_delay_ms / 1000)
+                if not done and self.epochs.current == epoch:
+                    cue = True
+                    yield sp.thinking_cue(epoch)
+                    yield FlushSentinel()
+            reply = await task
+            outcome = reply.outcome
+            if self.epochs.current != epoch:
+                outcome = "stale"
+                log.info("remote brain: dropping reply of superseded turn %s", turn_id)
+                return
+            if turn and "llm_first_text" not in turn.marks:
+                turn.mark("llm_first_text")
+            yield reply.speech
+        finally:
+            self.llm_in_flight -= 1
+            if not task.done():
+                # local barge-in or a newer turn: stop waiting. The backend has no cancel route, so the turn
+                # may still complete there (and may save records); nothing is claimed as cancelled.
+                task.cancel()
+                log.info("remote brain: stopped waiting for backend turn %s; the backend may still complete it",
+                         turn_id)
+            if turn:
+                turn.cue_used = cue
+                turn.outcome_hint = outcome
+            log.info("backend turn %s outcome=%s ms=%d cue=%s", turn_id, outcome,
+                     (time.perf_counter() - started) * 1000, cue)
+
     def _last_user_has_wake(self, chat_ctx: llm.ChatContext) -> bool:
         for item in reversed(chat_ctx.items):
             if item.type == "message" and item.role == "user":
@@ -335,6 +407,7 @@ class VoiceController:
                     turn.mark("tts_first_audio")
                 yield frame
         finally:
+            self.tts_audio_s += pacing.audio_s
             if pacing.frames:
                 self.tts_replies += 1
                 self.tts_underruns += pacing.underran
@@ -553,6 +626,54 @@ def build_session(settings: VoiceSettings, vad) -> AgentSession:
     )
 
 
+class ControllerSpeaker(SessionSpeaker):
+    """Announcement output through the session, reporting whether audio was actually synthesized."""
+
+    def __init__(self, session: AgentSession, controller: VoiceController):
+        super().__init__(session)
+        self._controller = controller
+        self._mark = 0.0
+
+    def say(self, text: str):
+        self._mark = self._controller.tts_audio_s
+        return super().say(text)
+
+    def produced_audio(self) -> bool | None:
+        return self._controller.tts_audio_s > self._mark
+
+
+async def connect_backend(ctx: JobContext, settings: VoiceSettings, controller: VoiceController,
+                          session: AgentSession, participant: rtc.RemoteParticipant) -> None:
+    """Bind this room to a backend session and start announcements. Never falls back to a local model."""
+    try:
+        request = session_request(ctx.room.name, participant, parse_job_metadata(ctx.job.metadata), settings)
+    except MissingOperatorId as exc:
+        log.error("remote brain disabled for this session: %s", exc)
+        return
+    client = BackendClient(settings.backend_url, settings.service_token.get_secret_value(),  # type: ignore[union-attr]
+                           request_timeout=settings.backend_request_timeout,
+                           connect_timeout=settings.backend_connect_timeout,
+                           max_attempts=settings.backend_max_attempts, turn_deadline=settings.turn_deadline)
+    ctx.add_shutdown_callback(client.aclose)
+    bridge = TurnBridge(client, None, request=request,
+                        trusted_session_id=parse_job_metadata(ctx.job.metadata).get("session_id"))
+    controller.bridge = bridge
+    log.info("remote brain: backend=%s machine=%s operator=%s key=%s", settings.backend_url, request.machine_id,
+             request.operator_id, request.client_session_key)
+    try:
+        binding = await asyncio.wait_for(bridge.ensure_bound(), timeout=settings.backend_request_timeout)
+        log.info("remote brain: bound to backend session %s", binding.session_id)
+    except BackendConfigError as exc:
+        log.error("remote brain: backend rejected the session binding (configuration): %s", exc)
+    except Exception as exc:  # unreachable/slow backend: bind lazily on the first turn
+        log.warning("remote brain: backend not reachable yet (%s); will bind on the first turn",
+                    type(exc).__name__)
+    pump = AnnouncementPump(client, lambda: bridge.session_id, ControllerSpeaker(session, controller),
+                            consumer_id=f"cocoon-voice:{ctx.room.name}")
+    pump.start()
+    ctx.add_shutdown_callback(pump.stop)
+
+
 def prewarm(proc: JobProcess) -> None:
     """Runs once per job process, off the first-turn path: load local models."""
     proc.userdata["vad"] = load_vad()
@@ -643,6 +764,8 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
     )
     log.info("effective interruption handling: %s (stt aligned_transcript=%s)", controller.effective_interruption(),
              session.stt.capabilities.aligned_transcript if session.stt else None)
+    if settings.voice_brain == "remote_langgraph":
+        await connect_backend(ctx, settings, controller, session, participant)
     prewarm_tts = getattr(session.tts, "prewarm", None)
     if callable(prewarm_tts):
         prewarm_tts()
