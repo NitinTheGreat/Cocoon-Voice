@@ -2,6 +2,28 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 19:20 UTC — M5: smoke, benchmark, noise fixtures, metrics (branch `voice`)
+
+- **Added:** `python -m cocoon_voice.smoke` (bounded live checks through the worker factories),
+  `python -m cocoon_voice.benchmark run|report` (≤30 turns / 10 min, p50/p95 cold vs warm, usage counts, JSON written
+  to `metrics/`), deterministic SYNTHETIC noise fixtures (machinery, fan, impacts, echo_babble), local Windows SAPI
+  speech fixtures via `scripts/make_speech_fixtures.ps1` (git-ignored), per-turn metrics JSONL without transcripts.
+- **Live results (Vertex only; Cartesia/AssemblyAI skipped — keys missing):**
+  - `smoke`: vertex PASS through the LiveKit Google plugin (cold, no prewarm: TTFT 3164 ms).
+  - Prewarm effect (1 request each): no prewarm TTFT 2939 ms; `llm.prewarm()` + 3 s → 648 ms. AgentSession prewarms
+    automatically at construction, before the greeting.
+  - `benchmark run --turns 10` without prewarm (metrics/benchmark-20260923T231059.json): warm (n=9) TTFT p50 685 /
+    p95 1022 ms; first speakable sentence p50 845 / p95 1123 ms; cold (n=1) TTFT 2975 ms.
+  - `benchmark run --turns 10` with prewarm (metrics/benchmark-20260923T231241.json): first request TTFT 733 ms,
+    first sentence 812 ms; warm (n=9) TTFT p50 668 / p95 695 ms; first sentence p50 805 / p95 912 ms.
+  - Usage per 10-turn run: 10 Vertex requests, ~1.2–1.3k output characters.
+- **Offline noise results (Silero VAD, worker settings, no Krisp):** noise-only fixtures (8–20 s, −30/−24/−20/−12 dBFS)
+  produced 0 speech detections; SAPI speech mixed with each noise at 10, 0 and −5 dB SNR was detected as exactly one
+  segment (3.90–4.10 s of a 4.87 s clip). `pytest tests/test_noise_vad.py` → 16 passed.
+- **Checks run:** full suite 127 passed, 1 skipped.
+- **Not verified:** Cartesia first audio, AssemblyAI finalisation latency, Krisp effect, real background talk, speaker
+  echo, human voices/accents. Synthetic noise is not real machinery audio.
+
 ## 2026-09-23 18:45 UTC — M4: Porcupine acoustic routing (branch `voice`)
 
 - **Scope:** `AcousticRouter` is the single consumer of the agent audio input in `WAKE_MODE=porcupine`: frames

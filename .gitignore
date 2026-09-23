@@ -35,3 +35,6 @@ livekit-voice/.cache/
 livekit-voice/recordings/
 livekit-voice/metrics/
 livekit-voice/keywords/*.ppn
+
+# Locally generated synthetic speech fixtures (Windows SAPI voice output; regenerate with scripts/make_speech_fixtures.ps1)
+livekit-voice/tests/fixtures/audio/
