@@ -2,6 +2,24 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-23 20:30 UTC — M7: first live provider checks with real keys (branch `voice`)
+
+- **Doctor:** settings, VAD, noise (constructs), Vertex (ADC), AssemblyAI, LiveKit PASS.
+  **Cartesia FAIL: HTTP 401 "Invalid API key"** on `/tts/bytes` and on the TTS websocket. The previous doctor check
+  (GET `/voices/{id}`) returned 200 for this key, so it did not prove the key works; the check now performs a one-word
+  synthesis. Voice `f786b574-…` is "Katie - Friendly Fixer" (en).
+- **Smoke/benchmark fix:** outside a LiveKit job the plugins need an explicit aiohttp session
+  ("Attempted to use an http session outside of a job context"); `live_checks` now passes one. The worker is unaffected.
+- **AssemblyAI live (universal-3-5-pro, local SAPI speech, synthetic):** "Hey Cat, what should I check before starting
+  the excavator?" transcribed exactly (WER 0) → wake decision `respond` with the question; "Hey Cat." → "Hey Cat!" →
+  `ack`. Finalisation latency from this run is NOT valid (fixture WAVs contain trailing silence, so the speech-end
+  marker was late).
+- **Porcupine:** the user cannot obtain a Picovoice AccessKey (needs a company email). Alternatives evaluated:
+  `livekit-wakeword` 0.2.1 (Apache-2.0, ONNX, custom training pipeline) and `openwakeword` 0.6.0 (code Apache-2.0,
+  pretrained models CC BY-NC-SA 4.0, ONNX on Windows, custom training notebook). Not implemented yet.
+- **Checks run:** full `pytest` → 127 passed, 1 skipped.
+- **Blocked:** Playground speech until `CARTESIA_API_KEY` is replaced with a valid key.
+
 ## 2026-09-23 19:45 UTC — M6: documentation, report, dispatch helper (branch `voice`)
 
 - **Added/updated:** phase-1 README (install, keys, commands, Playground walkthrough + manual checklist, wake modes,

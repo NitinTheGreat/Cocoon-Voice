@@ -31,7 +31,7 @@ except Exception as _exc:  # pragma: no cover - platform dependent
 log = logging.getLogger("cocoon_voice.providers")
 
 
-def build_stt(settings: VoiceSettings):
+def build_stt(settings: VoiceSettings, http_session=None):
     kwargs: dict[str, Any] = {
         "api_key": settings.assemblyai_api_key.get_secret_value() if settings.assemblyai_api_key else None,
         "model": settings.assemblyai_model,
@@ -42,16 +42,19 @@ def build_stt(settings: VoiceSettings):
     }
     if kwargs["api_key"] is None:
         kwargs.pop("api_key")  # plugin raises a clear error naming ASSEMBLYAI_API_KEY
+    if http_session is not None:  # only needed outside a LiveKit job (smoke/benchmark tools)
+        kwargs["http_session"] = http_session
     return assemblyai.STT(**kwargs)
 
 
-def build_tts(settings: VoiceSettings):
+def build_tts(settings: VoiceSettings, http_session=None):
     return cartesia.TTS(
         api_key=settings.cartesia_api_key.get_secret_value() if settings.cartesia_api_key else None,
         model=settings.cartesia_model,
         voice=settings.cartesia_voice_id,
         language=settings.voice_language,
         speed=settings.cartesia_speed,
+        http_session=http_session,  # None inside a job: the plugin uses the job's shared session
         # Streaming synthesis: the plugin's sentence tokenizer coalesces LLM tokens into
         # speakable segments, so audio starts after the first sentence, not the whole reply.
     )

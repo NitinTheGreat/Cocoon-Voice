@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from .config import get_settings
-from .live_checks import (OPERATOR_PROMPTS, brain_turn, make_brain, make_stt, make_tts, stt_realtime,
+from .live_checks import (close_http_session, OPERATOR_PROMPTS, brain_turn, make_brain, make_stt, make_tts, stt_realtime,
                           tts_stream_turn, word_error_rate)
 from .observability import percentile, summarize_jsonl
 
@@ -112,6 +112,7 @@ async def run(turns: int, use_stt: bool, noise_kind: str | None, snr_db: float, 
     out = s.metrics_dir / f"benchmark-{time.strftime('%Y%m%dT%H%M%S')}.json"
     out.write_text(json.dumps({"report": report, "rows": rows}, indent=2), encoding="utf-8")
     report["written_to"] = str(out)
+    await close_http_session()
     return report
 
 

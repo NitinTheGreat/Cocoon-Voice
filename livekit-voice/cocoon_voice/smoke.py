@@ -14,7 +14,7 @@ import asyncio
 import sys
 
 from .config import get_settings
-from .live_checks import (PRONUNCIATION_TEXT, brain_turn, make_brain, make_stt, make_tts, stt_realtime,
+from .live_checks import (close_http_session, PRONUNCIATION_TEXT, brain_turn, make_brain, make_stt, make_tts, stt_realtime,
                           tts_stream_turn, word_error_rate, write_wav)
 
 
@@ -64,6 +64,7 @@ async def run(only: str | None) -> int:
             except Exception as exc:
                 print(f"[FAIL] assemblyai {type(exc).__name__}: {str(exc)[:160]}")
                 failed += 1
+    await close_http_session()
     return 1 if failed else 0
 
 

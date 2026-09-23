@@ -103,21 +103,28 @@ def check_assemblyai(s: VoiceSettings, client: httpx.Client) -> Check:
 
 
 def check_cartesia(s: VoiceSettings, client: httpx.Client) -> Check:
+    """Voice lookup does not prove the key works, so a one-word synthesis validates it (negligible cost)."""
     if s.cartesia_api_key is None:
         return Check("cartesia", "FAIL", "CARTESIA_API_KEY is not set")
+    headers = {"X-API-Key": s.cartesia_api_key.get_secret_value(), "Cartesia-Version": "2025-04-16"}
     try:
-        r = client.get(f"https://api.cartesia.ai/voices/{s.cartesia_voice_id}",
-                       headers={"X-API-Key": s.cartesia_api_key.get_secret_value(),
-                                "Cartesia-Version": "2025-04-16"})
+        voice = client.get(f"https://api.cartesia.ai/voices/{s.cartesia_voice_id}", headers=headers)
+        tts = client.post("https://api.cartesia.ai/tts/bytes", headers=headers, json={
+            "model_id": s.cartesia_model, "transcript": "Ok.", "language": s.voice_language,
+            "voice": {"mode": "id", "id": s.cartesia_voice_id},
+            "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 24000}})
     except httpx.HTTPError as exc:
         return Check("cartesia", "FAIL", f"network: {type(exc).__name__}")
-    if r.status_code == 200:
-        v = r.json()
-        return Check("cartesia", "PASS", f"model={s.cartesia_model} voice={s.cartesia_voice_id} "
-                                         f"name={v.get('name')!r} language={v.get('language')!r}")
-    if r.status_code == 404:
-        return Check("cartesia", "FAIL", f"voice {s.cartesia_voice_id} not found for this key; set CARTESIA_VOICE_ID")
-    return Check("cartesia", "FAIL", f"HTTP {r.status_code} (401/403 = invalid key)")
+    if tts.status_code in (401, 403):
+        return Check("cartesia", "FAIL", f"HTTP {tts.status_code}: API key rejected for synthesis; create a new key "
+                                         "at https://play.cartesia.ai/keys")
+    if voice.status_code == 404 or tts.status_code == 404:
+        return Check("cartesia", "FAIL", f"voice {s.cartesia_voice_id} not found; set CARTESIA_VOICE_ID")
+    if tts.status_code != 200:
+        return Check("cartesia", "FAIL", f"synthesis HTTP {tts.status_code}: {_short(tts.text)}")
+    name = voice.json().get("name") if voice.status_code == 200 else "?"
+    return Check("cartesia", "PASS", f"key valid (synthesized {len(tts.content)} bytes); model={s.cartesia_model} "
+                                     f"voice={s.cartesia_voice_id} name={name!r}")
 
 
 def check_livekit(s: VoiceSettings) -> Check:

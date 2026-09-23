@@ -186,9 +186,27 @@ def make_brain(settings: VoiceSettings) -> llm.LLM:
     return create_brain(settings)
 
 
+_http_session = None
+
+
+def _session():
+    """Outside a LiveKit job the plugins need an explicit aiohttp session (one per tool run)."""
+    global _http_session
+    import aiohttp
+
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession()
+    return _http_session
+
+
+async def close_http_session() -> None:
+    if _http_session is not None and not _http_session.closed:
+        await _http_session.close()
+
+
 def make_tts(settings: VoiceSettings):
-    return build_tts(settings)
+    return build_tts(settings, http_session=_session())
 
 
 def make_stt(settings: VoiceSettings):
-    return build_stt(settings)
+    return build_stt(settings, http_session=_session())
