@@ -150,14 +150,20 @@ class VoiceSettings(BaseSettings):
     record_retention_hours: float = Field(default=24.0, alias="RECORD_RETENTION_HOURS", gt=0, le=720)
     metrics_dir: Path = Field(default=SERVICE_DIR / "metrics", alias="METRICS_DIR")
 
-    # ---------------------------------------------------------------- future-only (phase-0 remote bridge tools)
+    # ---------------------------------------------------------------- remote brain (VOICE_BRAIN=remote_langgraph)
     backend_url: str = Field(default="http://127.0.0.1:8000", alias="COCOON_BACKEND_URL")
     service_token: SecretStr | None = Field(default=None, alias="COCOON_SERVICE_TOKEN")
-    backend_request_timeout: float = Field(default=10.0, alias="COCOON_BACKEND_REQUEST_TIMEOUT")
-    backend_connect_timeout: float = Field(default=3.0, alias="COCOON_BACKEND_CONNECT_TIMEOUT")
-    backend_max_attempts: int = Field(default=4, alias="COCOON_BACKEND_MAX_ATTEMPTS")
-    turn_deadline: float = Field(default=30.0, alias="COCOON_TURN_DEADLINE_SECONDS")
-    default_machine_id: str = Field(default="cat-320-demo", alias="COCOON_DEFAULT_MACHINE_ID")
+    # one HTTP request; a live backend turn makes two model calls of about 2-15 s each
+    backend_request_timeout: float = Field(default=20.0, alias="COCOON_BACKEND_REQUEST_TIMEOUT", gt=0, le=120)
+    backend_connect_timeout: float = Field(default=3.0, alias="COCOON_BACKEND_CONNECT_TIMEOUT", gt=0, le=30)
+    backend_max_attempts: int = Field(default=4, alias="COCOON_BACKEND_MAX_ATTEMPTS", ge=1, le=10)
+    # whole turn including 202 polling and retries (backend COCOON_TURN_TIMEOUT_SECONDS defaults to 45)
+    turn_deadline: float = Field(default=55.0, alias="COCOON_TURN_DEADLINE_SECONDS", gt=0, le=300)
+    # catalog IDs only (free-text IDs get 422 from the backend for new sessions)
+    default_machine_id: str = Field(default="EXC_DEMO_001", alias="COCOON_DEFAULT_MACHINE_ID", min_length=1)
+    # used only when neither job metadata nor the participant attribute "operator_id" names one;
+    # the LiveKit participant identity is never used as a catalog operator ID
+    default_operator_id: str | None = Field(default=None, alias="COCOON_DEFAULT_OPERATOR_ID")
 
     @field_validator("wake_phrase")
     @classmethod
@@ -173,7 +179,8 @@ class VoiceSettings(BaseSettings):
         return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("assemblyai_api_key", "cartesia_api_key", "livekit_api_secret", "picovoice_access_key",
-                     "service_token", "porcupine_keyword_path", "wakeword_model_path", mode="before")
+                     "service_token", "porcupine_keyword_path", "wakeword_model_path", "default_operator_id",
+                     mode="before")
     @classmethod
     def _blank_secret_is_none(cls, value):
         return None if isinstance(value, str) and not value.strip() else value
@@ -247,13 +254,21 @@ class VoiceSettings(BaseSettings):
                                 ("CARTESIA_API_KEY", self.cartesia_api_key)):
                 if value is None:
                     issues.append(f"{name} is not set")
-        if self.voice_brain != "standalone_vertex":
-            issues.append("VOICE_BRAIN=remote_langgraph is future-only; this phase implements standalone_vertex")
-        if not self.google_genai_use_vertexai:
-            issues.append("GOOGLE_GENAI_USE_VERTEXAI must be true (Vertex AI via ADC; the Gemini Developer API "
-                          "is not used)")
-        if not self.google_cloud_project:
-            issues.append("GOOGLE_CLOUD_PROJECT is not set")
+        if self.voice_brain == "remote_langgraph":
+            # the backend owns the model; the worker needs no Vertex settings in this mode
+            if self.service_token is None:
+                issues.append("VOICE_BRAIN=remote_langgraph requires COCOON_SERVICE_TOKEN (same value as the backend)")
+            if not self.backend_url.startswith(("http://", "https://")):
+                issues.append("COCOON_BACKEND_URL must be an http(s) URL")
+            if self.preemptive_generation:
+                issues.append("VOICE_BRAIN=remote_langgraph requires PREEMPTIVE_GENERATION=false "
+                              "(a backend turn can save records)")
+        else:
+            if not self.google_genai_use_vertexai:
+                issues.append("GOOGLE_GENAI_USE_VERTEXAI must be true (Vertex AI via ADC; the Gemini Developer API "
+                              "is not used)")
+            if not self.google_cloud_project:
+                issues.append("GOOGLE_CLOUD_PROJECT is not set")
         for name in FORBIDDEN_GOOGLE_KEYS:
             if os.environ.get(name):
                 issues.append(f"{name} is set; remove it. Vertex AI uses ADC and must not fall back to an API key")
@@ -302,6 +317,11 @@ class VoiceSettings(BaseSettings):
         return {
             "profile": self.voice_profile,
             "brain": self.voice_brain,
+            "backend": ({"url": self.backend_url, "service_token": presence(self.service_token),
+                         "default_machine_id": self.default_machine_id,
+                         "default_operator_id": self.default_operator_id or "UNSET",
+                         "turn_deadline_s": self.turn_deadline}
+                        if self.voice_brain == "remote_langgraph" else "unused"),
             "agent_name": self.agent_name,
             "livekit_url": self.livekit_url or "MISSING",
             "livekit_api_key": presence(self.livekit_api_key),

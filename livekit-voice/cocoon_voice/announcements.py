@@ -143,5 +143,9 @@ class AnnouncementPump:
             return "failed", f"{type(exc).__name__}: {exc}"[:200]
         if handle.interrupted:
             return "interrupted", "operator spoke over the announcement"
+        produced = getattr(self._speaker, "produced_audio", None)
+        if callable(produced) and produced() is False:
+            # playout "finished" without any synthesized audio (e.g. a TTS provider error): not played
+            return "failed", "no audio was synthesized"
         log.info("announcement %s played seq=%d priority=%s", event.event_id, event.sequence, event.priority)
         return "played", None

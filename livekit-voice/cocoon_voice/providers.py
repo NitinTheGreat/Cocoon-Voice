@@ -87,12 +87,15 @@ def vertex_thinking_config(model: str, level: str) -> dict[str, Any] | None:
 def create_brain(settings: VoiceSettings) -> llm.LLM:
     """Return the conversation brain as a streaming LiveKit LLM.
 
-    Phase 1 (this build): Gemini on Vertex AI through ADC.
-    Future: VOICE_BRAIN=remote_langgraph returns a streaming adapter that forwards the
-    completed user turn to langgraph-agent; it plugs in here and nowhere else.
+    standalone_vertex: Gemini on Vertex AI through ADC.
+    remote_langgraph: a placeholder LLM that never generates. The SDK only runs llm_node when the session
+    has an LLM; VoiceController.generate() sends the turn to langgraph-agent instead. No Vertex client
+    is created in this mode.
     """
-    if settings.voice_brain != "standalone_vertex":
-        raise ConfigError("VOICE_BRAIN=remote_langgraph is future-only and not implemented in this phase")
+    if settings.voice_brain == "remote_langgraph":
+        from .remote_bridge import BackendBridgeLLM
+
+        return BackendBridgeLLM()
     if not settings.google_genai_use_vertexai:
         raise ConfigError("GOOGLE_GENAI_USE_VERTEXAI must be true")
     if not settings.google_cloud_project:

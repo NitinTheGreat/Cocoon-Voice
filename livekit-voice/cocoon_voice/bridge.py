@@ -1,8 +1,8 @@
 """The single submission path from a confirmed LiveKit user turn to the backend.
 
-Only called from CocoonAgent.llm_node, which LiveKit runs after end-of-turn
-detection on the final transcript (partial transcripts never reach it, and
-preemptive generation is disabled in agent.py).
+Called from the agent's llm_node (VoiceController.generate), which LiveKit runs after end-of-turn
+detection on a final, wake-approved transcript. Partial transcripts never reach it, and preemptive
+generation must stay disabled in remote mode (config enforces it).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from livekit.agents import llm
 from . import contract as c
 from .backend_client import (
     BackendClient,
+    BackendConfigError,
     BackendRejected,
     BackendUnavailable,
     SessionNotFound,
@@ -27,7 +28,14 @@ UNKNOWN_OUTCOME_SPEECH = (
     "I'm having trouble reaching the site system, so I can't confirm that yet. Ask me again in a moment."
 )
 REJECTED_SPEECH = "Sorry, I couldn't process that request."
+CONFIG_SPEECH = "I'm not connected to the site system correctly, so I can't help with that yet."
 EMPTY_SPEECH = "Sorry, I didn't catch that."
+
+
+@dataclass(frozen=True)
+class BridgeReply:
+    speech: str
+    outcome: str  # completed | unknown | rejected | config_error | empty
 
 
 @dataclass
@@ -101,19 +109,27 @@ class TurnBridge:
         text = (msg.text_content or "").strip()
         if not text:
             return EMPTY_SPEECH
-        turn_id = turn_id_for(msg)
+        return (await self.reply_for_turn(turn_id_for(msg), text)).speech
+
+    async def reply_for_turn(self, turn_id: str, text: str) -> BridgeReply:
+        """One logical backend turn. The same (turn_id, text) is used for every retry and poll."""
         log.info("submitting turn session=%s turn=%s chars=%d", self.session_id or "(unbound)", turn_id, len(text))
         try:
             result = await self._submit(turn_id, text)
+        except BackendConfigError as exc:
+            log.error("backend configuration error for turn %s: %s (not retried)", turn_id, exc)
+            return BridgeReply(CONFIG_SPEECH, "config_error")
         except BackendUnavailable as exc:
-            log.error("backend unavailable before turn %s was submitted: %s", turn_id, exc)
-            return UNKNOWN_OUTCOME_SPEECH
+            log.error("backend unavailable for turn %s: %s", turn_id, exc)
+            return BridgeReply(UNKNOWN_OUTCOME_SPEECH, "unknown")
         except TurnOutcomeUnknown:
-            return UNKNOWN_OUTCOME_SPEECH
+            return BridgeReply(UNKNOWN_OUTCOME_SPEECH, "unknown")
         except BackendRejected as exc:
             log.error("backend rejected turn %s: %s", turn_id, exc)
-            return REJECTED_SPEECH
-        return result.speech or EMPTY_SPEECH
+            return BridgeReply(REJECTED_SPEECH, "rejected")
+        if not result.speech:
+            return BridgeReply(EMPTY_SPEECH, "empty")
+        return BridgeReply(result.speech, "completed")
 
     async def _submit(self, turn_id: str, text: str) -> c.TurnResult:
         binding = await self.ensure_bound()
