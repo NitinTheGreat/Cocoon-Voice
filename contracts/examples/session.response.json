@@ -1,10 +1,16 @@
 {
   "session_id": "ses_92063baf2cf04d96be8d9647ef1cb388",
-  "client_session_key": "lk:cocoon-demo-room:operator-7",
+  "client_session_key": "lk:cocoon-demo-room:op-demo-1-1",
   "room_name": "cocoon-demo-room",
-  "participant_identity": "operator-7",
-  "operator_id": "operator-7",
-  "machine_id": "cat-320-demo",
+  "participant_identity": "op-demo-1-1",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
   "state_version": 0,
-  "created_at": "2026-09-23T11:44:22.778837Z"
+  "created_at": "2026-09-23T11:44:22.778837Z",
+  "dataset_manifest_sha256": "5d7de31c1856daf4179110a653d175891a102a53263356843792dd383f40e42d",
+  "binding_status": "catalog_verified",
+  "site_id": null,
+  "shift_id": null,
+  "context_status": "unavailable",
+  "context_source": null
 }

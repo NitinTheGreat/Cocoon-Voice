@@ -1,0 +1,9 @@
+{
+  "view": "incident",
+  "incident_id": "INC-FIXTURE-0002",
+  "state": "draft",
+  "site_id": "SITE_FIXTURE_A",
+  "machine_id": "EXC_DEMO_001",
+  "operator_id": "OP_DEMO_1_1",
+  "summary": "Engine on with seatbelt unfastened"
+}

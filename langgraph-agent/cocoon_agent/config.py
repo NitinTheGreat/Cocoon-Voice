@@ -12,6 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = SERVICE_DIR / ".env"
 
+# SHA-256 of the exact bytes of Cocoon_Dataset_v1/data/generated/manifest.json as observed locally on 2026-09-24.
+# PROVISIONAL local development snapshot: checksum-validated, NOT reviewed by the data owner. See docs/MIGRATIONS.md.
+PINNED_DEV_MANIFEST_SHA256 = "5d7de31c1856daf4179110a653d175891a102a53263356843792dd383f40e42d"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore")
@@ -34,14 +38,24 @@ class Settings(BaseSettings):
     announcement_ttl_seconds: int = Field(default=120, alias="COCOON_ANNOUNCEMENT_TTL_SECONDS")
     seatbelt_rule_requires_engine_on: bool = Field(default=True, alias="COCOON_SEATBELT_RULE_REQUIRES_ENGINE_ON")
 
+    dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
+    dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
+                                         pattern=r"^[0-9a-f]{64}$")
+    session_bindings_path: Path | None = Field(default=None, alias="SESSION_BINDINGS_PATH")
+
     @model_validator(mode="after")
     def _live_mode_needs_key(self) -> "Settings":
         if self.llm_mode == "live" and not (self.anthropic_api_key and self.anthropic_api_key.get_secret_value()):
             raise ValueError("COCOON_LLM_MODE=live requires ANTHROPIC_API_KEY; use COCOON_LLM_MODE=mock without it")
         if not self.service_token.get_secret_value().strip():
             raise ValueError("COCOON_SERVICE_TOKEN must not be empty")
+        # Relative paths resolve against langgraph-agent/, never the caller's working directory.
         if not self.data_dir.is_absolute():
             self.data_dir = SERVICE_DIR / self.data_dir
+        if not self.dataset_root.is_absolute():
+            self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
+        if self.session_bindings_path is not None and not self.session_bindings_path.is_absolute():
+            self.session_bindings_path = (SERVICE_DIR / self.session_bindings_path).resolve()
         return self
 
     @property

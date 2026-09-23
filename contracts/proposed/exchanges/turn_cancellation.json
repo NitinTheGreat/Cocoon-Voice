@@ -1,0 +1,95 @@
+{
+  "route": "POST /v1/sessions/{session_id}/turns/{turn_id}/cancel",
+  "note": "Idempotent cancel intent; conflicting reuse; completion winning the race.",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/cancel",
+        "body": {
+          "cancel_id": "cancel_fixture_001",
+          "reason": "barge_in"
+        }
+      },
+      "response": {
+        "status": 202,
+        "schema": "CancelResult",
+        "body": {
+          "cancel_id": "cancel_fixture_001",
+          "session_id": "ses_fixture_0001",
+          "turn_id": "turn_fixture_001",
+          "outcome": "cancellation_pending",
+          "turn_status": "processing",
+          "recorded_at": "2026-08-24T06:40:04Z"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/cancel",
+        "body": {
+          "cancel_id": "cancel_fixture_001",
+          "reason": "barge_in"
+        }
+      },
+      "response": {
+        "status": 202,
+        "schema": "CancelResult",
+        "body": {
+          "cancel_id": "cancel_fixture_001",
+          "session_id": "ses_fixture_0001",
+          "turn_id": "turn_fixture_001",
+          "outcome": "cancellation_pending",
+          "turn_status": "processing",
+          "recorded_at": "2026-08-24T06:40:04Z"
+        },
+        "note": "Identical retry."
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/cancel",
+        "body": {
+          "cancel_id": "cancel_fixture_001",
+          "reason": "stop"
+        }
+      },
+      "response": {
+        "status": 409,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "idempotency_conflict",
+            "message": "cancel_id was already used with a different reason",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_002/cancel",
+        "body": {
+          "cancel_id": "cancel_fixture_002",
+          "reason": "stop"
+        }
+      },
+      "response": {
+        "status": 200,
+        "schema": "CancelResult",
+        "body": {
+          "cancel_id": "cancel_fixture_002",
+          "session_id": "ses_fixture_0001",
+          "turn_id": "turn_fixture_002",
+          "outcome": "already_completed",
+          "turn_status": "completed",
+          "recorded_at": "2026-08-24T06:41:09Z"
+        }
+      }
+    }
+  ]
+}

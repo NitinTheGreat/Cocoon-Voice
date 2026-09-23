@@ -1,0 +1,8 @@
+{
+  "cancel_id": "c1",
+  "session_id": "ses_fixture_0001",
+  "turn_id": "turn_fixture_001",
+  "outcome": "cancelled",
+  "turn_status": "completed",
+  "recorded_at": "2026-08-24T06:40:09Z"
+}

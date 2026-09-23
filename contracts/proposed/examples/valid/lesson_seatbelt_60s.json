@@ -1,0 +1,32 @@
+{
+  "lesson_id": "LSN-FIXTURE-SEATBELT",
+  "version": 1,
+  "title": "Seatbelt in 60 seconds",
+  "level": "beginner",
+  "duration_seconds": 60,
+  "machine_models": [
+    "Cat 320"
+  ],
+  "steps": [
+    {
+      "step_id": "stp_1",
+      "kind": "text",
+      "asset_id": "AST-FIXTURE-SEATBELT-TEXT",
+      "spoken_prompt": "Your seatbelt keeps you inside the protective frame if the machine tips."
+    },
+    {
+      "step_id": "stp_2",
+      "kind": "video",
+      "asset_id": "AST-FIXTURE-SEATBELT-VIDEO"
+    },
+    {
+      "step_id": "stp_3",
+      "kind": "quiz",
+      "quiz_id": "QZ-FIXTURE-SEATBELT"
+    }
+  ],
+  "provenance": {
+    "origin": "synthetic_contract_fixture",
+    "is_simulated": true
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "estimate_id": "est_fixture_t003",
+  "estimator_version": "fixture-0",
+  "method": "reduced_inputs_fallback",
+  "predicted_minutes": 33.0,
+  "input_cutoff_at": "2025-05-01T00:00:00Z",
+  "inputs_used": [
+    "task_type",
+    "weather",
+    "operator_skill",
+    "machine_age"
+  ],
+  "missing_inputs": [
+    "work_quantity",
+    "ground_condition",
+    "machine_model"
+  ],
+  "factors": [],
+  "uncertainty_note": "Shape example for a provided benchmark row; the value is not a real prediction."
+}

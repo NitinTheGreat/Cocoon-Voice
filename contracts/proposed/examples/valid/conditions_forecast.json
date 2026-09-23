@@ -1,0 +1,24 @@
+{
+  "conditions_id": "cond_fixture_fc_001",
+  "site_id": "SITE_FIXTURE_A",
+  "kind": "forecast",
+  "source": "fixture",
+  "issued_at": "2026-08-24T05:00:00Z",
+  "valid_from": "2026-08-24T09:00:00Z",
+  "valid_to": "2026-08-24T10:00:00Z",
+  "retrieved_at": "2026-08-24T05:10:00Z",
+  "available_at": "2026-08-24T05:00:00Z",
+  "temperature_c": 38.0,
+  "relative_humidity_pct": 40.0,
+  "precipitation_mm": 6.0,
+  "precipitation_interval_minutes": 60,
+  "wind_speed_mps": 11.0,
+  "wind_gust_mps": 16.0,
+  "visibility_m": 2500,
+  "weather_code": 63,
+  "freshness": "fresh",
+  "provenance": {
+    "origin": "synthetic_contract_fixture",
+    "is_simulated": true
+  }
+}

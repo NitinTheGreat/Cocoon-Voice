@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "generator_seed": null,
+  "dataset_origin": "synthetic_test_fixture",
+  "provenance": "Tiny committed test catalog for langgraph-agent tests. Not the Cocoon dataset.",
+  "rows": {
+    "machines": 5,
+    "operators": 3
+  },
+  "sha256": {
+    "machines.csv": "ab1bdf125d5472beba193ae9cc9e7d7305f162ce0ae7574ccc56c96b72197d28",
+    "operators.csv": "7cf25d3d1331c40ed147f5d7e27c89e82e529238483e2cb99107a9e6552a75f0"
+  }
+}

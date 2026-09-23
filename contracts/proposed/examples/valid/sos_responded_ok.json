@@ -1,0 +1,25 @@
+{
+  "episode_id": "SOS-FIXTURE-0001",
+  "impact_observation_id": "obs_fixture_005",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
+  "state": "responded_ok",
+  "check_in_id": "chk_fixture_1",
+  "offers": [
+    {
+      "channel": "voice",
+      "status": "presented",
+      "reported_at": "2026-08-24T06:50:05Z",
+      "evidence_event_id": "dlv_fixture_sos_1"
+    }
+  ],
+  "response_deadline_at": "2026-08-24T06:51:05Z",
+  "response": {
+    "response_id": "rsp_fixture_1",
+    "response": "ok",
+    "channel": "voice",
+    "responded_at": "2026-08-24T06:50:20Z",
+    "late": false
+  },
+  "created_at": "2026-08-24T06:50:01Z"
+}

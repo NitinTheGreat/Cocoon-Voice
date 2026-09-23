@@ -1,0 +1,25 @@
+{
+  "rule_id": "demo.seatbelt_engine_on",
+  "rule_version": "0.1.0",
+  "family": "seatbelt_engine_on",
+  "evidence_status": "published_guidance",
+  "citation": null,
+  "applicability": {
+    "machine_models": [
+      "Cat 320"
+    ],
+    "task_types": [],
+    "site_ids": [
+      "SITE_FIXTURE_A"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "entry_persistence",
+      "value": 0,
+      "unit": "s"
+    }
+  ],
+  "entry_persistence_seconds": 0,
+  "reset_description": "Seatbelt fastened or engine off; re-entry opens a new episode."
+}

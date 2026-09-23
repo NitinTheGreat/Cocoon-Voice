@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:internal.action-plan",
+  "x-implementation-status": "proposed",
+  "x-visibility": "backend_internal",
+  "$defs": {
+    "PlannedAction": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Action Id",
+          "type": "string"
+        },
+        "action_name": {
+          "description": "Must be in the public ActionName allowlist or an internal workflow step name.",
+          "maxLength": 64,
+          "title": "Action Name",
+          "type": "string"
+        },
+        "depends_on": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "planned",
+            "waiting_dependency",
+            "waiting_approval",
+            "running",
+            "committed",
+            "failed",
+            "unknown",
+            "skipped"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "action_name",
+        "state"
+      ],
+      "title": "PlannedAction",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "plan_id": {
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "session_id": {
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "turn_id": {
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+      "title": "Turn Id",
+      "type": "string"
+    },
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/PlannedAction"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Actions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "plan_id",
+    "session_id",
+    "turn_id",
+    "actions"
+  ],
+  "title": "ActionPlan",
+  "type": "object"
+}

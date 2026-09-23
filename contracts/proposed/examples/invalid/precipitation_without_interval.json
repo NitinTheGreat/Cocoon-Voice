@@ -1,0 +1,24 @@
+{
+  "schema_version": "cocoon.telemetry.v2",
+  "batch_id": "b4",
+  "observations": [
+    {
+      "kind": "environment",
+      "observation_id": "obs_fixture_006",
+      "observed_at": "2026-08-24T06:45:00Z",
+      "quality": "good",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "site_id": "SITE_FIXTURE_A",
+      "temperature_c": 36.0,
+      "relative_humidity_pct": 48.0,
+      "precipitation_mm": 0.0,
+      "precipitation_interval_minutes": null,
+      "wind_speed_mps": 4.2,
+      "wind_gust_mps": 7.9,
+      "visibility_m": 9000
+    }
+  ]
+}

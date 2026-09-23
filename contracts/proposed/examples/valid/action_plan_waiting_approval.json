@@ -1,0 +1,29 @@
+{
+  "plan_id": "pln_fixture_1",
+  "session_id": "ses_fixture_0001",
+  "turn_id": "turn_fixture_001",
+  "actions": [
+    {
+      "action_id": "act_fixture_001",
+      "action_name": "log_incident",
+      "depends_on": [],
+      "state": "committed"
+    },
+    {
+      "action_id": "act_fixture_002",
+      "action_name": "request_supervisor_approval",
+      "depends_on": [
+        "act_fixture_001"
+      ],
+      "state": "committed"
+    },
+    {
+      "action_id": "act_fixture_003",
+      "action_name": "notify_supervisor",
+      "depends_on": [
+        "act_fixture_002"
+      ],
+      "state": "waiting_approval"
+    }
+  ]
+}

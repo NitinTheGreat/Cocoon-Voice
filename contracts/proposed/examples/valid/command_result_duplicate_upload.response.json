@@ -1,0 +1,19 @@
+{
+  "command_id": "cmd_fixture_offline_007",
+  "kind": "incident.submit_draft",
+  "status": "completed",
+  "duplicate": true,
+  "record_ids": [
+    "INC-FIXTURE-0007"
+  ],
+  "original_binding": {
+    "operator_id": "OP_DEMO_1_1",
+    "machine_id": "EXC_DEMO_001",
+    "shift_id": "EXC_DEMO_001_2026-08-24",
+    "site_id": "SITE_FIXTURE_A",
+    "device_id": "dev_fixture_phone",
+    "session_id": "ses_fixture_0001"
+  },
+  "received_at": "2026-08-24T09:30:00Z",
+  "completed_at": "2026-08-24T09:30:00Z"
+}

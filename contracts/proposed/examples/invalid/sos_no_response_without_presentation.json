@@ -1,0 +1,15 @@
+{
+  "episode_id": "SOS-X",
+  "impact_observation_id": "obs_fixture_005",
+  "operator_id": "OP_DEMO_1_1",
+  "state": "unresolved_no_response",
+  "check_in_id": "chk_x",
+  "offers": [
+    {
+      "channel": "voice",
+      "status": "failed",
+      "reported_at": "2026-08-24T07:00:02Z"
+    }
+  ],
+  "created_at": "2026-08-24T07:00:01Z"
+}

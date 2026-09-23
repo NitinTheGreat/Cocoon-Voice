@@ -1,0 +1,6 @@
+machine_id,model,category,source_origin
+EXC_DEMO_001,Cat 320,hydraulic_excavator,synthetic_test_fixture
+DOZ_DEMO_001,Cat D6,bulldozer,synthetic_test_fixture
+LDR_DEMO_001,Cat 950 GC,wheel_loader,synthetic_test_fixture
+TRK_DEMO_001,Cat 793,mining_truck,synthetic_test_fixture
+BHL_DEMO_001,Cat 420,backhoe_loader,synthetic_test_fixture

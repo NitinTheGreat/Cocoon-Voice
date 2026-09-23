@@ -1,0 +1,32 @@
+{
+  "route": "POST /v1/sessions",
+  "note": "Implemented in I02a: a new session with an unknown machine gets 422 unknown_machine. Before I02a the runtime returned 201 (observed in I00).",
+  "steps": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/sessions",
+        "body": {
+          "client_session_key": "lk:room-fixture:op2",
+          "room_name": "room-fixture",
+          "participant_identity": "op2",
+          "operator_id": "OP_DEMO_1_1",
+          "machine_id": "NO_SUCH_MACHINE"
+        }
+      },
+      "response": {
+        "status": 422,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "unknown_machine",
+            "message": "machine_id is not in the machine catalog",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      },
+      "pre_I02a_runtime_status": 201
+    }
+  ]
+}

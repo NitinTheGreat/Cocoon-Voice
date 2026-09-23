@@ -1,0 +1,34 @@
+{
+  "incident_id": "INC-FIXTURE-0002",
+  "version": 1,
+  "state": "draft",
+  "origin": "auto_draft_from_episode",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
+  "shift_id": "EXC_DEMO_001_2026-08-24",
+  "what": {
+    "value": "Engine on with seatbelt unfastened",
+    "basis": "system_observed"
+  },
+  "where": {
+    "site_id": "SITE_FIXTURE_A",
+    "site_zone_id": "ZONE_FIXTURE_A_PIT",
+    "basis": "inferred"
+  },
+  "when": {
+    "value": "2026-08-24T06:44:00Z",
+    "basis": "system_observed"
+  },
+  "severity": null,
+  "missing_fields": [
+    "severity"
+  ],
+  "evidence": {
+    "episode_id": "EPI-FIXTURE-0001",
+    "alert_id": "ALR-FIXTURE-0001",
+    "observation_ids": [
+      "obs_fixture_001"
+    ]
+  },
+  "created_at": "2026-08-24T06:44:01Z"
+}

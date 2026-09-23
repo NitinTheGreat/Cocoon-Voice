@@ -1,0 +1,10 @@
+{
+  "report_id": "prs_fixture_1",
+  "consumer_id": "android_consumer_001",
+  "sequence": 42,
+  "connection": "degraded",
+  "voice_available": false,
+  "screen_available": true,
+  "reported_at": "2026-08-24T06:46:00Z",
+  "ttl_seconds": 30
+}

@@ -30,6 +30,7 @@ EXAMPLES = {
     "error_idempotency_conflict.response.json": s.ErrorResponse,
     "error_validation.response.json": s.ErrorResponse,
     "error_unauthorized.response.json": s.ErrorResponse,
+    "error_unknown_machine.response.json": s.ErrorResponse,
 }
 
 

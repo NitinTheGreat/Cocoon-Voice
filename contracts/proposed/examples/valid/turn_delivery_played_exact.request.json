@@ -1,0 +1,8 @@
+{
+  "delivery_id": "dlv_fixture_002",
+  "consumer_id": "voice_consumer_001",
+  "response_id": "resp_fixture_001",
+  "status": "played",
+  "played_text": "I've logged incident one.",
+  "position_confidence": "exact"
+}

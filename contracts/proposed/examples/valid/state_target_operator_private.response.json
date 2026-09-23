@@ -1,0 +1,270 @@
+{
+  "session_id": "ses_fixture_0001",
+  "state_version": 7,
+  "llm_mode": "mock",
+  "tasks": [],
+  "incidents": [],
+  "training_assignments": [],
+  "available_lessons": [],
+  "active_alerts": [],
+  "latest_alert": null,
+  "pending_question": null,
+  "server_time": "2026-09-24T10:00:00Z",
+  "data_time": "2026-08-24T06:46:00Z",
+  "clock_mode": "replay",
+  "freshness": {
+    "telemetry_last_observed_at": "2026-08-24T06:45:00Z",
+    "telemetry": "fresh",
+    "conditions": "fresh"
+  },
+  "dashboard": {
+    "operator_id": "OP_DEMO_1_1",
+    "machine_id": "EXC_DEMO_001",
+    "site_id": "SITE_FIXTURE_A",
+    "shift_id": "EXC_DEMO_001_2026-08-24",
+    "service_date": "2026-08-24",
+    "site_timezone": "Asia/Kolkata",
+    "server_time": "2026-09-24T10:00:00Z",
+    "data_time": "2026-08-24T06:46:00Z",
+    "clock_mode": "replay",
+    "snapshot_version": 3,
+    "tasks": [
+      {
+        "task_id": "TSK-FIXTURE-001",
+        "version": 3,
+        "shift_id": "EXC_DEMO_001_2026-08-24",
+        "operator_id": "OP_DEMO_1_1",
+        "machine_id": "EXC_DEMO_001",
+        "machine_model": "Cat 320",
+        "machine_age_years": 2,
+        "site_id": "SITE_FIXTURE_A",
+        "site_zone_id": "ZONE_FIXTURE_A_PIT",
+        "scheduled_order": 1,
+        "scheduled_start_at": "2026-08-24T06:10:00Z",
+        "outdoor_exposure": "outdoor",
+        "task_type": "earth_excavation",
+        "work_quantity": 120.0,
+        "work_unit": "m3",
+        "ground_condition": "dry",
+        "material": "soil",
+        "attachment": "bucket",
+        "operator_skill": "beginner",
+        "depends_on_task_ids": [],
+        "lifecycle": "in_progress",
+        "progress_fraction": 0.4,
+        "started_at": "2026-08-24T06:12:00Z",
+        "estimate": {
+          "estimate_id": "est_fixture_001",
+          "estimator_version": "fixture-0",
+          "method": "full_inputs",
+          "predicted_minutes": 64.0,
+          "interval_low_minutes": 55.0,
+          "interval_high_minutes": 75.0,
+          "input_cutoff_at": "2026-08-24T06:10:00Z",
+          "inputs_used": [
+            "task_type",
+            "work_quantity",
+            "ground_condition",
+            "operator_skill",
+            "machine_age",
+            "weather"
+          ],
+          "missing_inputs": [],
+          "factors": [
+            {
+              "factor": "operator_skill",
+              "effect_minutes": 6.0,
+              "evidence": "beginner"
+            },
+            {
+              "factor": "ground_condition",
+              "effect_minutes": -2.0,
+              "evidence": "dry"
+            }
+          ],
+          "calibration_sample_count": null,
+          "uncertainty_note": "Contract fixture; no estimator exists yet (I07B)."
+        },
+        "condition_check": {
+          "task_id": "TSK-FIXTURE-001",
+          "conditions_id": "cond_fixture_obs_001",
+          "outcome": "advisory",
+          "rule_ids": [
+            "demo.working_condition.heat"
+          ],
+          "explanation": "High temperature forecast later in the shift (demo assumption).",
+          "recommended_action": "Plan a shaded break before 09:00."
+        },
+        "provenance": {
+          "origin": "synthetic_contract_fixture",
+          "is_simulated": true
+        }
+      }
+    ],
+    "conditions": null
+  },
+  "incident_reports": [
+    {
+      "incident_id": "INC-FIXTURE-0001",
+      "version": 2,
+      "state": "confirmed",
+      "origin": "operator_reported",
+      "operator_id": "OP_DEMO_1_1",
+      "machine_id": "EXC_DEMO_001",
+      "shift_id": "EXC_DEMO_001_2026-08-24",
+      "what": {
+        "value": "Hydraulic hose leaking on the boom",
+        "basis": "reported"
+      },
+      "where": {
+        "site_id": "SITE_FIXTURE_A",
+        "site_zone_id": "ZONE_FIXTURE_A_PIT",
+        "basis": "reported"
+      },
+      "when": {
+        "value": "2026-08-24T06:38:00Z",
+        "basis": "reported"
+      },
+      "severity": {
+        "value": "medium",
+        "basis": "reported"
+      },
+      "missing_fields": [],
+      "evidence": {
+        "observation_ids": []
+      },
+      "created_at": "2026-08-24T06:44:01Z",
+      "source_turn_id": "turn_fixture_001",
+      "confirmed_at": "2026-08-24T06:40:03Z"
+    },
+    {
+      "incident_id": "INC-FIXTURE-0002",
+      "version": 1,
+      "state": "draft",
+      "origin": "auto_draft_from_episode",
+      "operator_id": "OP_DEMO_1_1",
+      "machine_id": "EXC_DEMO_001",
+      "shift_id": "EXC_DEMO_001_2026-08-24",
+      "what": {
+        "value": "Engine on with seatbelt unfastened",
+        "basis": "system_observed"
+      },
+      "where": {
+        "site_id": "SITE_FIXTURE_A",
+        "site_zone_id": "ZONE_FIXTURE_A_PIT",
+        "basis": "inferred"
+      },
+      "when": {
+        "value": "2026-08-24T06:44:00Z",
+        "basis": "system_observed"
+      },
+      "severity": null,
+      "missing_fields": [
+        "severity"
+      ],
+      "evidence": {
+        "episode_id": "EPI-FIXTURE-0001",
+        "alert_id": "ALR-FIXTURE-0001",
+        "observation_ids": [
+          "obs_fixture_001"
+        ]
+      },
+      "created_at": "2026-08-24T06:44:01Z"
+    }
+  ],
+  "operator_alerts": [
+    {
+      "alert_id": "ALR-FIXTURE-0001",
+      "episode_id": "EPI-FIXTURE-0001",
+      "rule": {
+        "rule_id": "demo.seatbelt_engine_on",
+        "rule_version": "0.1.0",
+        "family": "seatbelt_engine_on",
+        "evidence_status": "synthetic_demo_assumption",
+        "citation": null,
+        "applicability": {
+          "machine_models": [
+            "Cat 320"
+          ],
+          "task_types": [],
+          "site_ids": [
+            "SITE_FIXTURE_A"
+          ]
+        },
+        "parameters": [
+          {
+            "name": "entry_persistence",
+            "value": 0,
+            "unit": "s"
+          }
+        ],
+        "entry_persistence_seconds": 0,
+        "reset_description": "Seatbelt fastened or engine off; re-entry opens a new episode."
+      },
+      "category": "safety",
+      "severity": "warning",
+      "state": "active",
+      "machine_id": "EXC_DEMO_001",
+      "operator_id": "OP_DEMO_1_1",
+      "started_at": "2026-08-24T06:44:01Z",
+      "trigger_evidence": [
+        {
+          "field": "engine_on",
+          "value": true,
+          "unit": null,
+          "observation_id": "obs_fixture_001",
+          "observed_at": "2026-08-24T06:44:00Z"
+        },
+        {
+          "field": "seatbelt_fastened",
+          "value": false,
+          "unit": null,
+          "observation_id": "obs_fixture_001",
+          "observed_at": "2026-08-24T06:44:00Z"
+        }
+      ],
+      "observation_freshness": "fresh",
+      "explanation": "At 06:44 UTC the engine was on and the seatbelt was unfastened (simulated).",
+      "recommended_action": "Fasten the seatbelt before moving.",
+      "announcement_event_id": "ann_fixture_0001",
+      "linked_incident_draft_id": "INC-FIXTURE-0002",
+      "linked_lesson_assignment_id": "ASG-FIXTURE-0001",
+      "acknowledgements": []
+    }
+  ],
+  "learner": {
+    "operator_id": "OP_DEMO_1_1",
+    "learning_level": "beginner",
+    "level_evidence": [],
+    "dataset_operator_skill": "beginner",
+    "version": 1
+  },
+  "lesson_assignments": [],
+  "lesson_progress": [],
+  "approvals": [
+    {
+      "approval_id": "APR-FIXTURE-0001",
+      "action_type": "notify_supervisor",
+      "status": "pending",
+      "application_status": "not_started"
+    }
+  ],
+  "sos": null,
+  "wellbeing": {
+    "operator_id": "OP_DEMO_1_1",
+    "vitals_processing_consent": "granted",
+    "observed_at": "2026-08-24T06:45:00Z",
+    "heart_rate_bpm": 96.0,
+    "skin_temp_c": 35.1,
+    "heat_index_c": 40.2,
+    "minutes_since_break": 95,
+    "sleep": null,
+    "advisory": {
+      "level": "advisory",
+      "message": "It is hot and you have worked 95 minutes without a break.",
+      "recommended_action": "Take a short break in the shade and drink water.",
+      "rule_id": "demo.heat_break_advisory",
+      "rule_version": "0.1.0"
+    }
+  }
+}

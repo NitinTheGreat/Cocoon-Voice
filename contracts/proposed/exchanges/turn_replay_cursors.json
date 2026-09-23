@@ -1,0 +1,335 @@
+{
+  "route": "GET /v1/sessions/{session_id}/turns/{turn_id}/stream",
+  "note": "Exclusive cursors, Last-Event-ID equivalence and conflicts, future cursor and expiry.",
+  "steps": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream?after=4"
+      },
+      "response": {
+        "status": 200,
+        "media": "text/event-stream",
+        "events": [
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:5",
+            "sequence": 5,
+            "created_at": "2026-08-24T06:40:05Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "incident INC-FIXTURE-0001 — "
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:6",
+            "sequence": 6,
+            "created_at": "2026-08-24T06:40:06Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "hydraulic hose leak on the boom. "
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:7",
+            "sequence": 7,
+            "created_at": "2026-08-24T06:40:07Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "I've asked your supervisor to review an escalation; it is not approved yet."
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:8",
+            "sequence": 8,
+            "created_at": "2026-08-24T06:40:08Z",
+            "type": "turn.completed",
+            "data": {
+              "status": "completed",
+              "speech": "I've logged incident INC-FIXTURE-0001 — hydraulic hose leak on the boom. I've asked your supervisor to review an escalation; it is not approved yet.",
+              "actions": [
+                {
+                  "action_id": "act_fixture_001",
+                  "action_name": "log_incident",
+                  "status": "completed",
+                  "record_id": "INC-FIXTURE-0001",
+                  "summary": "Incident saved: hydraulic hose leak on the boom.",
+                  "details": {
+                    "kind": "incident",
+                    "incident_id": "INC-FIXTURE-0001",
+                    "state": "confirmed",
+                    "created": true
+                  }
+                },
+                {
+                  "action_id": "act_fixture_002",
+                  "action_name": "request_supervisor_approval",
+                  "status": "completed",
+                  "record_id": "APR-FIXTURE-0001",
+                  "summary": "Escalation request sent for supervisor review; not yet approved.",
+                  "details": {
+                    "kind": "approval_request",
+                    "approval_id": "APR-FIXTURE-0001",
+                    "approval_status": "pending",
+                    "requested_action": "notify_supervisor"
+                  }
+                }
+              ],
+              "state_version": 6
+            }
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream?after=4",
+        "headers": {
+          "Last-Event-ID": "turn_fixture_001:4"
+        }
+      },
+      "response": {
+        "status": 200,
+        "media": "text/event-stream",
+        "events": [
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:5",
+            "sequence": 5,
+            "created_at": "2026-08-24T06:40:05Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "incident INC-FIXTURE-0001 — "
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:6",
+            "sequence": 6,
+            "created_at": "2026-08-24T06:40:06Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "hydraulic hose leak on the boom. "
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:7",
+            "sequence": 7,
+            "created_at": "2026-08-24T06:40:07Z",
+            "type": "speech.delta",
+            "data": {
+              "text": "I've asked your supervisor to review an escalation; it is not approved yet."
+            }
+          },
+          {
+            "schema_version": "cocoon.turn-stream.v1",
+            "session_id": "ses_fixture_0001",
+            "turn_id": "turn_fixture_001",
+            "response_id": "resp_fixture_001",
+            "event_id": "turn_fixture_001:8",
+            "sequence": 8,
+            "created_at": "2026-08-24T06:40:08Z",
+            "type": "turn.completed",
+            "data": {
+              "status": "completed",
+              "speech": "I've logged incident INC-FIXTURE-0001 — hydraulic hose leak on the boom. I've asked your supervisor to review an escalation; it is not approved yet.",
+              "actions": [
+                {
+                  "action_id": "act_fixture_001",
+                  "action_name": "log_incident",
+                  "status": "completed",
+                  "record_id": "INC-FIXTURE-0001",
+                  "summary": "Incident saved: hydraulic hose leak on the boom.",
+                  "details": {
+                    "kind": "incident",
+                    "incident_id": "INC-FIXTURE-0001",
+                    "state": "confirmed",
+                    "created": true
+                  }
+                },
+                {
+                  "action_id": "act_fixture_002",
+                  "action_name": "request_supervisor_approval",
+                  "status": "completed",
+                  "record_id": "APR-FIXTURE-0001",
+                  "summary": "Escalation request sent for supervisor review; not yet approved.",
+                  "details": {
+                    "kind": "approval_request",
+                    "approval_id": "APR-FIXTURE-0001",
+                    "approval_status": "pending",
+                    "requested_action": "notify_supervisor"
+                  }
+                }
+              ],
+              "state_version": 6
+            }
+          }
+        ],
+        "note": "Consistent after and Last-Event-ID."
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream?after=4",
+        "headers": {
+          "Last-Event-ID": "turn_fixture_001:6"
+        }
+      },
+      "response": {
+        "status": 422,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "invalid_cursor",
+            "message": "after and Last-Event-ID disagree",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream",
+        "headers": {
+          "Last-Event-ID": "turn_other:2"
+        }
+      },
+      "response": {
+        "status": 422,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "invalid_cursor",
+            "message": "Last-Event-ID belongs to another turn",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream?after=99"
+      },
+      "response": {
+        "status": 422,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "invalid_cursor",
+            "message": "cursor is beyond the last committed sequence",
+            "retryable": false,
+            "request_id": "req_fixture_x"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001/stream?after=0",
+        "note": "More than 900 s after the terminal event"
+      },
+      "response": {
+        "status": 410,
+        "schema": "ProposedErrorResponse",
+        "body": {
+          "error": {
+            "code": "replay_expired",
+            "message": "stream history is past retention",
+            "retryable": false,
+            "request_id": "req_fixture_x",
+            "recovery": {
+              "status_url": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001"
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_fixture_0001/turns/turn_fixture_001"
+      },
+      "response": {
+        "status": 200,
+        "schema": "TurnResultTarget",
+        "note": "Recovery read; never re-runs tools.",
+        "body": {
+          "session_id": "ses_fixture_0001",
+          "turn_id": "turn_fixture_001",
+          "status": "completed",
+          "speech": "I've logged incident INC-FIXTURE-0001 — hydraulic hose leak on the boom. I've asked your supervisor to review an escalation; it is not approved yet.",
+          "actions": [],
+          "state_version": 6,
+          "llm_mode": "mock",
+          "error": null,
+          "retry_after_ms": null,
+          "poll_url": null,
+          "created_at": "2026-08-24T06:40:00Z",
+          "completed_at": "2026-08-24T06:40:08Z",
+          "response_id": "resp_fixture_001",
+          "action_results": [
+            {
+              "action_id": "act_fixture_001",
+              "action_name": "log_incident",
+              "status": "completed",
+              "record_id": "INC-FIXTURE-0001",
+              "summary": "Incident saved: hydraulic hose leak on the boom.",
+              "details": {
+                "kind": "incident",
+                "incident_id": "INC-FIXTURE-0001",
+                "state": "confirmed",
+                "created": true
+              }
+            },
+            {
+              "action_id": "act_fixture_002",
+              "action_name": "request_supervisor_approval",
+              "status": "completed",
+              "record_id": "APR-FIXTURE-0001",
+              "summary": "Escalation request sent for supervisor review; not yet approved.",
+              "details": {
+                "kind": "approval_request",
+                "approval_id": "APR-FIXTURE-0001",
+                "approval_status": "pending",
+                "requested_action": "notify_supervisor"
+              }
+            }
+          ],
+          "last_sequence": 8
+        }
+      }
+    }
+  ]
+}

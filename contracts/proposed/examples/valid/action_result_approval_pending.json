@@ -1,0 +1,13 @@
+{
+  "action_id": "act_fixture_002",
+  "action_name": "request_supervisor_approval",
+  "status": "completed",
+  "record_id": "APR-FIXTURE-0001",
+  "summary": "Escalation request sent for supervisor review; not yet approved.",
+  "details": {
+    "kind": "approval_request",
+    "approval_id": "APR-FIXTURE-0001",
+    "approval_status": "pending",
+    "requested_action": "notify_supervisor"
+  }
+}

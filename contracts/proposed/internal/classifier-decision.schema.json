@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cocoon:schema:internal.classifier-decision",
+  "x-implementation-status": "proposed",
+  "x-visibility": "backend_internal",
+  "$defs": {
+    "ClassifiedEntities": {
+      "additionalProperties": false,
+      "description": "Allowlisted, typed entities. Anything else the model produces is dropped, not executed.",
+      "properties": {
+        "task_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Id"
+        },
+        "lesson_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lesson Id"
+        },
+        "alert_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alert Id"
+        },
+        "incident_what": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incident What"
+        },
+        "incident_severity": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incident Severity"
+        },
+        "quiz_answer": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quiz Answer"
+        },
+        "idle_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "waiting_for_truck",
+                "waiting_for_instruction",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idle Reason"
+        },
+        "check_in_response": {
+          "anyOf": [
+            {
+              "enum": [
+                "ok",
+                "need_help"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Check In Response"
+        }
+      },
+      "title": "ClassifiedEntities",
+      "type": "object"
+    },
+    "ClassifiedIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "intent": {
+          "enum": [
+            "get_next_task",
+            "get_daily_tasks",
+            "start_task",
+            "complete_task",
+            "explain_task_estimate",
+            "log_incident",
+            "confirm_incident_draft",
+            "explain_alert",
+            "acknowledge_alert",
+            "record_idle_reason",
+            "respond_to_check_in",
+            "request_supervisor_escalation",
+            "assign_lesson",
+            "get_training_status",
+            "continue_lesson",
+            "answer_quiz",
+            "defer_lesson",
+            "general_question",
+            "cancel_pending",
+            "smalltalk"
+          ],
+          "title": "Intent",
+          "type": "string"
+        },
+        "entities": {
+          "$ref": "#/$defs/ClassifiedEntities"
+        },
+        "depends_on": {
+          "description": "Indexes of earlier intents in this decision.",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Depends On",
+          "type": "array"
+        }
+      },
+      "required": [
+        "intent",
+        "entities"
+      ],
+      "title": "ClassifiedIntent",
+      "type": "object"
+    },
+    "ContextRef": {
+      "additionalProperties": false,
+      "description": "The active workflow a short reply (\"yes\", \"why?\", a quiz answer) resolves against.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "alert",
+            "incident_draft",
+            "pending_question",
+            "quiz",
+            "check_in",
+            "approval",
+            "task"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref_id": {
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+          "title": "Ref Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref_id"
+      ],
+      "title": "ContextRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "branch": {
+      "description": "Branch of the first intent; routing starts here.",
+      "enum": [
+        "tasks",
+        "safety_incidents",
+        "training",
+        "general_assistance"
+      ],
+      "title": "Branch",
+      "type": "string"
+    },
+    "intents": {
+      "items": {
+        "$ref": "#/$defs/ClassifiedIntent"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Intents",
+      "type": "array"
+    },
+    "missing_fields": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Fields",
+      "type": "array"
+    },
+    "routing_certainty": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "Routing Certainty",
+      "type": "string"
+    },
+    "context_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContextRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "needs_clarification": {
+      "title": "Needs Clarification",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "branch",
+    "intents",
+    "routing_certainty",
+    "needs_clarification"
+  ],
+  "title": "ClassifierDecision",
+  "type": "object"
+}

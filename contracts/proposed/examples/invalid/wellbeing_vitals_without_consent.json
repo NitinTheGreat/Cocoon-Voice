@@ -1,0 +1,17 @@
+{
+  "operator_id": "OP_DEMO_1_1",
+  "vitals_processing_consent": "revoked",
+  "observed_at": "2026-08-24T06:45:00Z",
+  "heart_rate_bpm": 96.0,
+  "skin_temp_c": 35.1,
+  "heat_index_c": 40.2,
+  "minutes_since_break": 95,
+  "sleep": null,
+  "advisory": {
+    "level": "advisory",
+    "message": "It is hot and you have worked 95 minutes without a break.",
+    "recommended_action": "Take a short break in the shade and drink water.",
+    "rule_id": "demo.heat_break_advisory",
+    "rule_version": "0.1.0"
+  }
+}

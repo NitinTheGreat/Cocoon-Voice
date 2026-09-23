@@ -1,0 +1,125 @@
+{
+  "schema_version": "cocoon.telemetry.v2",
+  "batch_id": "batch_fixture_001",
+  "observations": [
+    {
+      "kind": "machine_state",
+      "observation_id": "obs_fixture_001",
+      "observed_at": "2026-08-24T06:44:00Z",
+      "machine_id": "EXC_DEMO_001",
+      "operator_id": "OP_DEMO_1_1",
+      "quality": "good",
+      "provenance": {
+        "origin": "simulator",
+        "is_simulated": true
+      },
+      "engine_on": true,
+      "seatbelt_fastened": false,
+      "operating_state": "idle",
+      "interval_seconds": 60,
+      "idle_seconds_interval": 60,
+      "consecutive_idle_seconds": 60,
+      "engine_hours_meter": 1523.52,
+      "fuel_used_l_interval": 0.0975,
+      "load_cycles_interval": 0,
+      "control_impacts_count_interval": 0
+    },
+    {
+      "kind": "motion",
+      "observation_id": "obs_fixture_002",
+      "observed_at": "2026-08-24T06:44:00.500Z",
+      "machine_id": "EXC_DEMO_001",
+      "quality": "good",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "speed_mps": 0.0,
+      "accel_mps2": 0.0,
+      "derivation_interval_ms": 200,
+      "pitch_deg": 2.5,
+      "roll_deg": -1.0,
+      "grade_pct": null
+    },
+    {
+      "kind": "proximity",
+      "observation_id": "obs_fixture_003",
+      "observed_at": "2026-08-24T06:44:01Z",
+      "machine_id": "EXC_DEMO_001",
+      "quality": "degraded",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "detector_id": "det_fixture_rear",
+      "entity_id": "ent_fixture_person_1",
+      "entity_type": "person",
+      "detection_state": "detected",
+      "distance_m": 6.2,
+      "distance_uncertainty_m": 0.8,
+      "bearing_deg": 175.0
+    },
+    {
+      "kind": "proximity",
+      "observation_id": "obs_fixture_004",
+      "observed_at": "2026-08-24T06:44:01Z",
+      "machine_id": "EXC_DEMO_001",
+      "quality": "unknown",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "detector_id": "det_fixture_left",
+      "entity_id": "ent_fixture_unknown",
+      "entity_type": "unknown",
+      "detection_state": "unknown"
+    },
+    {
+      "kind": "human_impact",
+      "observation_id": "obs_fixture_005",
+      "observed_at": "2026-08-24T06:50:00Z",
+      "operator_id": "OP_DEMO_1_1",
+      "device_id": "dev_fixture_phone",
+      "quality": "good",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "peak_accel_g": 3.4,
+      "duration_ms": 180,
+      "orientation_after": "unknown"
+    },
+    {
+      "kind": "environment",
+      "observation_id": "obs_fixture_006",
+      "observed_at": "2026-08-24T06:45:00Z",
+      "quality": "good",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "site_id": "SITE_FIXTURE_A",
+      "temperature_c": 36.0,
+      "relative_humidity_pct": 48.0,
+      "precipitation_mm": 0.0,
+      "precipitation_interval_minutes": 60,
+      "wind_speed_mps": 4.2,
+      "wind_gust_mps": 7.9,
+      "visibility_m": 9000
+    },
+    {
+      "kind": "vitals",
+      "observation_id": "obs_fixture_007",
+      "observed_at": "2026-08-24T06:45:00Z",
+      "operator_id": "OP_DEMO_1_1",
+      "quality": "good",
+      "provenance": {
+        "origin": "assumption_based",
+        "is_simulated": true
+      },
+      "heart_rate_bpm": 96.0,
+      "skin_temp_c": 35.1,
+      "window_seconds": 60
+    }
+  ]
+}

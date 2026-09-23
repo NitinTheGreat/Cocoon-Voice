@@ -1,0 +1,9 @@
+{
+  "subject_id": "subj_fixture_sup",
+  "principal_kind": "supervisor",
+  "site_ids": [
+    "SITE_FIXTURE_A"
+  ],
+  "allowed_associations": [],
+  "token_expires_at": "2026-08-24T14:30:00Z"
+}

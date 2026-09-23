@@ -15,6 +15,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
@@ -53,12 +54,31 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         store = Store(settings.db_path)
-        store.init_schema()
+        # A migration error aborts startup (the database is left at its previous version, never wiped).
+        applied = store.init_schema()
+        if applied:
+            log.info("cocoon.db migrations: %s (schema version %d)", ", ".join(applied), store.schema_version())
         store.seed_demo()
+        # A catalog error does NOT abort startup: existing sessions stay readable, /readyz reports not_ready and
+        # new sessions get 503 catalog_unavailable. There is no fallback to accepting arbitrary IDs.
+        catalog = bindings = catalog_issue = None
+        try:
+            catalog = load_catalog(settings.dataset_root, settings.dataset_manifest_sha256)
+            if settings.session_bindings_path is not None:
+                bindings = load_session_bindings(settings.session_bindings_path, catalog)
+            store.register_catalog(catalog)
+            log.info("catalog verified manifest_sha256=%s machines=%d operators=%d bindings=%s",
+                     catalog.manifest_sha256, len(catalog.machines), len(catalog.operators),
+                     len(bindings.bindings) if bindings else 0)
+        except CatalogError as exc:
+            catalog = bindings = None
+            catalog_issue = exc.issue
+            log.error("catalog NOT loaded (issue=%s): %s; new sessions will be refused", exc.issue, exc.message)
         brain = injected_brain or build_brain(settings)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
             graph = build_graph(store, brain).compile(checkpointer=saver)
-            app.state.service = CocoonService(settings, store, graph, brain)
+            app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
+                                              catalog_issue=catalog_issue)
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -92,7 +112,7 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request))
+        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request), exc.details)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
@@ -141,18 +161,35 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
         except Exception:
             db_ok = False
         cp_ok = getattr(request.app.state, "saver", None) is not None
-        ready = db_ok and cp_ok
+        catalog = service.catalog if service else None
+        schema_version = None
+        if db_ok:
+            try:
+                schema_version = service.store.schema_version()
+            except Exception:
+                schema_version = None
+        ready = db_ok and cp_ok and catalog is not None
         if not ready:
             response.status_code = 503
         return s.ReadyResponse(status="ready" if ready else "not_ready", llm_mode=settings.llm_mode,
-                               database=db_ok, checkpointer=cp_ok, version=__version__)
+                               database=db_ok, checkpointer=cp_ok, version=__version__, catalog=catalog is not None,
+                               catalog_version=catalog.manifest_sha256 if catalog else None,
+                               catalog_issue=None if catalog else (service.catalog_issue if service else None),
+                               schema_version=schema_version)
 
     # ------------------------------------------------------------------ sessions
 
     @app.post("/v1/sessions", response_model=s.Session, status_code=201, tags=["sessions"],
               **v1({200: {"model": s.Session, "description": "Existing session for this client_session_key"},
                     409: {"model": s.ErrorResponse,
-                          "description": "Key already bound to a different room/participant/operator/machine"}}))
+                          "description": "Key already bound to a different room/participant/operator/machine/"
+                                         "site/shift"},
+                    422: {"model": s.ErrorResponse,
+                          "description": "Malformed request (validation_error), or a NEW session whose machine_id "
+                                         "(unknown_machine, checked first) or operator_id (unknown_operator) is not "
+                                         "in the verified catalog, or whose site/shift has no trusted binding"},
+                    503: {"model": s.ErrorResponse,
+                          "description": "catalog_unavailable: no verified catalog loaded; new sessions refused"}}))
     async def create_session(body: s.SessionCreateRequest, service: Service, response: Response) -> s.Session:
         session, created = service.create_session(body)
         response.status_code = 201 if created else 200

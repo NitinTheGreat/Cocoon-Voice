@@ -1,0 +1,11 @@
+{
+  "attempt_id": "att_fixture_2",
+  "assignment_id": "ASG-FIXTURE-0001",
+  "quiz_id": "QZ-FIXTURE-SEATBELT",
+  "question_id": "q1",
+  "answer_text": "whenever the engine is running",
+  "interpretation": "correct",
+  "score": 1.0,
+  "passed": true,
+  "answered_at": "2026-08-24T12:03:00Z"
+}

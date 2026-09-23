@@ -1,0 +1,30 @@
+{
+  "session_id": "ses_fixture_0001",
+  "batch_id": "batch_fixture_001",
+  "results": [
+    {
+      "observation_id": "obs_fixture_001",
+      "outcome": "accepted",
+      "received_at": "2026-08-24T06:44:02Z"
+    },
+    {
+      "observation_id": "obs_fixture_002",
+      "outcome": "duplicate",
+      "received_at": "2026-08-24T06:44:02Z"
+    },
+    {
+      "observation_id": "obs_fixture_007",
+      "outcome": "rejected",
+      "reason": "consent_missing",
+      "received_at": "2026-08-24T06:45:02Z"
+    }
+  ],
+  "alerts_opened": [
+    "ALR-FIXTURE-0001"
+  ],
+  "alerts_cleared": [],
+  "announcements_created": [
+    "ann_fixture_0001"
+  ],
+  "state_version": 4
+}

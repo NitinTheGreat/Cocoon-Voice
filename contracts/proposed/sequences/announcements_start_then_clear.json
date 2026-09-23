@@ -1,0 +1,54 @@
+{
+  "stream": "announcements",
+  "expect": "valid",
+  "note": "One episode: one start and one clear. Repeated samples produced nothing.",
+  "partial": false,
+  "events": [
+    {
+      "schema_version": "cocoon.announcements.v1",
+      "session_id": "ses_fixture_0001",
+      "event_id": "ann_fixture_0001",
+      "sequence": 1,
+      "type": "alert_started",
+      "priority": "high",
+      "speech": "Warning: the engine is running and your seatbelt is not fastened. Please fasten your seatbelt.",
+      "speakable": true,
+      "created_at": "2026-08-24T06:44:01Z",
+      "expires_at": "2026-08-24T06:46:01Z",
+      "correlation": {
+        "alert_id": "ALR-FIXTURE-0001",
+        "episode_id": "EPI-FIXTURE-0001",
+        "rule_id": "demo.seatbelt_engine_on",
+        "rule_version": "0.1.0"
+      },
+      "provenance": {
+        "origin": "simulator",
+        "is_simulated": true,
+        "observed_at": "2026-08-24T06:44:00Z"
+      }
+    },
+    {
+      "schema_version": "cocoon.announcements.v1",
+      "session_id": "ses_fixture_0001",
+      "event_id": "ann_fixture_0002",
+      "sequence": 2,
+      "type": "alert_cleared",
+      "priority": "low",
+      "speech": "Thanks, your seatbelt is fastened. The seatbelt warning is cleared.",
+      "speakable": true,
+      "created_at": "2026-08-24T06:45:31Z",
+      "expires_at": "2026-08-24T06:47:31Z",
+      "correlation": {
+        "alert_id": "ALR-FIXTURE-0001",
+        "episode_id": "EPI-FIXTURE-0001",
+        "rule_id": "demo.seatbelt_engine_on",
+        "rule_version": "0.1.0"
+      },
+      "provenance": {
+        "origin": "simulator",
+        "is_simulated": true,
+        "observed_at": "2026-08-24T06:45:30Z"
+      }
+    }
+  ]
+}

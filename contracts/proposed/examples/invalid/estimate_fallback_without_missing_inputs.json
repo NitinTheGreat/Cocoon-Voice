@@ -1,0 +1,32 @@
+{
+  "estimate_id": "est_fixture_001",
+  "estimator_version": "fixture-0",
+  "method": "reduced_inputs_fallback",
+  "predicted_minutes": 64.0,
+  "interval_low_minutes": 55.0,
+  "interval_high_minutes": 75.0,
+  "input_cutoff_at": "2026-08-24T06:10:00Z",
+  "inputs_used": [
+    "task_type",
+    "work_quantity",
+    "ground_condition",
+    "operator_skill",
+    "machine_age",
+    "weather"
+  ],
+  "missing_inputs": [],
+  "factors": [
+    {
+      "factor": "operator_skill",
+      "effect_minutes": 6.0,
+      "evidence": "beginner"
+    },
+    {
+      "factor": "ground_condition",
+      "effect_minutes": -2.0,
+      "evidence": "dry"
+    }
+  ],
+  "calibration_sample_count": null,
+  "uncertainty_note": "Contract fixture; no estimator exists yet (I07B)."
+}

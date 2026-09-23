@@ -1,0 +1,34 @@
+{
+  "schema_version": "cocoon.command.v1",
+  "command_id": "cmd_fixture_offline_007",
+  "kind": "incident.submit_draft",
+  "captured_at": "2026-08-24T08:05:00Z",
+  "client_draft_id": "draft_fixture_007",
+  "binding": {
+    "operator_id": "OP_DEMO_1_1",
+    "machine_id": "EXC_DEMO_001",
+    "shift_id": "EXC_DEMO_001_2026-08-24",
+    "site_id": "SITE_FIXTURE_A",
+    "device_id": "dev_fixture_phone",
+    "session_id": "ses_fixture_0001"
+  },
+  "payload": {
+    "what": {
+      "value": "Loose track guard bolt",
+      "basis": "reported"
+    },
+    "where": {
+      "site_id": "SITE_FIXTURE_A",
+      "site_zone_id": "ZONE_FIXTURE_A_PIT",
+      "basis": "reported"
+    },
+    "when": {
+      "value": "2026-08-24T08:03:00Z",
+      "basis": "reported"
+    },
+    "severity": {
+      "value": "low",
+      "basis": "reported"
+    }
+  }
+}

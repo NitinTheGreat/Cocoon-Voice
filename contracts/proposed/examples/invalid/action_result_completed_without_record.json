@@ -1,0 +1,13 @@
+{
+  "action_id": "act_fixture_001",
+  "action_name": "log_incident",
+  "status": "completed",
+  "record_id": null,
+  "summary": "Incident saved: hydraulic hose leak on the boom.",
+  "details": {
+    "kind": "incident",
+    "incident_id": "INC-FIXTURE-0001",
+    "state": "confirmed",
+    "created": true
+  }
+}

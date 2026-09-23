@@ -1,0 +1,22 @@
+{
+  "schema_version": "cocoon.telemetry.v2",
+  "batch_id": "b3",
+  "observations": [
+    {
+      "kind": "human_impact",
+      "observation_id": "obs_fixture_005",
+      "observed_at": "2026-08-24T06:50:00Z",
+      "operator_id": "OP_DEMO_1_1",
+      "device_id": "dev_fixture_phone",
+      "quality": "good",
+      "provenance": {
+        "origin": "synthetic_contract_fixture",
+        "is_simulated": true
+      },
+      "peak_accel_g": 3.4,
+      "duration_ms": 180,
+      "orientation_after": "unknown",
+      "impact_force_n": 900.0
+    }
+  ]
+}

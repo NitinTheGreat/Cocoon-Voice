@@ -2,7 +2,7 @@
 
 Cocoon is a proactive voice assistant for construction equipment operators, built by Team Butterfly for a Caterpillar hackathon. This repository contains the voice and backend services. The Android client, Cocoon-App, lives in a separate repository.
 
-> **Current phase (branch `voice`): standalone voice.** `livekit-voice` runs on its own as "Cat": AssemblyAI STT → Gemini on Vertex AI (ADC) → Cartesia TTS, with a "Hey Cat" wake gate and Krisp input filtering. It is **not connected to `langgraph-agent` yet**. The diagram below shows the planned phase-2 integration, which is pending acceptance of the voice experience. See [livekit-voice/README.md](livekit-voice/README.md) and [livekit-voice/docs/voice-latency-report.md](livekit-voice/docs/voice-latency-report.md).
+> **Current phase: standalone voice** (voice work merged into `main` and `backend` through PR #1). `livekit-voice` runs on its own as "Cat": AssemblyAI STT → Gemini on Vertex AI (ADC) → Cartesia TTS, with a "Hey Cat" wake gate and Krisp input filtering. It is **not connected to `langgraph-agent` yet**. The diagram below shows the planned phase-2 integration, which is pending acceptance of the voice experience. See [livekit-voice/README.md](livekit-voice/README.md) and [livekit-voice/docs/voice-latency-report.md](livekit-voice/docs/voice-latency-report.md).
 
 ```
  browser / future Android app                 LiveKit Cloud                       this repo
@@ -51,7 +51,7 @@ Then follow the [Playground / Agent Console walkthrough](livekit-voice/README.md
 - The telemetry rule and all telemetry are **simulated prototypes**, not validated machine safety logic.
 - Turn and announcement handling is idempotent and retry-safe, but **not exactly-once**. See API_CONTRACT.md.
 - The backend must run as a single Uvicorn worker because per-session ordering locks live in process.
-- Out of scope: MQTT, Redis, Kafka, Celery, vector databases, Kubernetes, custom signalling, LMS, wearable ML and Android UI. The phase-1 voice worker streams LLM text into TTS; the backend `/v1` contract is still nonstreaming.
+- Out of scope: MQTT, Redis, Kafka, Celery, vector databases, Kubernetes, custom signalling, LMS, wearable ML and Android UI. The phase-1 voice worker streams LLM text into TTS; the backend `/v1` contract is still nonstreaming. Backend streaming and the operator/supervisor routes are specified as a proposed contract in [`contracts/proposed/`](contracts/proposed/README.md) (I01) and are not implemented yet.
 
 ## Future Android client (Cocoon-App, not implemented here)
 

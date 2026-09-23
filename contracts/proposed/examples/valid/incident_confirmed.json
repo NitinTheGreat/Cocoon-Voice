@@ -1,0 +1,33 @@
+{
+  "incident_id": "INC-FIXTURE-0001",
+  "version": 2,
+  "state": "confirmed",
+  "origin": "operator_reported",
+  "operator_id": "OP_DEMO_1_1",
+  "machine_id": "EXC_DEMO_001",
+  "shift_id": "EXC_DEMO_001_2026-08-24",
+  "what": {
+    "value": "Hydraulic hose leaking on the boom",
+    "basis": "reported"
+  },
+  "where": {
+    "site_id": "SITE_FIXTURE_A",
+    "site_zone_id": "ZONE_FIXTURE_A_PIT",
+    "basis": "reported"
+  },
+  "when": {
+    "value": "2026-08-24T06:38:00Z",
+    "basis": "reported"
+  },
+  "severity": {
+    "value": "medium",
+    "basis": "reported"
+  },
+  "missing_fields": [],
+  "evidence": {
+    "observation_ids": []
+  },
+  "created_at": "2026-08-24T06:44:01Z",
+  "source_turn_id": "turn_fixture_001",
+  "confirmed_at": "2026-08-24T06:40:03Z"
+}

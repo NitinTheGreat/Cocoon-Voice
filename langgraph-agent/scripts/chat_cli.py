@@ -1,6 +1,6 @@
 """Interactive text chat with a RUNNING backend over HTTP (Developer B's no-audio loop).
 
-    python scripts/chat_cli.py [--room demo-room --identity operator-7]
+    python scripts/chat_cli.py [--room demo-room --identity op-demo-1-1 --operator OP_DEMO_1_1 --machine EXC_DEMO_001]
 
 Commands: /state  /events  /quit
 """
@@ -21,12 +21,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url")
     ap.add_argument("--room", default="cli-room")
-    ap.add_argument("--identity", default="operator-7")
-    ap.add_argument("--operator", default=None)
-    ap.add_argument("--machine", default="cat-320-demo")
+    ap.add_argument("--identity", default="op-demo-1-1")
+    ap.add_argument("--operator", default="OP_DEMO_1_1", help="catalog operator ID")
+    ap.add_argument("--machine", default="EXC_DEMO_001", help="catalog asset ID")
     args = ap.parse_args()
     c = client(args.base_url)
-    sid = ensure_session(c, args.room, args.identity, args.operator or args.identity, args.machine)
+    sid = ensure_session(c, args.room, args.identity, args.operator, args.machine)
     print(f"session {sid} ({c.get('/readyz').json()['llm_mode']} mode). /state /events /quit")
     while True:
         try:

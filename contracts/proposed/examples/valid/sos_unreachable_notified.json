@@ -1,0 +1,27 @@
+{
+  "episode_id": "SOS-FIXTURE-0002",
+  "impact_observation_id": "obs_fixture_005",
+  "operator_id": "OP_DEMO_1_1",
+  "state": "supervisor_notified",
+  "check_in_id": "chk_fixture_2",
+  "offers": [
+    {
+      "channel": "voice",
+      "status": "unavailable",
+      "reported_at": "2026-08-24T07:00:02Z"
+    },
+    {
+      "channel": "screen",
+      "status": "failed",
+      "reported_at": "2026-08-24T07:00:03Z"
+    }
+  ],
+  "notification": {
+    "notification_id": "ntf_fixture_1",
+    "policy_id": "preauthorised_emergency_in_app.v1",
+    "reason": "operator_unreachable",
+    "created_at": "2026-08-24T07:00:04Z",
+    "delivery_status": "delivered_to_feed"
+  },
+  "created_at": "2026-08-24T07:00:01Z"
+}

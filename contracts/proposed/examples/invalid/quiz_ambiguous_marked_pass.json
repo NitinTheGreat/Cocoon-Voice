@@ -1,0 +1,11 @@
+{
+  "attempt_id": "att_x",
+  "assignment_id": "ASG-FIXTURE-0001",
+  "quiz_id": "QZ-FIXTURE-SEATBELT",
+  "question_id": "q1",
+  "answer_text": "um maybe",
+  "interpretation": "ambiguous",
+  "score": 0.5,
+  "passed": true,
+  "answered_at": "2026-08-24T12:02:00Z"
+}

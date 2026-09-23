@@ -1,0 +1,12 @@
+{
+  "branch": "tasks",
+  "intents": [
+    {
+      "intent": "run_shell",
+      "entities": {},
+      "depends_on": []
+    }
+  ],
+  "routing_certainty": "high",
+  "needs_clarification": false
+}

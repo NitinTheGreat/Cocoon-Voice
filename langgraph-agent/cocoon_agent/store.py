@@ -13,119 +13,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .api import schemas as s
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    client_session_key TEXT NOT NULL UNIQUE,
-    room_name TEXT NOT NULL,
-    participant_identity TEXT NOT NULL,
-    operator_id TEXT NOT NULL,
-    machine_id TEXT NOT NULL,
-    state_version INTEGER NOT NULL DEFAULT 0,
-    last_observed_at TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS turns (
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    turn_id TEXT NOT NULL,
-    request_hash TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('processing', 'completed', 'failed')),
-    attempts INTEGER NOT NULL DEFAULT 1,
-    result_json TEXT,
-    error_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT,
-    PRIMARY KEY (session_id, turn_id)
-);
-CREATE TABLE IF NOT EXISTS tasks (
-    task_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    details TEXT NOT NULL,
-    priority TEXT NOT NULL,
-    status TEXT NOT NULL,
-    sort_order INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS lessons (
-    lesson_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    duration_minutes INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS incidents (
-    incident_number INTEGER PRIMARY KEY AUTOINCREMENT,
-    incident_id TEXT UNIQUE,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    operator_id TEXT NOT NULL,
-    machine_id TEXT NOT NULL,
-    description TEXT NOT NULL,
-    source_turn_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE (session_id, source_turn_id)
-);
-CREATE TABLE IF NOT EXISTS training_assignments (
-    assignment_id TEXT PRIMARY KEY,
-    operator_id TEXT NOT NULL,
-    lesson_id TEXT NOT NULL REFERENCES lessons(lesson_id),
-    session_id TEXT NOT NULL,
-    source_turn_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    assigned_at TEXT NOT NULL,
-    UNIQUE (operator_id, lesson_id)
-);
-CREATE TABLE IF NOT EXISTS alerts (
-    alert_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    rule_id TEXT NOT NULL,
-    alert_type TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'cleared')),
-    message TEXT NOT NULL,
-    explanation TEXT NOT NULL,
-    trigger_readings_json TEXT NOT NULL,
-    opened_by_event_id TEXT NOT NULL,
-    cleared_by_event_id TEXT,
-    started_at TEXT NOT NULL,
-    cleared_at TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_episode_per_rule
-    ON alerts(session_id, rule_id) WHERE status = 'active';
-CREATE TABLE IF NOT EXISTS telemetry_events (
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    event_id TEXT NOT NULL,
-    request_hash TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    readings_json TEXT NOT NULL,
-    result_json TEXT NOT NULL,
-    received_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, event_id)
-);
-CREATE TABLE IF NOT EXISTS announcements (
-    event_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    sequence INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    priority TEXT NOT NULL,
-    speech TEXT NOT NULL,
-    alert_id TEXT,
-    created_at TEXT NOT NULL,
-    expires_at TEXT,
-    UNIQUE (session_id, sequence),
-    UNIQUE (alert_id, type)
-);
-CREATE TABLE IF NOT EXISTS deliveries (
-    event_id TEXT NOT NULL REFERENCES announcements(event_id),
-    consumer_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    detail TEXT,
-    recorded_at TEXT NOT NULL,
-    PRIMARY KEY (event_id, consumer_id)
-);
-"""
+from .catalog import Catalog, CatalogError
+from .migrations import migrate
 
 SEED_TASKS = [
     ("T-101", "Pre-start walkaround inspection", "Check tracks, hydraulic lines and fluid levels before starting the excavator.", "high", 10),
@@ -156,6 +48,17 @@ class Conflict(Exception):
     """A stable ID was reused with a different payload."""
 
 
+@dataclass(frozen=True)
+class NewSessionBinding:
+    """What admission established for a new session. Site/shift are None unless a trusted binding matched."""
+
+    dataset_manifest_sha256: str
+    context_status: str  # 'unavailable' | 'trusted_binding'
+    site_id: str | None = None
+    shift_id: str | None = None
+    context_source: str | None = None
+
+
 @dataclass
 class TurnRow:
     session_id: str
@@ -170,20 +73,55 @@ class TurnRow:
 
 
 class Store:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, busy_timeout_ms: int = 5000):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        # Autocommit mode: every write goes through an explicit BEGIN IMMEDIATE (see _tx and migrations.migrate).
         self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=5000")
 
     # ------------------------------------------------------------------ lifecycle
 
-    def init_schema(self) -> None:
+    def init_schema(self) -> list[str]:
+        """Apply pending versioned migrations (see migrations.py). Raises MigrationError; never wipes data."""
         with self._lock:
-            self._conn.executescript(SCHEMA)
+            return migrate(self._conn)
+
+    def schema_version(self) -> int:
+        return self._one("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")[0]
+
+    def register_catalog(self, catalog: Catalog) -> None:
+        """Record the verified snapshot once (append-only). A different identity set under the same hash is refused."""
+        machines = {(m.machine_id, m.model, m.category) for m in catalog.machines.values()}
+        with self._tx() as c:
+            row = c.execute("SELECT 1 FROM catalog_versions WHERE manifest_sha256 = ?",
+                            (catalog.manifest_sha256,)).fetchone()
+            if row is None:
+                c.execute(
+                    "INSERT INTO catalog_versions(manifest_sha256, manifest_schema_version, dataset_origin,"
+                    " generator_seed, machines_sha256, operators_sha256, machine_count, operator_count,"
+                    " first_registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (catalog.manifest_sha256, catalog.manifest_schema_version, catalog.dataset_origin,
+                     catalog.generator_seed, catalog.file_sha256["machines.csv"], catalog.file_sha256["operators.csv"],
+                     len(machines), len(catalog.operators), iso(utcnow())),
+                )
+                c.executemany("INSERT INTO catalog_version_machines(manifest_sha256, machine_id, model, category)"
+                              " VALUES (?, ?, ?, ?)", [(catalog.manifest_sha256, *m) for m in sorted(machines)])
+                c.executemany("INSERT INTO catalog_version_operators(manifest_sha256, operator_id) VALUES (?, ?)",
+                              [(catalog.manifest_sha256, o) for o in sorted(catalog.operators)])
+                return
+            stored_m = {tuple(r) for r in c.execute(
+                "SELECT machine_id, model, category FROM catalog_version_machines WHERE manifest_sha256 = ?",
+                (catalog.manifest_sha256,))}
+            stored_o = {r[0] for r in c.execute(
+                "SELECT operator_id FROM catalog_version_operators WHERE manifest_sha256 = ?",
+                (catalog.manifest_sha256,))}
+            if stored_m != machines or stored_o != set(catalog.operators):
+                raise CatalogError("catalog_snapshot_conflict",
+                                   "stored snapshot for this manifest hash differs from the loaded catalog")
 
     def seed_demo(self) -> None:
         """Idempotent: re-running never duplicates or overwrites demo rows."""
@@ -234,7 +172,15 @@ class Store:
 
     # ------------------------------------------------------------------ sessions
 
-    def get_or_create_session(self, req: s.SessionCreateRequest) -> tuple[s.Session, bool]:
+    def get_or_create_session(
+        self, req: s.SessionCreateRequest, admit: Callable[[s.SessionCreateRequest], "NewSessionBinding"]
+    ) -> tuple[s.Session, bool]:
+        """Retrieve by client_session_key, else admit and insert, in ONE BEGIN IMMEDIATE transaction.
+
+        An existing key is compared with its stored association first, so pre-upgrade sessions stay retrievable
+        even when their IDs are no longer admissible. Only a new key goes through `admit` (catalog and binding
+        checks), which raises to abort the transaction with nothing written. The UNIQUE client_session_key and
+        the IMMEDIATE lock serialise concurrent creators across connections and processes."""
         with self._tx() as c:
             row = c.execute("SELECT * FROM sessions WHERE client_session_key = ?", (req.client_session_key,)).fetchone()
             if row:
@@ -242,13 +188,20 @@ class Store:
                 for field in ("room_name", "participant_identity", "operator_id", "machine_id"):
                     if getattr(session, field) != getattr(req, field):
                         raise Conflict(f"client_session_key already bound to a different {field}")
+                for field in ("site_id", "shift_id"):  # omitted = not asserted; supplied must equal the stored value
+                    supplied = getattr(req, field)
+                    if supplied is not None and supplied != getattr(session, field):
+                        raise Conflict(f"client_session_key already bound to a different {field}")
                 return session, False
+            binding = admit(req)
             session_id = "ses_" + uuid.uuid4().hex
             c.execute(
-                "INSERT INTO sessions(session_id, client_session_key, room_name, participant_identity,"
-                " operator_id, machine_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id, req.client_session_key, req.room_name, req.participant_identity,
-                 req.operator_id, req.machine_id, iso(utcnow())),
+                "INSERT INTO sessions(session_id, client_session_key, room_name, participant_identity, operator_id,"
+                " machine_id, created_at, dataset_manifest_sha256, site_id, shift_id, binding_status,"
+                " context_status, context_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'catalog_verified', ?, ?)",
+                (session_id, req.client_session_key, req.room_name, req.participant_identity, req.operator_id,
+                 req.machine_id, iso(utcnow()), binding.dataset_manifest_sha256, binding.site_id, binding.shift_id,
+                 binding.context_status, binding.context_source),
             )
             row = c.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
             return _session(row), True
@@ -539,6 +492,8 @@ def _session(r: sqlite3.Row) -> s.Session:
         session_id=r["session_id"], client_session_key=r["client_session_key"], room_name=r["room_name"],
         participant_identity=r["participant_identity"], operator_id=r["operator_id"], machine_id=r["machine_id"],
         state_version=r["state_version"], created_at=parse_dt(r["created_at"]),
+        dataset_manifest_sha256=r["dataset_manifest_sha256"], site_id=r["site_id"], shift_id=r["shift_id"],
+        binding_status=r["binding_status"], context_status=r["context_status"], context_source=r["context_source"],
     )
 
 

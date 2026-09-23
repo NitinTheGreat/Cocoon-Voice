@@ -1,0 +1,11 @@
+{
+  "assignment_id": "ASG-FIXTURE-0001",
+  "operator_id": "OP_DEMO_1_1",
+  "lesson_id": "LSN-FIXTURE-SEATBELT",
+  "lesson_version": 1,
+  "origin": "behaviour_policy",
+  "policy_id": "demo.seatbelt_to_lesson",
+  "source_episode_id": "EPI-FIXTURE-0001",
+  "status": "assigned",
+  "assigned_at": "2026-08-24T06:44:01Z"
+}

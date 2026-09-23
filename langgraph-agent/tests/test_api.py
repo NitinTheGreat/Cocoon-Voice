@@ -64,8 +64,8 @@ def test_request_id_is_echoed(client):
 
 
 def test_session_creation_is_idempotent_by_key(client):
-    body = {"client_session_key": "lk:r:p", "room_name": "r", "participant_identity": "p", "operator_id": "op",
-            "machine_id": "m"}
+    body = {"client_session_key": "lk:r:p", "room_name": "r", "participant_identity": "p",
+            "operator_id": "OP_TEST_1", "machine_id": "EXC_DEMO_001"}
     first = client.post("/v1/sessions", json=body, headers=AUTH)
     second = client.post("/v1/sessions", json=body, headers=AUTH)
     assert (first.status_code, second.status_code) == (201, 200)
@@ -135,7 +135,8 @@ def test_retrying_same_turn_does_not_repeat_actions(client):
 
 def test_follow_up_stays_in_its_session(client):
     a = new_session(client, "lk:room-a:op-1")
-    b = new_session(client, "lk:room-b:op-2", participant_identity="op-2", operator_id="op-2")
+    b = new_session(client, "lk:room-b:op-2", participant_identity="op-2", operator_id="OP_TEST_2",
+                    machine_id="DOZ_DEMO_001")
     turn(client, a, "a1", "Report an incident")
     # Session B says something that would answer A's pending question; it must not.
     rb = turn(client, b, "b1", "The hose burst near the bucket").json()

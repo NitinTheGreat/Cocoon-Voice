@@ -1,0 +1,18 @@
+{
+  "schema_version": "cocoon.supervisor-feed.v1",
+  "site_id": "SITE_FIXTURE_A",
+  "event_id": "sfe_fixture_0013",
+  "sequence": 13,
+  "type": "risk.changed",
+  "created_at": "2026-08-24T06:47:00Z",
+  "data": {
+    "view": "risk",
+    "operator_id": "OP_DEMO_1_1",
+    "site_id": "SITE_FIXTURE_A",
+    "risk_level": "unavailable",
+    "observed_at": null,
+    "freshness": "unknown",
+    "response_context": "none",
+    "unavailable_reason": "consent_revoked"
+  }
+}

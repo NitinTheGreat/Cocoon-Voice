@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "unknown_machine",
+    "message": "machine_id is not in the machine catalog",
+    "retryable": false,
+    "request_id": "req_fixture_01",
+    "details": [
+      {
+        "field": "body.machine_id",
+        "issue": "unknown asset NO_SUCH_MACHINE"
+      }
+    ]
+  }
+}

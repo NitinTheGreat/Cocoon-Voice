@@ -1,0 +1,9 @@
+{
+  "subject_id": "subj_fixture_op",
+  "principal_kind": "operator",
+  "site_ids": [
+    "SITE_FIXTURE_A"
+  ],
+  "allowed_associations": [],
+  "access_token": "never-echo-a-token"
+}

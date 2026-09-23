@@ -1,0 +1,14 @@
+{
+  "asset_id": "AST-X",
+  "version": 1,
+  "kind": "video",
+  "mime_type": "video/mp4",
+  "title": "x",
+  "availability": "available",
+  "content_ref": "content/x.mp4",
+  "duration_seconds": 60,
+  "provenance": {
+    "origin": "synthetic_contract_fixture",
+    "is_simulated": true
+  }
+}
