@@ -102,29 +102,78 @@ def check_assemblyai(s: VoiceSettings, client: httpx.Client) -> Check:
     return Check("assemblyai", "FAIL", f"HTTP {r.status_code} (401/403 = invalid key or no streaming access)")
 
 
-def check_cartesia(s: VoiceSettings, client: httpx.Client) -> Check:
-    """Voice lookup does not prove the key works, so a one-word synthesis validates it (negligible cost)."""
+def check_cartesia(s: VoiceSettings) -> list[Check]:
+    """Report each Cartesia path separately: raw-key HTTP, token mint, token HTTP, token websocket streaming.
+
+    Provider status, sanitized message and request_id are kept; statuses are not all treated as 'invalid key'.
+    """
+    from .cartesia_auth import CartesiaAuthError, error_details, mint_access_token
+
     if s.cartesia_api_key is None:
-        return Check("cartesia", "FAIL", "CARTESIA_API_KEY is not set")
-    headers = {"X-API-Key": s.cartesia_api_key.get_secret_value(), "Cartesia-Version": "2025-04-16"}
-    try:
-        voice = client.get(f"https://api.cartesia.ai/voices/{s.cartesia_voice_id}", headers=headers)
-        tts = client.post("https://api.cartesia.ai/tts/bytes", headers=headers, json={
-            "model_id": s.cartesia_model, "transcript": "Ok.", "language": s.voice_language,
+        return [Check("cartesia", "FAIL", "CARTESIA_API_KEY is not set")]
+    key = s.cartesia_api_key.get_secret_value()
+    body = {"model_id": s.cartesia_model, "transcript": "Ok.", "language": s.voice_language,
             "voice": {"mode": "id", "id": s.cartesia_voice_id},
-            "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 24000}})
-    except httpx.HTTPError as exc:
-        return Check("cartesia", "FAIL", f"network: {type(exc).__name__}")
-    if tts.status_code in (401, 403):
-        return Check("cartesia", "FAIL", f"HTTP {tts.status_code}: API key rejected for synthesis; create a new key "
-                                         "at https://play.cartesia.ai/keys")
-    if voice.status_code == 404 or tts.status_code == 404:
-        return Check("cartesia", "FAIL", f"voice {s.cartesia_voice_id} not found; set CARTESIA_VOICE_ID")
-    if tts.status_code != 200:
-        return Check("cartesia", "FAIL", f"synthesis HTTP {tts.status_code}: {_short(tts.text)}")
-    name = voice.json().get("name") if voice.status_code == 200 else "?"
-    return Check("cartesia", "PASS", f"key valid (synthesized {len(tts.content)} bytes); model={s.cartesia_model} "
-                                     f"voice={s.cartesia_voice_id} name={name!r}")
+            "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 24000}}
+
+    def http_synth(label: str, credential: str) -> tuple[bool, Check]:
+        try:
+            r = httpx.post("https://api.cartesia.ai/tts/bytes", json=body, timeout=15,
+                           headers={"X-API-Key": credential, "Cartesia-Version": "2025-04-16"})
+        except httpx.HTTPError as exc:
+            return False, Check(label, "FAIL", f"network: {type(exc).__name__}")
+        if r.status_code == 200:
+            return True, Check(label, "PASS", f"HTTP synthesis OK ({len(r.content)} bytes)")
+        message, rid = error_details(r)
+        return False, Check(label, "FAIL", f"HTTP {r.status_code}: {message} (request_id={rid})")
+
+    required = s.cartesia_auth == "api_key"
+    raw_ok, raw_check = http_synth("cartesia_raw_key", key)
+    raw_check.required = required
+    if not raw_ok and not required:
+        raw_check.status = "WARN"
+        raw_check.detail += " - expected for this account; CARTESIA_AUTH=access_token is in use"
+    checks = [raw_check]
+    if s.cartesia_auth == "api_key":
+        return checks
+    try:
+        token = asyncio.run(mint_access_token(key, ttl_s=120))
+    except CartesiaAuthError as exc:
+        return checks + [Check("cartesia_token", "FAIL", f"mint failed: HTTP {exc.status} {exc.provider_message} "
+                                                         f"(request_id={exc.request_id})")]
+    checks.append(Check("cartesia_token", "PASS", "TTS access token minted from the API key"))
+    checks.append(http_synth("cartesia_http", token.token)[1])
+    checks.append(check_cartesia_stream(s, token.token))
+    return checks
+
+
+def check_cartesia_stream(s: VoiceSettings, credential: str) -> Check:
+    """Streaming synthesis through the LiveKit plugin's websocket path (what the worker uses)."""
+    from .live_checks import close_http_session, tts_stream_turn
+    from .providers import build_tts
+
+    async def run():
+        import aiohttp
+
+        async with aiohttp.ClientSession() as http:
+            tts = build_tts(s, http_session=http, credential=credential)
+            try:
+                return await tts_stream_turn(tts, ["Hi there, operator."])
+            finally:
+                await tts.aclose()
+
+    try:
+        t = asyncio.run(run())
+    except Exception as exc:
+        from .cartesia_auth import sanitize
+
+        return Check("cartesia_stream", "FAIL", f"{type(exc).__name__}: {sanitize(exc)}")
+    finally:
+        asyncio.run(close_http_session())
+    if t.audio_s <= 0:
+        return Check("cartesia_stream", "FAIL", "websocket returned no audio")
+    return Check("cartesia_stream", "PASS", f"plugin websocket streaming OK: first audio {t.first_audio_ms} ms, "
+                                            f"{t.audio_s:.1f}s audio (model={s.cartesia_model}, voice={s.cartesia_voice_id})")
 
 
 def check_livekit(s: VoiceSettings) -> Check:
@@ -238,7 +287,7 @@ def run(offline: bool) -> list[Check]:
     checks.append(check_vertex(s))
     with httpx.Client(timeout=10) as client:
         checks.append(check_assemblyai(s, client))
-        checks.append(check_cartesia(s, client))
+    checks.extend(check_cartesia(s))
     checks.append(check_livekit(s))
     return checks
 

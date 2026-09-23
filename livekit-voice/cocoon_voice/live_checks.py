@@ -204,8 +204,14 @@ async def close_http_session() -> None:
         await _http_session.close()
 
 
-def make_tts(settings: VoiceSettings):
-    return build_tts(settings, http_session=_session())
+async def make_tts(settings: VoiceSettings):
+    """Same auth path as the worker: a minted TTS access token unless CARTESIA_AUTH=api_key."""
+    credential = None
+    if settings.cartesia_auth == "access_token":
+        from .cartesia_auth import mint_access_token
+
+        credential = (await mint_access_token(settings.cartesia_api_key.get_secret_value())).token
+    return build_tts(settings, http_session=_session(), credential=credential)
 
 
 def make_stt(settings: VoiceSettings):

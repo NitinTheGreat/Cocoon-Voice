@@ -40,7 +40,7 @@ async def run(only: str | None) -> int:
             print("[SKIP] cartesia  CARTESIA_API_KEY is not set")
         else:
             try:
-                tts = make_tts(s)
+                tts = await make_tts(s)
                 t = await tts_stream_turn(tts, [PRONUNCIATION_TEXT])
                 path = write_wav(s.record_audio_dir / "smoke-cartesia-pronunciation.wav", t.pcm, t.sample_rate)
                 tts_audio = (t.pcm, t.sample_rate)

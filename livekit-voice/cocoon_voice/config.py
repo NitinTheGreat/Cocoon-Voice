@@ -76,6 +76,8 @@ class VoiceSettings(BaseSettings):
     cartesia_voice_id: str = Field(default="f786b574-daa5-4673-aa0c-cbe3e8534c02", alias="CARTESIA_VOICE_ID",
                                    min_length=8)
     cartesia_speed: float | None = Field(default=None, alias="CARTESIA_SPEED", ge=0.6, le=1.5)
+    # access_token: mint a short-lived TTS token from the key (raw key rejected by Cartesia TTS; see cartesia_auth.py)
+    cartesia_auth: Literal["access_token", "api_key"] = Field(default="access_token", alias="CARTESIA_AUTH")
     voice_language: Literal["en"] = Field(default="en", alias="VOICE_LANGUAGE")
 
     # ---------------------------------------------------------------- Vertex AI (ADC)
@@ -289,7 +291,7 @@ class VoiceSettings(BaseSettings):
                            "max_turn_silence_ms": self.assemblyai_max_turn_silence_ms,
                            "keyterms": len(self.keyterms)},
             "cartesia": {"model": self.cartesia_model, "voice_id": self.cartesia_voice_id,
-                         "api_key": presence(self.cartesia_api_key)},
+                         "api_key": presence(self.cartesia_api_key), "auth": self.cartesia_auth},
             "vertex": {"project": self.google_cloud_project, "location": self.google_cloud_location,
                        "use_vertexai": self.google_genai_use_vertexai, "model": self.vertex_model,
                        "thinking": self.vertex_thinking, "auth": "application-default-credentials"},

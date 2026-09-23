@@ -47,9 +47,11 @@ def build_stt(settings: VoiceSettings, http_session=None):
     return assemblyai.STT(**kwargs)
 
 
-def build_tts(settings: VoiceSettings, http_session=None):
+def build_tts(settings: VoiceSettings, http_session=None, credential: str | None = None):
+    """credential: a minted access token (CARTESIA_AUTH=access_token) or None to use the raw key."""
+    raw_key = settings.cartesia_api_key.get_secret_value() if settings.cartesia_api_key else None
     return cartesia.TTS(
-        api_key=settings.cartesia_api_key.get_secret_value() if settings.cartesia_api_key else None,
+        api_key=credential or raw_key,
         model=settings.cartesia_model,
         voice=settings.cartesia_voice_id,
         language=settings.voice_language,

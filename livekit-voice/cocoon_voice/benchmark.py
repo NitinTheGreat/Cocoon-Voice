@@ -44,7 +44,7 @@ async def run(turns: int, use_stt: bool, noise_kind: str | None, snr_db: float, 
     if prewarm:  # what the worker does: AgentSession construction prewarms the LLM (auth + connection)
         brain.prewarm()
         await asyncio.sleep(3)
-    tts = make_tts(s) if s.cartesia_api_key else None
+    tts = await make_tts(s) if s.cartesia_api_key else None
     stt_impl = make_stt(s) if (use_stt and s.assemblyai_api_key and tts) else None
     skipped = []
     if tts is None:

@@ -39,6 +39,7 @@ from . import speech_policy as sp
 from .config import ConfigError, VoiceSettings, get_settings
 from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
+from .cartesia_auth import CartesiaTokenRefresher
 from .acoustic_wake import AcousticRouter, KeywordEngine, LiveKitWakeWordEngine, PorcupineEngine
 from .providers import NoiseSetup, build_noise_cancellation, build_stt, build_tts, create_brain, load_vad
 from .recording import InputRecorder, cleanup_recordings
@@ -383,7 +384,7 @@ def session_conn_options(settings: VoiceSettings) -> SessionConnectOptions:
 def build_session(settings: VoiceSettings, vad) -> AgentSession:
     return AgentSession(
         stt=build_stt(settings),
-        tts=build_tts(settings),
+        tts=build_tts(settings),  # credential replaced by CartesiaTokenRefresher when CARTESIA_AUTH=access_token
         llm=create_brain(settings),
         vad=vad,
         turn_handling=TurnHandlingOptions(
@@ -438,6 +439,10 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
     recorder = InputRecorder(settings.record_audio_dir, ctx.room.name) if settings.record_audio else None
 
     session = build_session(settings, ctx.proc.userdata["vad"])
+    if settings.cartesia_auth == "access_token":
+        refresher = CartesiaTokenRefresher(session.tts, settings.cartesia_api_key.get_secret_value())  # type: ignore
+        await refresher.start()  # raises CartesiaAuthError with status/request_id if the key cannot mint
+        ctx.add_shutdown_callback(refresher.aclose)
     phrases = PhraseCache(session.tts, cache_dir=settings.tts_cache_dir, provider="cartesia",
                           model=settings.cartesia_model, voice=settings.cartesia_voice_id,
                           language=settings.voice_language, speed=settings.cartesia_speed)
