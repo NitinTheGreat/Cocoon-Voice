@@ -5,8 +5,8 @@
 - Cocoon is Team Butterfly's proactive operator assistant for a Caterpillar hackathon. The implementation budget is roughly 12 hours: deliver a small working integration first.
 - This folder owns reasoning, validated actions, application state, persistence, and proactive rules. `../livekit-voice` owns voice transport. `Cocoon-App` is a separate Android repository and will connect later.
 - Demo capabilities: retrieve a task, record an incident, assign/retrieve a training lesson, issue a simulated alert without a user prompt, and explain that alert in a follow-up.
-- The original problem statement and datasets were not available when this file was prepared. Do not invent mandatory requirements or claim full compliance. Reconcile supplied materials when available.
-- These instructions capture the agreed design, not evidence that code exists. Initial implementation and test status are **UNVERIFIED**. Inspect the checkout before changing that status.
+- The filled Review 1 form is now reconciled in root `BACKEND_IMPLEMENTATION_PLAN.md` (revision 2.1). That plan is the authoritative scope and increment sequence. Its section 5 identity and commit rules apply here. Requirement status lives in `docs/FEATURE_MATRIX.md`, data gaps in `docs/DATA_GAPS.md`, and evidence per increment in `docs/HANDOFF.md`. Do not claim compliance beyond what those files record.
+- These instructions capture the agreed design, not evidence that code exists. The I00 audit (2026-09-24) verified the v1 prototype listed below. Everything else stays unverified until checked.
 
 ## At the start of every task
 
@@ -82,7 +82,7 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 - Provide a text CLI or HTTP smoke script that runs the real backend without LiveKit dependencies or credentials. Keep the simulator similarly independent.
 - README must state exact installation, configuration, database initialization, startup, shutdown, and test commands, plus PowerShell/Bash differences. Record the working directory for each command.
 - Document selected environment variable names in `.env.example`: service token, database location, mock/live mode, provider key/model, and network settings. Never store values in this file.
-- **Commands currently verified:** none; this file was prepared without inspecting the checkout. Replace this entry with tested commands and their environment/commit when available. Do not invent runnable module paths.
+- **Commands currently verified** (I00, 2026-09-24, base `ee83254`, Python 3.11.15, mock mode, run from `langgraph-agent/`): `python -m pytest -q` (57 passed), `python scripts/export_openapi.py --check` (up to date), `python -m cocoon_agent` + `python scripts/smoke.py --base-url ...` (SMOKE OK). Environment and exact results are in `docs/HANDOFF.md`.
 - Focus checks on contract conformance; persisted incident retrieval; duplicate/conflicting turns; pending follow-ups and session isolation; repeated/reset alerts; event delivery/cursors; restart persistence; and uncertain outcomes after timeouts.
 - Run only checks relevant to the change and required integration gates. Add tests for consequential behavior, not for documentation edits or trivial implementation details.
 - Distinguish deterministic mock checks, real HTTP integration with the voice adapter, and actual LiveKit speech tests. Report exactly what ran; live speech remains unverified unless observed.
@@ -112,20 +112,22 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Area | Status | Evidence / next action |
 | --- | --- | --- |
 | Architecture | DESIGN AGREED | Independent HTTP services; FastAPI + LangGraph backend; LiveKit voice client. |
-| Existing code and dependencies | UNVERIFIED | Inspect this checkout; reconcile rather than recreate working code. |
-| Canonical contract and consumer compatibility | UNVERIFIED | Check root contract, real schemas, fixtures, and voice-client expectations. |
-| Graph, persistence, actions, and proactive flow | UNVERIFIED | Verify each behavior against code and relevant checks. |
-| Commands, real HTTP integration, and live audio | UNVERIFIED | Record evidence separately for each level. |
+| Existing code and dependencies | DONE (v1 prototype) | I00 installed pinned deps on Python 3.11.15; 57 tests pass. Versions are in `docs/HANDOFF.md`. |
+| Canonical contract and consumer compatibility | DONE (7 v1 routes) | `export_openapi.py --check` and `test_contract.py` pass. Streaming, supervisor and command contracts do not exist yet (I01). |
+| Graph, persistence, actions, and proactive flow | DONE (v1 prototype, mock) | Seven-intent router, SQLite idempotency, prototype seatbelt rule and "Why?". No form requirement is fully met; see `docs/FEATURE_MATRIX.md`. |
+| Live LLM provider | BLOCKED | Code uses Anthropic (`ANTHROPIC_API_KEY`). The plan specifies Vertex AI via ADC. Decide before I04. |
+| Commands, real HTTP integration, and live audio | PARTIAL | Mock-mode real HTTP smoke passed. The voice worker is not connected. Live audio is UNVERIFIED. |
 
 ### Active work
 
 | Task | Owner / branch | Status | Files / contract impact | Next checkpoint |
 | --- | --- | --- | --- | --- |
-| Repository reconciliation | Unassigned | TODO | Inspect backend and shared contract; no implementation claims yet. | Record actual state and choose the next incomplete flow. |
+| I00 scope audit | Naif Naqeeb / `backend` | DONE | `docs/FEATURE_MATRIX.md`, `docs/DATA_GAPS.md`, `docs/HANDOFF.md`, root plan; no contract change. | Assign I01. |
+| I01 contract freeze | Unassigned / `backend` | TODO | `API_CONTRACT.md`, `contracts/**`, `api/schemas.py` (additive only). | Proposed schemas and fixtures validate; legacy fixtures still pass. |
 
 ### Latest handoff
 
-- **Recorded:** 2026-09-23; context-file preparation only. No repository implementation was inspected or tested during preparation.
-- **Next action:** read the checkout and canonical contract, replace unknowns with evidence, and claim a bounded task above.
-- **Blocking information:** live credentials and exact problem-statement requirements are not established in this document; inspect available configuration/materials without printing secrets.
+- **Recorded:** 2026-09-24, I00 on `backend` from base `ee83254`. Full record, checks and blockers are in `docs/HANDOFF.md`.
+- **Next action:** I01, freezing the compatible contracts and fixtures.
+- **Blocking information:** LLM provider decision (Vertex vs Anthropic); the dataset is untracked on `backend`; core data inputs are listed as DG-01..DG-16 in `docs/DATA_GAPS.md`.
 - **For every subsequent handoff record:** UTC time; owner/branch and base commit if known; task; changed paths; behavior now working; exact checks and results; contract changes; remaining risks/blockers; next actionable step. Never invent an identity, commit, command result, or completion claim.
