@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     vertex_thinking_level: Literal["low", "medium", "high", "model_default"] = Field(
         default="low", alias="VERTEX_THINKING_LEVEL")
     vertex_max_output_tokens: int = Field(default=1024, alias="VERTEX_MAX_OUTPUT_TOKENS", ge=64, le=8192)
+    # Attempts per model call, including the first. Only capacity/transient failures (429, 5xx, timeouts) are retried,
+    # with jittered exponential backoff; auth/config errors never are. The SDK's own retry stays off (one layer only).
+    vertex_max_attempts: int = Field(default=3, alias="VERTEX_MAX_ATTEMPTS", ge=1, le=5)
+    # Live model calls in flight across the whole process, and how many more may wait for a slot.
+    llm_max_concurrency: int = Field(default=1, alias="COCOON_LLM_MAX_CONCURRENCY", ge=1, le=8)
+    llm_max_waiting: int = Field(default=8, alias="COCOON_LLM_MAX_WAITING", ge=0, le=64)
+    # template: one model call per turn (routing); the reply is worded deterministically from the saved action
+    # results. model: a second model call words the reply (legacy behaviour).
+    llm_compose: Literal["template", "model"] = Field(default="template", alias="COCOON_LLM_COMPOSE")
     # Optional path to Application Default Credentials. Only passed to the Google SDK through the standard
     # GOOGLE_APPLICATION_CREDENTIALS variable; this service never opens, parses or logs the file.
     google_application_credentials: Path | None = Field(default=None, alias="GOOGLE_APPLICATION_CREDENTIALS")

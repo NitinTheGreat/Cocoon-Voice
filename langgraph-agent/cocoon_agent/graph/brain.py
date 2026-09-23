@@ -6,9 +6,11 @@ graph's action nodes through validated Store methods, never in model output.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -122,9 +124,14 @@ class MockBrain:
         return RouteDecision(intent="smalltalk")
 
     async def compose(self, ctx: TurnContext, actions: list[dict[str, Any]]) -> str:
-        if not actions:
-            return "I can help with your next task, logging an incident, training lessons, or explaining a warning."
-        return " ".join(_template(a) for a in actions)
+        return template_speech(actions)
+
+
+def template_speech(actions: list[dict[str, Any]]) -> str:
+    """Deterministic wording from saved action results only (it cannot invent a completed action)."""
+    if not actions:
+        return "I can help with your next task, logging an incident, training lessons, or explaining a warning."
+    return " ".join(_template(a) for a in actions)
 
 
 def _template(a: dict[str, Any]) -> str:
@@ -246,13 +253,35 @@ class AnthropicBrain:
 
 
 _VERTEX_DECLINED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
+_VERTEX_RETRYABLE = {408, 429, 500, 502, 503, 504}  # capacity/transient only; never 400/401/403/404
+_BACKOFF_INITIAL, _BACKOFF_CAP = 1.0, 4.0  # seconds; all waiting stays inside the turn deadline
+
+
+def _retry_delay_hint(exc: Exception) -> float | None:
+    """Seconds from a google.rpc.RetryInfo detail, if the provider sent one (e.g. {"retryDelay": "2s"})."""
+    details = getattr(exc, "details", None)
+    err = details.get("error", details) if isinstance(details, dict) else None
+    for item in (err or {}).get("details", []) if isinstance(err, dict) else []:
+        value = item.get("retryDelay") if isinstance(item, dict) else None
+        if isinstance(value, str) and value.endswith("s"):
+            try:
+                return float(value[:-1])
+            except ValueError:
+                return None
+    return None
 
 
 class VertexBrain:
     """Gemini on Vertex AI through the google-genai SDK and Application Default Credentials.
 
     Same contract as the other brains: classify and word only, with schema-validated structured output. Every
-    provider failure becomes LLMUnavailable (turn fails with retryable 503); there is never a fallback to mock."""
+    provider failure becomes LLMUnavailable (turn fails with retryable 503); there is never a fallback to mock or to
+    another model.
+
+    Load bounds: at most COCOON_LLM_MAX_CONCURRENCY calls in flight and COCOON_LLM_MAX_WAITING queued per process;
+    VERTEX_MAX_ATTEMPTS per call with jittered backoff for retryable failures only. The SDK's own retry is left off
+    (HttpOptions.retry_options unset = one attempt), so there is exactly one retry layer. The service's turn
+    deadline (COCOON_TURN_TIMEOUT_SECONDS) bounds everything, including queueing and backoff."""
 
     mode: Literal["live", "mock"] = "live"
 
@@ -269,6 +298,9 @@ class VertexBrain:
                 http_options=types.HttpOptions(timeout=int(settings.llm_timeout_seconds * 1000)),
             )
         self._client = client
+        self._slots = asyncio.Semaphore(settings.llm_max_concurrency)
+        self._waiting = 0
+        self._sleep = asyncio.sleep  # replaceable in tests
 
     async def aclose(self) -> None:
         aclose = getattr(self._client.aio, "aclose", None)
@@ -287,6 +319,10 @@ class VertexBrain:
         return await self._parse(ROUTER_SYSTEM, json.dumps(payload), RouteDecision)
 
     async def compose(self, ctx: TurnContext, actions: list[dict[str, Any]]) -> str:
+        if self._settings.llm_compose == "template":
+            # No second model call: the typed classifier already chose the action and the reply is worded from the
+            # committed results, so answer generation cannot fail after an action was saved.
+            return template_speech(actions)
         payload = {"operator_said": ctx.text, "ACTION_RESULTS": actions}
         out = await self._parse(COMPOSER_SYSTEM, json.dumps(payload, default=str), ComposedSpeech)
         return clean_speech(out.speech)
@@ -305,23 +341,17 @@ class VertexBrain:
         )
 
     async def _parse(self, system: str, content: str, schema: type[BaseModel]) -> Any:
-        from google.auth import exceptions as auth_errors
-        from google.genai import errors as genai_errors
-
+        if self._waiting >= self._settings.llm_max_waiting and self._slots.locked():
+            raise LLMUnavailable("the model request queue is full; retry shortly")
+        self._waiting += 1
         try:
-            resp = await self._client.aio.models.generate_content(
-                model=self._settings.vertex_model, contents=content, config=self._config(system, schema))
-        except auth_errors.GoogleAuthError as exc:
-            raise LLMUnavailable("Vertex AI credentials are not available") from exc
-        except genai_errors.APIError as exc:
-            code = getattr(exc, "code", None)
-            if code in (401, 403):
-                raise LLMUnavailable("Vertex AI rejected the credentials or project access") from exc
-            if code == 429:
-                raise LLMUnavailable("Vertex AI quota is exhausted; retry shortly") from exc
-            raise LLMUnavailable(f"Vertex AI returned HTTP {code}") from exc
-        except (httpx.HTTPError, TimeoutError, OSError) as exc:
-            raise LLMUnavailable("could not reach Vertex AI") from exc
+            await self._slots.acquire()
+        finally:
+            self._waiting -= 1
+        try:
+            resp = await self._call_with_retry(system, content, schema)
+        finally:
+            self._slots.release()
         candidate = resp.candidates[0] if resp.candidates else None
         reason = str(getattr(getattr(candidate, "finish_reason", None), "name", "") or "")
         if reason in _VERTEX_DECLINED:
@@ -331,6 +361,38 @@ class VertexBrain:
             raise LLMUnavailable("the model did not return a complete structured answer")
         log.info("llm call ok provider=vertex model=%s finish=%s", self._settings.vertex_model, reason or "?")
         return parsed
+
+    async def _call_with_retry(self, system: str, content: str, schema: type[BaseModel]) -> Any:
+        from google.auth import exceptions as auth_errors
+        from google.genai import errors as genai_errors
+
+        attempts = self._settings.vertex_max_attempts
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._client.aio.models.generate_content(
+                    model=self._settings.vertex_model, contents=content, config=self._config(system, schema))
+            except auth_errors.GoogleAuthError as exc:
+                raise LLMUnavailable("Vertex AI credentials are not available") from exc
+            except genai_errors.APIError as exc:
+                code = getattr(exc, "code", None)
+                if code in (401, 403):
+                    raise LLMUnavailable("Vertex AI rejected the credentials or project access") from exc
+                if code not in _VERTEX_RETRYABLE or attempt == attempts:
+                    if code == 429:
+                        raise LLMUnavailable("Vertex AI capacity is exhausted (429); retry shortly") from exc
+                    raise LLMUnavailable(f"Vertex AI returned HTTP {code}") from exc
+                hint = _retry_delay_hint(exc)
+                log.warning("vertex call retry attempt=%d/%d code=%s status=%s", attempt, attempts, code,
+                            getattr(exc, "status", None))
+            except (httpx.HTTPError, TimeoutError, OSError) as exc:
+                if attempt == attempts:
+                    raise LLMUnavailable("could not reach Vertex AI") from exc
+                hint = None
+                log.warning("vertex call retry attempt=%d/%d transport=%s", attempt, attempts, type(exc).__name__)
+            backoff = min(_BACKOFF_CAP, _BACKOFF_INITIAL * 2 ** (attempt - 1))
+            delay = min(_BACKOFF_CAP, hint) if hint is not None else random.uniform(backoff / 2, backoff)
+            await self._sleep(delay)
+        raise LLMUnavailable("Vertex AI call did not complete")  # unreachable: the loop returns or raises
 
 
 def build_brain(settings: Settings) -> Brain:
