@@ -34,8 +34,10 @@ browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one 
 | VAD against synthetic cab noise | 0 false speech detections; speech kept as one segment down to −5 dB SNR (offline, synthetic). |
 | AssemblyAI live | Verified: the local "Hey Cat, what should I check…" clip was transcribed exactly. |
 | Cartesia TTS | Works through minted access tokens (`CARTESIA_AUTH=access_token`): plugin HTTP synthesis and websocket streaming verified live, first audio 230–355 ms. The raw key is rejected by Cartesia's TTS endpoints (see below). |
-| **Dispatch and real speech in Playground** | **Not verified yet** (next step). |
-| **Krisp noise filtering** | **Not verified.** It constructs on native Windows; filtering happens only inside a LiveKit Cloud session. |
+| Dispatch and real speech through LiveKit Cloud | Verified with a **synthetic operator** (`scripts/live_probe.py`: synthetic voices published as a microphone, agent audio received back), 5 sessions, 2026-09-24. **A human Playground session is still not verified.** |
+| Adaptive interruption | Active live (`effective interruption handling: adaptive(active)`). Synthetic machinery/fan/impact noise during replies created no turns and no pauses (3/3 runs). Natural-voice backchannels got a `backchannel` verdict 8 of 8 times; failures and limits in `docs/work-log.md` (M10). |
+| Krisp noise filtering | Filter active in live sessions (`krisp_filter_active: True`). Human listening quality not verified. |
+| **Cartesia credits** | **Blocked 2026-09-24:** Cartesia answers TTS with HTTP 402 (credits exhausted); the agent cannot speak until credits are added. |
 | **Acoustic wake (livekit-wakeword)** | Implemented and verified offline with LiveKit's real `hey_livekit` model (detection, rejection, threaded routing). **"Hey Cat" model not trained yet** (`wakeword/README.md`). |
 
 ## Selected models and settings
@@ -48,7 +50,7 @@ browser mic ──WebRTC──▶ LiveKit Cloud room ──▶ this worker (one 
 | TTS | Cartesia `sonic-3` via `livekit-plugins-cartesia==1.8.2`, voice `f786b574-daa5-4673-aa0c-cbe3e8534c02` | Plugin default and LiveKit-documented voice. **Its name, warmth and pronunciation have not been heard yet:** the doctor prints its name once a key is set, and the smoke check writes a CAT / unit-ID / number pronunciation sample. |
 | VAD | Silero (`livekit-plugins-silero`), loaded in prewarm, `min_silence=0.45 s` | Bundled model, no key |
 | Noise | Krisp **VIVA voice isolation** (`livekit-plugins-krisp==0.4.2`, native `win_amd64` wheel) in the worker; `NOISE_PROFILE=noise_suppression` selects Krisp NC | Current LiveKit guidance: VIVA removes competing voices; NC is background-noise suppression. Both need LiveKit Cloud auth (the job's JWT) and do not use a separate Krisp key. LiveKit documents voice isolation as an additional-cost feature, so check your plan. |
-| Interruption | VAD barge-in with `min_duration=0.4 s`; false interruptions resume after 1.5 s; SDK LLM retries off | See "Streaming, barge-in and recovery" below |
+| Interruption | LiveKit adaptive barge-in (`INTERRUPTION_MODE=adaptive`, 0.5 s, 0 words); SDK resumes a false interruption after 2.0 s; one clarification when speech gets no transcript; SDK LLM retries off | See "Streaming, barge-in and recovery" below |
 
 ## Install
 
@@ -125,6 +127,8 @@ To check any key without putting it in `.env` or a command line, run `python scr
 | `python -m cocoon_voice.benchmark report` | Aggregates `metrics/session-*.jsonl` from live worker sessions (p50/p95, cold/warm) |
 | `powershell -ExecutionPolicy Bypass -File scripts\make_speech_fixtures.ps1` | Local SAPI speech fixtures for the VAD noise tests (git-ignored) |
 | `python scripts\dispatch.py token\|dispatch\|list --room <room>` | Dev dispatch helper (explicit agent name) |
+| `python scripts\make_natural_fixtures.py` | Operator clips in a second Cartesia voice (`natural_*.wav`, git-ignored; small, billed) |
+| `python scripts\live_probe.py [--fixtures sapi\|natural] [--scenarios baseline,noise,backchannel,stop,correction,pause]` | Synthetic operator in a fresh LiveKit Cloud room against a running worker (a few minutes; bills STT, LLM and TTS: a full run used several thousand Cartesia characters). Writes `metrics/probe-*.json` and the received agent audio. Not a substitute for a human test. |
 
 Health endpoint (SDK built-in, `COCOON_HEALTH_HOST:COCOON_HEALTH_PORT`, default `127.0.0.1:8081`):
 - `GET /` returns `OK`. It stays `OK` while LiveKit connection retries continue, and becomes `503` only after they are exhausted.
@@ -138,9 +142,42 @@ A worker that starts has already passed settings validation, since startup refus
 
 1. **Worker registered.** The log shows `registered worker … agent_name=cocoon-voice`, and `GET 127.0.0.1:8081/worker` shows the name. *Verified 2026-09-23.*
 2. **Agent dispatched into a room.** The log shows `starting session room=… participant=… noise=… wake=…`.
-3. **Real speech connected.** You hear the greeting "Hi, I'm Cat, your Cocoon assistant." Then "Hey Cat, can you hear me?" produces `wake decision=respond` and a spoken answer.
+3. **Real speech connected.** You hear the greeting "Hi, I'm Cat, your Cocoon assistant." Then "Hey Cat, can you hear me?" produces `turn route=accepted` and a spoken answer.
 
 **Common trap:** because the worker registers with an explicit `agent_name`, LiveKit does **not** auto-dispatch it. A registered worker receives no job unless something dispatches exactly `cocoon-voice` in the **same project**. The usual causes are a name mismatch or the browser being on another project. A token-embedded dispatch fires only when the join *creates* the room.
+
+### Continuous-listening Playground mode (no wake phrase, worker enhancement off)
+
+A local diagnostic mode: every final transcript goes to the agent, and worker-side Krisp is disabled to isolate
+event-loop stalls. Set these in `livekit-voice/.env`:
+
+```
+WAKE_MODE=off
+NOISE_CANCELLATION=none
+ALLOW_DEGRADED_AUDIO=true
+LOG_TRANSCRIPTS=true
+```
+
+Then, from `livekit-voice/`: `.\.venv\Scripts\python.exe -m cocoon_voice.agent dev` (plain-text logs, one line per
+record; `start` prints the same records as JSON).
+
+- **Startup lines to expect:**
+  - `effective wake mode: off (...)`
+  - `worker-side enhancement: OFF (NOISE_CANCELLATION=none)`
+  - `transcript logging: ON (local only)`
+  - Per session: `AUDIO DEGRADED: DEGRADED:none (...)`
+- **Per final turn:**
+  - `final transcript: '...'` (before any wake filtering).
+  - One `turn route=accepted|wake-gated|empty|command:<stop/sleep/ack>|cancelled reason=...`.
+  - `generation epoch=N outcome=...`, then `playback completed|interrupted`.
+- **When STT is quiet for 15 s:** a `stt input: ...` line says whether no audio arrived, the audio was silent, or
+  speech-level audio got no transcripts. AssemblyAI's own "no messages received" warning alone is normal while
+  you are silent.
+- **To restore Hey Cat:** set `WAKE_MODE=transcript` (the gate starts ARMED; "Hey Cat" may be followed by the
+  request; follow-ups need no phrase for `WAKE_ACTIVE_TIMEOUT_SECONDS`).
+- **To restore Krisp:** set `NOISE_CANCELLATION=krisp` and `ALLOW_DEGRADED_AUDIO=false`.
+- **To stop logging transcripts:** set `LOG_TRANSCRIPTS=false`.
+- **Rules:** keep browser noise filtering off, so enhancement is never stacked. Restart the worker after editing `.env`.
 
 ### Connecting (pick one)
 
@@ -160,12 +197,20 @@ A worker that starts has already passed settings validation, since startup refus
 ### Manual checklist (record results in `docs/work-log.md`)
 
 1. Join: expect exactly one greeting. Reconnect within 90 s: expect no second greeting and a `reconnected` log line.
-2. Say something without the wake phrase ("did you see the game"): no reply, and the log shows `decision=ignore reason=armed`.
-3. "Hey Cat." gives a short "I'm listening." with no LLM call.
-4. "Hey Cat, can you hear me?" gives one answer, and no "I'm listening." over it.
+2. Say something without the wake phrase ("did you see the game"): no reply, and the log shows `turn route=wake-gated reason=armed: no wake phrase`.
+3. "Hey Cat." gives a short "Hey, I'm here. What do you need?" with no LLM call.
+4. "Hey Cat, can you hear me?" gives one answer, and no acknowledgment over it.
 5. Follow-ups without "Hey Cat": short yes/no answers, a long question, and a question with a mid-sentence pause ("what should I… check on the tracks"). It must not be cut off at the pause.
 6. Near-misses: "hey cap", "okay cat", "hey cats". None of them should wake it.
-7. While Cat is answering, say "stop". Speech should stop, with no reply. Try "yeah" during a reply: Cat does not answer it, but the rest of that reply is cut (known SDK trade-off, see below).
+7. While Cat is answering, say "stop" (then separately "wait"). Speech should stop promptly, with no reply.
+   - 7a. During a long answer ("explain the pre-start walkaround"), say a soft "mm-hmm", "yeah", "okay", "right". Expected: Cat keeps talking and the log shows `overlap verdict: backchannel`. Record any `verdict: interruption` for a backchannel.
+   - 7b. Clap, drop something or run a fan near the mic during an answer. Expected: no pause and no turn. If Cat pauses, it should resume the same sentence within about 2 s (`false interruption` counted in diagnostics), not restart the answer.
+   - 7c. During an answer, say "okay, but I meant the other machine". Expected: Cat stops and answers about the other machine.
+   - 7d. When Cat asks a question, answer only "yes" or "no". Expected: it carries on from its question.
+   - 7e. While Cat is idle but active, mumble for about a second. Expected: at most one "I missed the last part. Could you say that again?".
+   - 7f. Start a question, pause about a second to think, then finish it ("can you tell me ... what I should check next"). Record whether Cat starts answering the first half (seen in synthetic runs; see M10).
+   - 7g. Talk for several turns without "Hey Cat". Expected: it stays active and re-arms only after the idle timeout.
+   - 7h. Search the worker log for `adaptive interruption downgraded`, `HTTP 402`, `event loop lag` and `UNDERRUN`, and copy the final `session diagnostics` line.
 8. "Go to sleep." gives "Okay, going quiet." and later speech is ignored. After 45 s of silence Cat re-arms by itself.
 9. "What can you do?" should describe this as a voice trial with business features not yet connected.
 10. Noise: play machinery, fan or impact audio from another device, and have a second person talk nearby. Check for false replies and for truncated or missed questions. Then repeat on speakers without headphones (echo).
@@ -177,10 +222,10 @@ A worker that starts has already passed settings validation, since startup refus
 - **States:** `ARMED` → `ACTIVE` → `ARMED` or `CLOSED`, separate from the SDK's listening/thinking/speaking states.
 - **Matching:** exact and leading. It is word-bounded "hey cat" after case and punctuation normalisation. There is no fuzzy matching, so near-misses stay armed.
 - **Gating:** while ARMED, utterances without the phrase are dropped in `on_user_turn_completed` with `StopResponse`, *before* the SDK appends them to chat history. `llm_node` also refuses to call the brain while armed.
-- **Wake only vs wake plus question:** a wake-only utterance gets a cached "I'm listening." A wake-plus-question utterance has the phrase removed and the question answered once.
+- **Wake only vs wake plus question:** a wake-only utterance gets a cached "Hey, I'm here. What do you need?" A wake-plus-question utterance has the phrase removed and the question answered once.
 - **Staying awake:** ACTIVE accepts follow-ups without the phrase. It re-arms after `WAKE_ACTIVE_TIMEOUT_SECONDS` of inactivity, but never while Cat is speaking, the user is speaking, or a request is in flight.
 - **Commands:** `stop` and `go to sleep` only count as standalone utterances; "what does stop mean?" is a question, not a command.
-- **Repeats:** repeated wakes are debounced (`WAKE_DEBOUNCE_SECONDS`), and a duplicate final transcript within 1.5 s is ignored.
+- **Repeats:** repeated wakes are debounced (`WAKE_DEBOUNCE_SECONDS`). A duplicate final transcript within 1.5 s is ignored only while ARMED. While ACTIVE, a committed turn is always answered: the SDK has already cut the reply, so ignoring the turn would leave silence.
 - **Echo guard:** a wake phrase heard while Cat is speaking, or within `WAKE_ECHO_GUARD_MS` after, cannot wake an armed gate. The greeting and fixed phrases never contain "Hey Cat".
 - **Not security:** activation is not operator authentication. Nearby voices are mitigated by Krisp VIVA and debounce, not by speaker verification.
 
@@ -191,7 +236,7 @@ A worker that starts has already passed settings validation, since startup refus
 - The router is the single consumer of the audio stream. It resamples to 16 kHz, scores a rolling 2 s window every `LIVEKIT_WAKEWORD_HOP_MS` (160 ms), and clears the window after a hit so one utterance cannot fire twice.
 - Inference takes about 58–67 ms per call on the dev laptop, so it runs on a **dedicated thread** with a bounded drop-oldest queue, never on the event loop.
 - STT segments open only while ACTIVE and start with `WAKE_PREROLL_MS` (600 ms) of pre-roll, so "Hey Cat, <question>" is not clipped. Each frame is forwarded once.
-- A wake-only "I'm listening." plays only if no speech follows within `WAKE_ONLY_ACK_WAIT_MS`. There is no silent fallback to transcript mode.
+- A wake-only acknowledgment plays only if no speech follows within `WAKE_ONLY_ACK_WAIT_MS`. There is no silent fallback to transcript mode.
 - **The "Hey Cat" model still has to be trained:** follow [wakeword/README.md](wakeword/README.md) (Google Colab or WSL2; config `wakeword/hey_cat.yaml`).
 - Until then, test the acoustic path with LiveKit's example model: `LIVEKIT_WAKEWORD_MODEL_PATH=tests/fixtures/wakeword/hey_livekit.onnx` and `WAKE_PHRASE=Hey LiveKit`.
 
@@ -217,12 +262,25 @@ For the future Android client, keyword detection belongs on the device. livekit-
 - **Played text:** with `use_tts_aligned_transcript` and Cartesia word timestamps, an interrupted reply keeps only the words actually played in history.
 - **No replayed speech:** the SDK would retry an LLM stream even after it produced chunks, and would restart the answer. SDK LLM retries are therefore off, and `guarded_stream` retries (bounded, jittered) **only before the first chunk**. After partial output, the partial answer stands. TTS never retries after partial audio (SDK behaviour).
 - **Timeouts and fallbacks:**
-  - First-chunk timeout 6 s and mid-stream stall timeout 5 s.
+  - First-chunk timeout 3.5 s (up to 3 attempts, only before any text) and mid-stream stall timeout 5 s.
   - An empty reply gets a short fallback, and a failure before any output gets "Sorry, I couldn't get an answer just now…".
   - Errors are categorised as auth, permission, rate_limit, model_unavailable or timeout.
-- **Thinking cue:** a one-off "One moment." plays only if no text has arrived after `THINKING_CUE_DELAY_MS`. There are no artificial delays and no background sounds.
-- **Cached phrases:** the greeting, "I'm listening.", "Okay, going quiet." and the failure phrase are synthesised once. They are cached in memory and in `.cache/tts`, keyed by provider, model, voice, language, speed and text.
-- **Known trade-off:** single-word "stop" must interrupt, so the SDK's `min_words` gate is off. A committed backchannel ("yeah") during a reply therefore interrupts it (the SDK interrupts before the hook runs); Cat does not answer the backchannel, and the cut remainder is not resumed. Noise or coughs without words resume after 1.5 s.
+- **Thinking cue:** if no answer text has arrived after `THINKING_CUE_DELAY_MS` (1.2 s), one short cue is spoken inside that turn's speech. The cue rotates between "One moment.", "Let me think." and "Hmm, give me a second.". It plays at most once per turn across retries, is cancelled with the turn, and never follows answer text. There are no artificial delays and no background sounds.
+- **Speaking style:** the prompt asks for short spoken turns with contractions and varied acknowledgments, used only when natural. For a procedure it gives the first two or three steps, then offers to continue, and it asks one question at a time.
+- **Cached phrases:** the greeting, the wake acknowledgment, "Okay, going quiet.", the clarification and the failure phrase are synthesised once. They are cached in memory and in `.cache/tts`, keyed by provider, model, voice, language, speed and text.
+- **Turn ownership (SDK-native):**
+  - LiveKit's adaptive interruption model decides whether speech over Cat is a barge-in or a backchannel. For a backchannel the SDK drops the transcript and Cat keeps talking.
+  - `min_words` stays 0 so that single-word "stop" and "wait" still interrupt. A word blacklist is deliberately not used.
+  - If the SDK pauses for sound that yields no transcript, it resumes the same speech after `FALSE_INTERRUPTION_TIMEOUT_SECONDS`.
+  - Any final transcript ends the paused reply (SDK behaviour). Every committed turn while ACTIVE is therefore answered, so the operator never gets silence.
+- **Fallback:**
+  - Adaptive needs LiveKit Cloud's inference service. On an unrecoverable detector error (observed: error 2005 "quota exceeded"), the SDK switches to VAD barge-in for the rest of the session.
+  - The worker logs `adaptive interruption downgraded mid-session` and counts turns per mode in `session diagnostics`.
+  - `INTERRUPTION_MODE=vad` forces the fallback.
+- **Missed speech:** Cat asks once, "I missed the last part. Could you say that again?", when all of these hold:
+  - The SDK reports speech with no transcript within `TRANSCRIPTION_TIMEOUT_SECONDS`.
+  - The speech lasted at least `CLARIFY_MIN_SPEECH_SECONDS`.
+  - No turn arrived meanwhile, and neither side is speaking.
 - **Preemptive generation:** `PREEMPTIVE_GENERATION=false` by default. It is allowed only for this tool-free phase, and it must be off for the future action-capable backend.
 
 ## Privacy and logs

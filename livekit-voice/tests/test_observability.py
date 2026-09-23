@@ -40,6 +40,11 @@ def test_session_metrics_jsonl_and_summary(tmp_path):
     m.end_turn("gated:ignore")
     m.interruption_detected()
     m.output_stopped()
+    m.interruption_confirmed()
+    m.interruption_detected()  # user spoke as the reply ended naturally: not an interruption sample
+    m.output_stopped()
+    m.interruption_abandoned()
+    m.interruption_confirmed()
     summary = m.close()
     assert summary["cold"]["turns"] == 1 and summary["warm"]["turns"] == 2  # gated turns are not latency samples
     assert summary["interruption_to_stop_ms"]["n"] == 1

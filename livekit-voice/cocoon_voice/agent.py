@@ -37,11 +37,13 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 
 from . import speech_policy as sp
 from .config import ConfigError, VoiceSettings, get_settings
+from .diagnostics import LoopLagMonitor, SttInputMonitor, TtsPacing
 from .observability import SessionMetrics
 from .phrase_cache import PhraseCache
-from .cartesia_auth import CartesiaTokenRefresher
+from .cartesia_auth import CartesiaTokenRefresher, describe_status
 from .acoustic_wake import AcousticRouter, KeywordEngine, LiveKitWakeWordEngine, PorcupineEngine
-from .providers import NoiseSetup, build_noise_cancellation, build_stt, build_tts, create_brain, load_vad
+from .providers import (NoiseSetup, build_noise_cancellation, build_stt, build_tts, check_noise_cancellation,
+                        create_brain, krisp_filter_active, load_vad)
 from .recording import InputRecorder, cleanup_recordings
 from .streaming import EpochCounter, GenerationStats, guarded_stream
 from .wake import WakeGate, WakeState
@@ -59,7 +61,8 @@ class VoiceController:
                  keyword_engine: KeywordEngine | None = None, recorder: InputRecorder | None = None,
                  threaded_engine: bool = True):
         self.s = settings
-        self.gate = WakeGate(settings.wake_phrase, mode="acoustic" if settings.acoustic_wake else "transcript",
+        gate_mode = "off" if settings.wake_mode == "off" else ("acoustic" if settings.acoustic_wake else "transcript")
+        self.gate = WakeGate(settings.wake_phrase, mode=gate_mode,
                              active_timeout_s=settings.wake_active_timeout_s, debounce_s=settings.wake_debounce_s,
                              echo_guard_s=settings.wake_echo_guard_ms / 1000)
         self.phrases = phrases
@@ -79,6 +82,18 @@ class VoiceController:
         self._overlapped = False
         self._text_since_wake = False
         self._tasks: set[asyncio.Task] = set()
+        self.loop_lag = LoopLagMonitor()
+        self.tts_replies = 0
+        self.tts_underruns = 0
+        self.false_interruptions = {"resumed": 0, "not_resumed": 0}
+        self.transcription_timeouts = 0
+        self.clarifications = 0
+        self.turns_committed = 0
+        self.interruption_by_turn: dict[str, int] = {}  # effective mode sampled at each committed turn
+        self.overlap_verdicts = {"interruption": 0, "backchannel": 0, "agent_ended": 0}
+        self.interruption_pending = False  # user audio overlapped our speech; SDK decides resume vs. new turn
+        self.noise_processor = None
+        self.stt_input = SttInputMonitor()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -88,10 +103,65 @@ class VoiceController:
         session.on("agent_state_changed", self._on_agent_state)
         session.on("user_input_transcribed", self._on_transcribed)
         session.on("conversation_item_added", self._on_item_added)
-        session.on("agent_false_interruption", lambda ev: self.metrics.interruption_abandoned())
+        session.on("agent_false_interruption", self._on_false_interruption)
+        session.on("user_transcription_timeout", self._on_transcription_timeout)
+        session.on("overlapping_speech", self._on_overlap_verdict)
         session.on("metrics_collected", self._on_sdk_metrics)
         session.on("error", self._on_error)
         self._spawn(self._timeout_loop())
+        self._spawn(self.loop_lag.run())
+        self._spawn(self._stt_input_loop())
+
+    def effective_interruption(self) -> str:
+        """What the SDK actually runs (a configured 'adaptive' is not proof the detector is active)."""
+        activity = getattr(self.session, "_activity", None)
+        active = bool(getattr(activity, "_interruption_detection_enabled", False))
+        return "adaptive(active)" if active else f"vad(configured={self.s.interruption_mode})"
+
+    def _sample_interruption_mode(self) -> None:
+        # The SDK silently degrades to VAD after an unrecoverable detector error; make that visible.
+        if self.session is None:
+            return
+        mode = self.effective_interruption()
+        if mode != "adaptive(active)" and self.interruption_by_turn.get("adaptive(active)"):
+            if mode not in self.interruption_by_turn:
+                log.warning("adaptive interruption downgraded mid-session: now %s", mode)
+        self.interruption_by_turn[mode] = self.interruption_by_turn.get(mode, 0) + 1
+
+    def _on_overlap_verdict(self, ev) -> None:
+        # Adaptive detector verdict for speech over the agent (no audio or text is logged).
+        key = "agent_ended" if ev.agent_ended else ("interruption" if ev.is_interruption else "backchannel")
+        self.overlap_verdicts[key] += 1
+        log.info("overlap verdict: %s p=%.2f delay=%.0f ms", key, ev.probability, ev.detection_delay * 1000)
+        self.metrics.event("overlap_verdict", verdict=key, probability=round(float(ev.probability), 3),
+                           detection_delay_ms=round(ev.detection_delay * 1000))
+
+    def _on_false_interruption(self, ev) -> None:
+        # The SDK resumed (or dropped) the paused speech itself. We only record it: no new generation here.
+        self.interruption_pending = False
+        self.metrics.interruption_abandoned()
+        key = "resumed" if ev.resumed else "not_resumed"
+        self.false_interruptions[key] += 1
+        self.metrics.event("false_interruption", resumed=bool(ev.resumed))
+        log.info("false interruption: agent speech %s", "resumed" if ev.resumed else "NOT resumed")
+
+    def _on_transcription_timeout(self, ev) -> None:
+        self.transcription_timeouts += 1
+        self.metrics.event("transcription_timeout", speech_duration_s=round(ev.speech_duration, 2))
+        log.info("speech detected for %.2fs but no transcript arrived", ev.speech_duration)
+        if (self.gate.state == WakeState.ACTIVE and ev.speech_duration >= self.s.clarify_min_speech_s
+                and self.session is not None):
+            self._spawn(self._clarify(self.turns_committed))
+
+    async def _clarify(self, turns_at_timeout: int) -> None:
+        """One short request to repeat, only if nothing else happened since the missed speech."""
+        await asyncio.sleep(0.3)
+        if (self.turns_committed != turns_at_timeout or self._user_speaking or self._agent_speaking
+                or self.llm_in_flight or self.gate.state != WakeState.ACTIVE):
+            return
+        self.clarifications += 1
+        log.info("asking the user to repeat (speech without a usable transcript)")
+        await self.say_fixed(sp.CLARIFY)
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -108,6 +178,13 @@ class VoiceController:
             self.recorder.close()
         if self.keyword_engine is not None:
             self.keyword_engine.delete()
+        diag = {"loop_lag": self.loop_lag.summary(), "tts_replies": self.tts_replies,
+                "tts_underruns": self.tts_underruns, "false_interruptions": self.false_interruptions,
+                "transcription_timeouts": self.transcription_timeouts, "clarifications": self.clarifications,
+                "krisp_filter_active": krisp_filter_active(self.noise_processor) if self.noise_processor else None,
+                "interruption_by_turn": self.interruption_by_turn, "overlap_verdicts": self.overlap_verdicts}
+        self.metrics.event("diagnostics", **diag)
+        log.info("session diagnostics %s", diag)
         summary = self.metrics.close()
         log.info("session summary %s", summary)
 
@@ -138,7 +215,18 @@ class VoiceController:
     # ------------------------------------------------------------------ user turns (single submission path)
 
     async def on_user_turn(self, new_message: llm.ChatMessage) -> None:
+        try:
+            await self._route_turn(new_message)
+        except asyncio.CancelledError:
+            # the SDK replaced this turn (a newer final arrived) before routing finished
+            self._log_route("cancelled", "superseded before routing completed", new_message.text_content or "")
+            raise
+
+    async def _route_turn(self, new_message: llm.ChatMessage) -> None:
         text = new_message.text_content or ""
+        self.turns_committed += 1
+        self.interruption_pending = False
+        self._sample_interruption_mode()
         turn = self.metrics.current or self.metrics.begin_turn(VAD_MIN_SILENCE_S)
         turn.mark("turn_committed")
         decision = self.gate.on_utterance(text, overlapped_agent_speech=self._overlapped)
@@ -167,11 +255,18 @@ class VoiceController:
             log.debug("interrupt: %s", exc)
 
     def _log_decision(self, action: str, reason: str, text: str) -> None:
-        if self.s.log_transcripts:
-            log.info("wake decision=%s reason=%s state=%s text=%r", action, reason, self.gate.state.value, text)
+        if action == "respond":
+            route = "accepted"  # handed to the brain; generation and playback are logged separately
+        elif action == "ignore":
+            route = "empty" if reason == "empty" else "wake-gated"
         else:
-            log.info("wake decision=%s reason=%s state=%s chars=%d", action, reason, self.gate.state.value,
-                     len(text))
+            route = f"command:{action}"  # ack / stop / sleep: handled locally, never sent to the brain
+        self._log_route(route, reason, text, action=action)
+
+    def _log_route(self, route: str, reason: str, text: str, *, action: str | None = None) -> None:
+        detail = f"text={text!r}" if self.s.log_transcripts else f"chars={len(text)}"
+        log.info("turn route=%s reason=%s action=%s state=%s wake=%s %s", route, reason, action or "-",
+                 self.gate.state.value, self.s.wake_mode, detail)
 
     # ------------------------------------------------------------------ brain (llm_node)
 
@@ -193,7 +288,7 @@ class VoiceController:
                 epoch=epoch, epochs=self.epochs,
                 first_chunk_timeout=self.s.llm_first_chunk_timeout_s, stall_timeout=self.s.llm_stall_timeout_s,
                 max_attempts=self.s.llm_max_attempts,
-                cue_text=sp.THINKING_CUE if self.s.thinking_cue_enabled else None,
+                cue_text=sp.thinking_cue(epoch) if self.s.thinking_cue_enabled else None,
                 cue_delay=self.s.thinking_cue_delay_ms / 1000,
                 failure_text=sp.LLM_FAILED, empty_text=sp.EMPTY_REPLY, stats=stats,
             ):
@@ -228,22 +323,34 @@ class VoiceController:
 
         async def observed_text() -> AsyncIterable[str]:
             async for chunk in text:
-                if chunk.strip() and chunk.strip() != sp.THINKING_CUE and not substantive_at:
+                if chunk.strip() and chunk.strip() not in sp.THINKING_CUES and not substantive_at:
                     substantive_at.append(time.perf_counter())
                 yield chunk
 
-        async for frame in Agent.default.tts_node(agent, observed_text(), model_settings):
-            if turn and substantive_at and "tts_first_audio" not in turn.marks:
-                turn.mark("tts_first_audio")
-            yield frame
+        pacing = TtsPacing()
+        try:
+            async for frame in Agent.default.tts_node(agent, observed_text(), model_settings):
+                pacing.on_frame(frame.duration)
+                if turn and substantive_at and "tts_first_audio" not in turn.marks:
+                    turn.mark("tts_first_audio")
+                yield frame
+        finally:
+            if pacing.frames:
+                self.tts_replies += 1
+                self.tts_underruns += pacing.underran
+                self.metrics.event("tts_pacing", audio_s=round(pacing.audio_s, 2),
+                                   min_margin_ms=round(pacing.min_margin_ms or 0.0, 1), underran=pacing.underran)
+                log.info("tts pacing: %.2fs audio, min margin %.0f ms%s", pacing.audio_s,
+                         pacing.min_margin_ms or 0.0, " (UNDERRUN)" if pacing.underran else "")
 
     # ------------------------------------------------------------------ STT input (Porcupine gating / recording)
 
     async def transcribe(self, agent: Agent, audio: AsyncIterable[rtc.AudioFrame],
                          model_settings: ModelSettings) -> AsyncIterable[stt.SpeechEvent]:
-        source = self.recorder.tap(audio) if self.recorder else audio
-        if self.router is None:  # transcript mode: STT hears the room continuously (idle cost applies)
+        source = self._tap_stt_input(self.recorder.tap(audio) if self.recorder else audio)
+        if self.router is None:  # transcript/off mode: STT hears the room continuously, also while ARMED
             async for ev in Agent.default.stt_node(agent, source, model_settings):
+                self._count_stt_event(ev)
                 yield ev
             return
         feeder = self._spawn(self.router.run(source))
@@ -254,10 +361,34 @@ class VoiceController:
                     return
                 log.info("acoustic wake: STT segment opened")
                 async for ev in Agent.default.stt_node(agent, segment, model_settings):
+                    self._count_stt_event(ev)
                     yield ev
                 log.info("STT segment closed (gate %s)", self.gate.state.value)
         finally:
             feeder.cancel()
+
+    async def _tap_stt_input(self, audio: AsyncIterable[rtc.AudioFrame]) -> AsyncIterable[rtc.AudioFrame]:
+        async for frame in audio:
+            self.stt_input.on_frame(frame)
+            yield frame
+
+    def _count_stt_event(self, ev) -> None:
+        if isinstance(ev, stt.SpeechEvent):
+            self.stt_input.on_event(final=ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT)
+
+    async def _stt_input_loop(self) -> None:
+        last_kind: str | None = None
+        while True:
+            await asyncio.sleep(self.stt_input.window_s)
+            diagnosis = self.stt_input.close_window()
+            if diagnosis is None or (self.router is not None and self.gate.state != WakeState.ACTIVE):
+                last_kind = None  # STT produced events, or an acoustic mode keeps STT closed while ARMED
+                continue
+            kind, message = diagnosis
+            # a silent operator is normal: report each kind once until it changes; always report lost transcripts
+            if kind != last_kind or kind == "no_transcripts":
+                log.info("stt input: %s", message)
+            last_kind = kind
 
     def _on_acoustic_wake(self) -> None:
         self._text_since_wake = False
@@ -290,6 +421,8 @@ class VoiceController:
             self._user_speaking = True
             self.gate.note_activity()
             self._overlapped = self._agent_speaking or (now - self._agent_speech_ended_at) < self.gate.echo_guard_s
+            if self._agent_speaking:
+                self.interruption_pending = True
             if self._agent_speaking and self.gate.state == WakeState.ACTIVE:
                 self.metrics.interruption_detected()
         elif ev.old_state == "speaking":
@@ -320,9 +453,15 @@ class VoiceController:
 
     def _on_item_added(self, ev) -> None:
         item = ev.item
-        if getattr(item, "role", None) == "assistant" and getattr(item, "interrupted", False):
+        if getattr(item, "role", None) != "assistant":
+            return
+        if getattr(item, "interrupted", False):
+            self.metrics.interruption_confirmed()
             # With TTS-aligned transcripts the SDK stores only the words actually played.
-            log.info("assistant reply interrupted; history keeps %d played chars", len(item.text_content or ""))
+            log.info("playback interrupted: history keeps %d played chars", len(item.text_content or ""))
+        else:  # finished (or resumed after a false interruption): an overlap was not an interruption
+            self.metrics.interruption_abandoned()
+            log.info("playback completed: %d chars", len(item.text_content or ""))
 
     def _on_sdk_metrics(self, ev) -> None:
         m = ev.metrics
@@ -337,12 +476,22 @@ class VoiceController:
         category = f"{source}:{type(err).__name__}:{'recoverable' if getattr(err, 'recoverable', False) else 'fatal'}"
         self.metrics.provider_error(category)
         log.warning("session error %s", category)
+        status = getattr(getattr(err, "error", err), "status_code", None)
+        if status in (401, 402, 403, 429):
+            # Account-level rejections are not transient: say so plainly instead of a silent agent.
+            hint = " (account credits or plan exhausted: the agent cannot speak until this is fixed)"                 if status == 402 else ""
+            log.error("%s provider rejected the request: HTTP %s %s%s", source, status, describe_status(status), hint)
+
+    def is_busy(self) -> bool:
+        """Never expire the wake window while listening, generating, speaking or recovering an interruption."""
+        sdk_state = getattr(self.session, "agent_state", None)
+        return (self._agent_speaking or self._user_speaking or self.llm_in_flight > 0
+                or self.interruption_pending or sdk_state in ("thinking", "speaking"))
 
     async def _timeout_loop(self) -> None:
         while True:
             await asyncio.sleep(0.5)
-            busy = self._agent_speaking or self._user_speaking or self.llm_in_flight > 0
-            if self.gate.check_timeout(busy=busy):
+            if self.gate.check_timeout(busy=self.is_busy()):
                 log.info("wake gate re-armed after %.0fs of inactivity", self.s.wake_active_timeout_s)
 
 
@@ -391,13 +540,16 @@ def build_session(settings: VoiceSettings, vad) -> AgentSession:
             # One end-of-turn authority: AssemblyAI endpointing. No extra SDK delay is stacked on top.
             turn_detection="stt",
             endpointing={"min_delay": 0.0, "max_delay": 3.0},
-            interruption={"enabled": True, "mode": "vad", "min_duration": settings.interruption_min_duration_s,
+            interruption={"enabled": True, "mode": settings.interruption_mode,
+                          "min_duration": settings.interruption_min_duration_s,
+                          "min_words": settings.interruption_min_words,
                           "resume_false_interruption": True,
                           "false_interruption_timeout": settings.false_interruption_timeout_s},
             preemptive_generation={"enabled": settings.preemptive_generation},
         ),
         conn_options=session_conn_options(settings),
         use_tts_aligned_transcript=True,  # interrupted replies keep only the words actually played
+        transcription_timeout=settings.transcription_timeout_s or None,
     )
 
 
@@ -448,6 +600,7 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
                           language=settings.voice_language, speed=settings.cartesia_speed)
     controller = VoiceController(settings, phrases=phrases, metrics=metrics, keyword_engine=engine,
                                  recorder=recorder)
+    controller.noise_processor = noise.processor
     controller.attach(session)
     ctx.add_shutdown_callback(controller.aclose)
 
@@ -473,6 +626,8 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
     if settings.wake_mode == "transcript":
         log.warning("WAKE_MODE=transcript: room audio is streamed to AssemblyAI even while armed (billed); "
                     "this is Playground test mode, not on-device keyword spotting")
+    elif settings.wake_mode == "off":
+        log.warning("WAKE_MODE=off: no wake gating; every final transcript is answered (local Playground mode)")
     if noise.degraded:
         log.warning("AUDIO DEGRADED: %s", noise.effective)
     log.info("starting session room=%s participant=%s noise=%s wake=%s brain=%s:%s", ctx.room.name,
@@ -486,6 +641,8 @@ async def run_session(ctx: JobContext, settings: VoiceSettings) -> None:
             close_on_disconnect=False,
         ),
     )
+    log.info("effective interruption handling: %s (stt aligned_transcript=%s)", controller.effective_interruption(),
+             session.stt.capabilities.aligned_transcript if session.stt else None)
     prewarm_tts = getattr(session.tts, "prewarm", None)
     if callable(prewarm_tts):
         prewarm_tts()
@@ -498,7 +655,7 @@ def main() -> None:
     if command in ("dev", "start", "console", "connect"):
         problems = settings.problems("worker")
         try:
-            build_noise_cancellation(settings)
+            check_noise_cancellation(settings)
         except ConfigError as exc:
             problems.append(str(exc))
         if problems:
@@ -514,6 +671,16 @@ def main() -> None:
             log.warning("RECORD_AUDIO=true: participant input will be written locally (%d old file(s) removed)",
                         removed)
         log.info("effective config %s", settings.safe_summary())
+        log.info("effective wake mode: %s", settings.wake_mode_description())
+        log.info("worker-side enhancement: %s", "OFF (NOISE_CANCELLATION=none)" if settings.noise_cancellation == "none"
+                 else f"krisp {settings.noise_profile}")
+        log.info("transcript logging: %s", "ON (local only)" if settings.log_transcripts else "off")
+        # LiveKit's CLI installs its own console handler (text for `dev`, JSON for `start`). Drop the startup
+        # handler so every record is printed once, in one format.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        logging.getLogger("cocoon_voice").setLevel(settings.log_level)
     cli.run_app(build_server(settings))
 
 

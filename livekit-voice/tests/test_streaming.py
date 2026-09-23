@@ -224,3 +224,31 @@ async def test_phrase_cache_is_keyed_persistent_and_invalidated_by_voice(tmp_pat
     await make_cache("voice-b").get("I'm listening.")  # configuration change invalidates
     assert tts.calls == 2
     assert cache.key("I'm listening.") != make_cache("voice-b").key("I'm listening.")
+
+
+async def test_cue_is_spoken_at_most_once_per_turn_across_retries_and_never_after_text():
+    # attempt 1 is slow (cue fires) and times out before any text; attempt 2 answers
+    make, _ = scripted([Step("late", delay=1.5)], [Step("Answer.", delay=0.4)])
+    stream, stats = guard(make, cue_text="Let me think.", cue_delay=0.2, first_chunk_timeout=0.6, max_attempts=2)
+    out = [c for c in await collect(stream) if isinstance(c, str)]
+    assert out == ["Let me think.", "Answer."] and stats.attempts == 2
+
+    # text arrives first, then a long mid-stream pause: no cue after the answer has started
+    make, _ = scripted([Step("Start. ", delay=0.05), Step("rest.", delay=0.4)])
+    stream, stats = guard(make, cue_text="Let me think.", cue_delay=0.1, first_chunk_timeout=2.0, stall_timeout=1.0)
+    assert await collect(stream) == ["Start. ", "rest."] and stats.cue_at is None
+
+
+def test_cues_rotate_and_never_claim_a_lookup():
+    from cocoon_voice import speech_policy as sp
+
+    assert {sp.thinking_cue(e) for e in range(6)} == set(sp.THINKING_CUES)
+    assert not any(w in c.lower() for c in sp.THINKING_CUES for w in ("check", "look", "search"))
+
+
+def test_instructions_ask_for_short_spoken_turns():
+    from cocoon_voice import speech_policy as sp
+
+    text = sp.INSTRUCTIONS.lower()
+    for rule in ("first two or three steps", "one question at a time", "contractions", '"yes", "no", "okay"'):
+        assert rule in text

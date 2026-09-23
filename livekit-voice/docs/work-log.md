@@ -2,6 +2,128 @@
 
 Newest first. Evidence only: every result below was observed on the recorded machine/commit.
 
+## 2026-09-24 — M11: wake gating, Krisp isolation and STT diagnosis (branch `voice`)
+
+**User's run:** `wake decision=ignore reason=armed: no wake phrase state=ARMED chars=29`; `outcome=gated:ignore`
+with STT timings; AssemblyAI "no messages received for 15s / 30s"; event-loop blocking inside
+`livekit.plugins.krisp.viva_filter` → `krisp_internal._ffi`; loop lag up to 315 ms.
+
+**Code-level findings:**
+- **Wake gate.** In `WAKE_MODE=transcript` a final turn that does not start with the wake phrase is dropped while
+  ARMED, by design (`WakeGate.on_utterance`). The 29-character turn was dropped this way. The log had no text, so
+  it is unknown whether "Hey Cat" was said or recognised; no misrecognition is claimed.
+- **Audio path.** STT receives room audio continuously in transcript mode, including while ARMED. Nothing in the
+  worker resets the gate apart from the inactivity timer (busy states exempt) and the sleep command.
+- **Krisp.** One VIVA filter is built per session and passed to the SDK room input. It runs through
+  `rtc.AudioStream.from_track` per frame on the event loop, with no second worker filter and no per-frame
+  construction. Startup validation built an extra, unused native filter in the main process. The M10 executor
+  offload of the credential update was unverified cross-thread use of the native object.
+- **AssemblyAI.** The plugin (1.8.2) warns every 15 s without provider messages and does not reconnect. It warns
+  separately ("no audio frames sent") only when audio stops reaching it.
+- **Logging.** `main()` added a plain-text root handler, and LiveKit's CLI adds its own (JSON for `start`), so
+  every record printed twice.
+
+**Changes:** `WAKE_MODE=off`; normalised whole-word phrase matching; routing line per turn; "not answered" for
+gated turns; playback lines; `stt input:` diagnosis; startup lines for wake mode, enhancement and transcript
+logging; Krisp offload removed; startup check builds no filter; one log handler. Versions inspected:
+livekit-agents 1.8.2, livekit 1.1.18, livekit-plugins-krisp 0.4.2, krisp-internal 0.2.0,
+livekit-plugins-assemblyai 1.8.2.
+
+**Checks run:** none by request (syntax compile only). The removed Krisp-offload test covered deleted code.
+**Next:** the user's Playground run in continuous-listening mode (README), then re-enable Krisp separately.
+
+## 2026-09-23 19:40–20:10 UTC — M10: interruptions, recovery and conversational delivery (branch `voice`)
+
+Commits: `6c872b2` (input, interruption ownership, recovery, diagnostics), `d7fb547` (spoken style, cue), and this
+documentation commit. Base `a1b0e10`.
+
+**Proven causes (before):**
+- *Background sounds interrupted Cat.* `INTERRUPTION_MODE` forced `vad`. `AgentActivity._resolve_interruption_detection()`
+  then returns no detector, although AssemblyAI reports `aligned_transcript=word`. Every VAD onset of 0.4 s paused the reply.
+- *Silence after an interruption.* The SDK interrupts the paused reply permanently on any final transcript
+  (`on_final_transcript` → `_cancel_speech_pause(interrupt=True)`). It also interrupts before `on_user_turn_completed`
+  runs. The wake gate then ignored backchannels ("yeah", "okay") and duplicate finals, so the operator got silence.
+- *Choppy audio (part).* The native Krisp credential update ran on the event loop at room-token refresh and blocked it
+  for 105–339 ms mid-session. TTS pacing showed underruns of −404 and −685 ms in those sessions.
+- *Other observations.* An earlier Playground session had 7 first-chunk timeouts (> 6 s). The root cause of those
+  Vertex stalls is not proven.
+
+**Changes:**
+- `INTERRUPTION_MODE=adaptive` (min 0.5 s, `min_words` 0, resume after 2.0 s). The effective mode is logged at start
+  and sampled per committed turn, and a mid-session downgrade is logged.
+- Adaptive verdicts are logged and counted.
+- Committed turns while ACTIVE are always answered. Backchannel handling is left to the SDK; there is no word blacklist.
+- "wait", "hold on" and "hang on" are stop commands.
+- One cached clarification on `user_transcription_timeout` (speech ≥ 0.8 s, no turn, nobody speaking).
+- The wake window never expires during a pending interruption.
+- Krisp credential updates run in an executor. Metrics JSONL is written by a background thread.
+- Loop-lag monitor and TTS pacing. An underrun is now a lag of more than one 20 ms frame.
+- Interruption latency samples count only when the SDK stores the reply as interrupted.
+- An account-level 401/402/403/429 is logged as a plain error.
+- Spoken-style prompt. The delay cue rotates between three phrases, fires at most once per turn and is never sent
+  after answer text.
+- LLM first-chunk timeout 3.5 s, 3 attempts.
+
+**Checks run:**
+- `pytest`: 154 passed, 1 skipped.
+- Live probe (`scripts/live_probe.py`): a synthetic operator in fresh LiveKit Cloud rooms, against an isolated worker
+  (`LIVEKIT_AGENT_NAME=cocoon-voice-probe`, `COCOON_HEALTH_PORT=8082`, `LOG_TRANSCRIPTS=true`). It used 5 sessions with
+  SAPI clips and natural clips (second Cartesia voice "Daniel", `scripts/make_natural_fixtures.py`).
+  Results, all synthetic:
+  - **Adaptive:** `adaptive(active)` with `aligned_transcript=word` in every session.
+  - **Noise:** impacts −18 dBFS for 1.2 s, fan −26 dBFS for 2 s and machinery −22 dBFS for 2 s, played during replies.
+    They produced 0 turns, 0 adaptive verdicts and 0 SDK pauses in 3/3 runs (1 of the 9 bursts fell between
+    replies). False interruptions stayed 0, so the SDK
+    resume path was **not exercised live**.
+  - **Backchannels (natural voice, 0.65–0.88 s of speech):**
+    - 8 of 8 verdicts were `backchannel` (p = 0.17–0.35), and Cat kept talking.
+    - 2 more fell in the last half-second of a reply that ended naturally (`agent_ended`); they were answered as normal
+      turns.
+    - 1 "Right." paused Cat with no verdict and became a turn. The cause was not determined.
+    - 1 was lost to an SDK fallback (below).
+  - **Backchannels (SAPI):** "Mm-hmm" (transcribed "Millimeter home.") and "Okay." got `interruption` verdicts in 4 of 4
+    cases (p = 0.83–0.92). They were answered, not ignored.
+  - **Adaptive fallback:** once, LiveKit Adaptive Interruption returned error 2005 "quota exceeded". The SDK disabled
+    adaptive for the rest of that session (3 turns adaptive, 7 turns VAD). The next session had adaptive again.
+  - **Stop:** "Stop." silenced output before the clip ended and produced no reply in 2/2 adaptive runs. In the
+    VAD-fallback run, output stopped 0.67 s after the clip ended, also with no reply.
+  - **Correction:** "Okay, but I meant the other machine, the wheel loader." was kept as one turn in 2 of 3 runs. The
+    third was affected by a probe bug (fixed) and split into two finals; the final answer still covered the wheel loader.
+    New answer audio started 1.71–1.9 s after the clip ended.
+  - **Thinking pause (1.0 s between "Can you tell me" and "what I should do next?"):** AssemblyAI ended the turn after
+    part 1 in 3 of 3 runs. Cat began ("Yes, I"), was interrupted by part 2, then answered the whole question.
+    **Not fixed** (`ASSEMBLYAI_MIN_TURN_SILENCE_MS=160` unchanged).
+  - **Clarification:** not exercised live (0 transcription timeouts).
+  - **Timings** (34 turns; speech end is estimated from VAD):
+
+    | Stage | Warm p50 | Warm p95 | Cold p50 (n=3) |
+    | --- | --- | --- | --- |
+    | Speech end → STT final | 607 ms | 707 ms | — |
+    | LLM first text | 813 ms | 1161 ms | 1190 ms |
+    | First text → TTS audio | 264 ms | 454 ms | — |
+    | Speech end → first agent audio | 1.70 s | 2.08 s | 1.92 s |
+
+    Earlier interruption-latency samples mixed in natural reply ends (metric fixed), so they are not reported.
+  - **Event loop:** p95 12.5–13.9 ms and p99 14–21 ms per session. The worst stalls were at session start: SSL context
+    creation 387–1542 ms, Krisp filter init 152–417 ms. After the fix there was 1 mid-session Krisp native call of
+    214 ms in 1 of 6 sessions; it was not the credential refresh.
+  - **TTS pacing:** worst minimum margin per reply −71 ms (first reply of one session), otherwise −50 to +10 ms, with
+    no more −400 ms class underruns. Audibility is not verified.
+- **Cartesia 402:** at 20:04 UTC Cartesia started answering every TTS websocket with HTTP 402 Payment Required, so
+  the agent could not speak. The probe runs most likely used up the credits: each "in detail" answer was about 970
+  characters, and there were about 40 plus fixtures.
+
+**Not verified:**
+- Any human Playground session: listening quality, choppiness, and naturalness of pauses, acknowledgments and cues.
+- The SDK resume after a false interruption.
+- The clarification prompt.
+- The style prompt's effect on real answers. It was committed after the last live run.
+
+**Next steps:**
+1. Add Cartesia credits.
+2. Run README checklist items 7–7h in Playground with a person; record verdict lines and `session diagnostics`.
+3. Decide on `ASSEMBLYAI_MIN_TURN_SILENCE_MS` (for example, trial 400 ms against latency) from the 7f result.
+
 ## 2026-09-24 — M9: Cartesia 401 root cause and fix (branch `voice`)
 
 - **Where the message came from:** `doctor.check_cartesia` mapped any 401/403 from `POST /tts/bytes` to "API key
