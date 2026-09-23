@@ -134,6 +134,7 @@ Root `contracts/openapi.yaml`, `API_CONTRACT.md`, and examples are the shared re
 | Cartesia TTS | DONE (live) | Raw key rejected by Cartesia /tts/* (401); minted TTS access tokens work for plugin HTTP + websocket streaming (`cartesia_auth.py`). |
 | Live dispatch + speech in Playground | PARTIAL | Verified through LiveKit Cloud with `scripts/live_probe.py` (synthetic voices, 5 sessions). A human Playground session has not been run: README checklist items 1–12 and 7a–7h. |
 | Wake-off Playground mode, routing logs, Krisp isolation (M11) | UNVERIFIED | `WAKE_MODE=off`, `NOISE_CANCELLATION=none` and per-turn `turn route=` lines implemented (commits `324bbd1`, `38153c2`, `c25e5c9`); tests not run by request; awaiting the user's Playground run. |
+| Remote LangGraph brain (M12) | UNVERIFIED (manual) | Commit `94fb4b0`. Backend (mock) `/readyz` ready with catalog; worker registered with `remote_langgraph`. The Playground conversation, incident and announcement checks are pending with the user. |
 | Cartesia credits | BLOCKED | Since 2026-09-23 20:04 UTC, TTS returns HTTP 402 (credits exhausted); the agent cannot speak. Add credits, then rerun the doctor. |
 | Acoustic wake | IN_PROGRESS | Decision: livekit-wakeword (Porcupine needs a company email). Implemented + verified with real `hey_livekit` model; `Hey Cat` model must be trained (`wakeword/README.md`). |
 | Krisp effect | PARTIAL | Filter active in live sessions; synthetic noise created no turns. Listening quality not verified. |
