@@ -105,7 +105,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -115,7 +125,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -144,6 +154,16 @@
               }
             }
           },
+          "503": {
+            "description": "catalog_unavailable: no verified catalog loaded; new sessions refused; or auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "200": {
             "description": "Existing session for this client_session_key",
             "content": {
@@ -156,16 +176,6 @@
           },
           "409": {
             "description": "Key already bound to a different room/participant/operator/machine/site/shift",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "catalog_unavailable: no verified catalog loaded; new sessions refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -241,7 +251,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -251,7 +271,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -280,6 +300,16 @@
               }
             }
           },
+          "503": {
+            "description": "LLM unavailable or turn timed out (retryable, same turn_id); or auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "202": {
             "description": "Same turn_id is still processing. Wait retry_after_ms (also the Retry-After header, seconds) then GET poll_url (also the Location header). Do not resubmit with a new turn_id.",
             "content": {
@@ -292,16 +322,6 @@
           },
           "409": {
             "description": "turn_id reused with a different text or source",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "LLM unavailable or turn timed out (retryable, same turn_id)",
             "content": {
               "application/json": {
                 "schema": {
@@ -376,7 +396,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -386,7 +416,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -407,6 +437,16 @@
           },
           "500": {
             "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
             "content": {
               "application/json": {
                 "schema": {
@@ -466,7 +506,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -476,7 +526,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -497,6 +547,16 @@
           },
           "500": {
             "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
             "content": {
               "application/json": {
                 "schema": {
@@ -566,7 +626,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -576,7 +646,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -597,6 +667,16 @@
           },
           "500": {
             "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
             "content": {
               "application/json": {
                 "schema": {
@@ -697,7 +777,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -707,7 +797,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -728,6 +818,16 @@
           },
           "500": {
             "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
             "content": {
               "application/json": {
                 "schema": {
@@ -806,7 +906,17 @@
             }
           },
           "401": {
-            "description": "Missing or invalid service bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
@@ -816,7 +926,7 @@
             }
           },
           "404": {
-            "description": "Unknown session or resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
@@ -837,6 +947,16 @@
           },
           "500": {
             "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1560,26 +1680,13 @@
     "/v1/me": {
       "get": {
         "tags": [
-          "target"
+          "identity"
         ],
-        "summary": "Resolve the authenticated principal",
-        "operationId": "get_me_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I02",
-        "x-callers": [
-          "voice_service",
-          "operator",
-          "supervisor"
-        ],
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [],
+        "summary": "Me",
+        "operationId": "me_v1_me_get",
         "responses": {
           "200": {
-            "description": "Principal",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
@@ -1589,16 +1696,84 @@
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-implementation-status": "implemented",
+        "x-target-stage": "I02b",
+        "x-callers": [
+          "voice_service",
+          "operator",
+          "supervisor"
+        ],
+        "x-target-changes": [
+          {
+            "stage": "I13",
+            "change": "site_ids from trusted supervisor site grants (none exist yet; always empty in I02b)."
+          }
+        ]
       }
     },
     "/v1/sessions/{session_id}/commands": {
@@ -5996,7 +6171,9 @@
               "internal_error",
               "unknown_machine",
               "unknown_operator",
-              "catalog_unavailable"
+              "catalog_unavailable",
+              "forbidden",
+              "auth_unavailable"
             ],
             "title": "Code"
           },
@@ -8190,75 +8367,96 @@
         "type": "object"
       },
       "MeResponse": {
-        "additionalProperties": false,
-        "description": "GET /v1/me. Never echoes the bearer token or its hash.",
         "properties": {
           "subject_id": {
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "type": "string",
             "title": "Subject Id",
-            "type": "string"
+            "description": "`service` for the service credential; otherwise the principal_id."
           },
           "principal_kind": {
+            "type": "string",
             "enum": [
               "service",
               "operator",
-              "supervisor",
-              "simulator"
+              "supervisor"
             ],
-            "title": "Principal Kind",
-            "type": "string"
+            "title": "Principal Kind"
+          },
+          "operator_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Id",
+            "description": "Catalog operator ID of an operator principal."
           },
           "display_name": {
             "anyOf": [
               {
-                "maxLength": 128,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Display Name"
           },
           "site_ids": {
-            "description": "Sites this principal may read. Empty for the global service.",
             "items": {
-              "examples": [
-                "SITE_FIXTURE_A"
-              ],
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
               "type": "string"
             },
+            "type": "array",
             "title": "Site Ids",
-            "type": "array"
+            "description": "Granted sites. Always empty in I02b: no site grants exist yet."
           },
           "allowed_associations": {
-            "description": "Operator: own operator/machine/shift bindings. Supervisor: none (supervisors never bind to an operator session).",
             "items": {
               "$ref": "#/components/schemas/SessionAssociation"
             },
+            "type": "array",
             "title": "Allowed Associations",
-            "type": "array"
+            "description": "Operator: own catalog_verified sessions. Service and supervisor: empty (the service is trusted for all sessions it manages; supervisors have no session access in I02b)."
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes",
+            "description": "Actor token scopes; empty for the service."
+          },
+          "token_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Id",
+            "description": "Non-secret record ID of the presented actor token."
           },
           "token_expires_at": {
             "anyOf": [
               {
-                "description": "ISO-8601 UTC timestamp ending in Z; naive input is rejected.",
-                "format": "date-time",
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
-            "description": "Null for the configured service token.",
-            "title": "Token Expires At"
+            "title": "Token Expires At",
+            "description": "Null for the service credential."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "subject_id",
           "principal_kind",
@@ -8266,7 +8464,7 @@
           "allowed_associations"
         ],
         "title": "MeResponse",
-        "type": "object"
+        "description": "GET /v1/me. Never contains a bearer token, its digest or service configuration."
       },
       "MotionObservation": {
         "additionalProperties": false,
@@ -9191,6 +9389,7 @@
               "unknown_operator",
               "catalog_unavailable",
               "forbidden",
+              "auth_unavailable",
               "invalid_cursor",
               "replay_expired",
               "version_conflict",
@@ -10579,72 +10778,58 @@
         "title": "Session"
       },
       "SessionAssociation": {
-        "additionalProperties": false,
         "properties": {
           "operator_id": {
-            "examples": [
-              "OP_DEMO_1_1"
-            ],
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-            "title": "Operator Id",
-            "type": "string"
+            "type": "string",
+            "title": "Operator Id"
           },
           "machine_id": {
-            "description": "Exact catalog asset ID. Checked against the verified catalog when a session is created (since I02a); an unknown ID is rejected with 422 unknown_machine.",
-            "examples": [
-              "EXC_DEMO_001",
-              "DOZ_DEMO_001",
-              "LDR_DEMO_001",
-              "TRK_DEMO_001",
-              "BHL_DEMO_001"
-            ],
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-            "title": "Machine Id",
-            "type": "string"
+            "type": "string",
+            "title": "Machine Id"
           },
           "site_id": {
             "anyOf": [
               {
-                "examples": [
-                  "SITE_FIXTURE_A"
-                ],
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Site Id"
           },
           "shift_id": {
             "anyOf": [
               {
-                "examples": [
-                  "EXC_DEMO_001_2026-08-25"
-                ],
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Shift Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "The owned session this association comes from."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "operator_id",
           "machine_id"
         ],
         "title": "SessionAssociation",
-        "type": "object"
+        "description": "An association the caller actually holds. For an operator: one of their own catalog_verified sessions,\ncreated by the trusted service. Catalog membership alone is never listed as an association."
       },
       "SessionCreateRequest": {
         "properties": {
@@ -14936,7 +15121,7 @@
     "securitySchemes": {
       "HTTPBearer": {
         "type": "http",
-        "description": "Service token from COCOON_SERVICE_TOKEN",
+        "description": "Exactly ONE of: the trusted service credential (COCOON_SERVICE_TOKEN; server-side callers only, never embedded in Android or React), or an actor token (`cct_...`) issued locally by scripts/actor_tokens.py for an operator or supervisor principal. Access per route is listed in API_CONTRACT.md.",
         "scheme": "bearer"
       }
     }

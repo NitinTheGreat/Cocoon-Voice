@@ -7,7 +7,7 @@ __pycache__/
 venv/
 build/
 dist/
-
+Cocoon_Dataset_v1/
 # Secrets: commit only .env.example (every other .env* file stays private, including backups)
 .env
 .env.*

@@ -306,11 +306,27 @@ class Store:
 
     # ------------------------------------------------------------------ training
 
-    def assign_training(self, session: s.Session, lesson_id: str, source_turn_id: str) -> tuple[s.TrainingAssignment, bool]:
+    # Training assignments are keyed by operator_id, a string that a pre-upgrade (legacy) session may also have used.
+    # An assignment is visible only when its owning session has the SAME binding class as the reading session:
+    # catalog_verified sessions see records of catalog_verified sessions of the same operator, and legacy sessions
+    # see only legacy records (the pre-I02b behaviour among legacy sessions). A free-text name match therefore
+    # never merges records across the two classes in either direction.
+    _SAME_CLASS_OWNER = (" AND ta.session_id IN (SELECT session_id FROM sessions"
+                         " WHERE binding_status = ? AND operator_id = ta.operator_id)")
+
+    def assign_training(self, session: s.Session, lesson_id: str,
+                        source_turn_id: str) -> tuple[s.TrainingAssignment | None, bool]:
+        """Returns (assignment, created). (None, False) when a record of the other binding class already holds this
+        operator/lesson pair: it is withheld, not handed to the caller."""
         with self._tx() as c:
             existing = c.execute(
                 "SELECT * FROM training_assignments WHERE operator_id = ? AND lesson_id = ?", (session.operator_id, lesson_id)
             ).fetchone()
+            if existing is not None:
+                owner = c.execute("SELECT binding_status FROM sessions WHERE session_id = ?",
+                                  (existing["session_id"],)).fetchone()
+                if owner is None or owner["binding_status"] != session.binding_status:
+                    return None, False
             if existing is None:
                 c.execute(
                     "INSERT INTO training_assignments(assignment_id, operator_id, lesson_id, session_id, source_turn_id,"
@@ -325,12 +341,70 @@ class Store:
             created = existing is None or existing["source_turn_id"] == source_turn_id
             return _assignment(row), created
 
-    def list_assignments(self, operator_id: str) -> list[s.TrainingAssignment]:
+    def list_assignments(self, session: s.Session) -> list[s.TrainingAssignment]:
         rows = self._all(
             "SELECT ta.*, l.title AS lesson_title FROM training_assignments ta JOIN lessons l USING (lesson_id)"
-            " WHERE ta.operator_id = ? ORDER BY ta.assigned_at", (operator_id,)
+            f" WHERE ta.operator_id = ?{self._SAME_CLASS_OWNER} ORDER BY ta.assigned_at",
+            (session.operator_id, session.binding_status),
         )
         return [_assignment(r) for r in rows]
+
+    # ------------------------------------------------------------------ principals and actor tokens
+
+    def issue_actor_token(self, *, kind: str, principal_id: str, operator_id: str | None,
+                          operator_catalog_sha256: str | None, display_name: str | None, token_sha256: str,
+                          scopes: tuple[str, ...], issued_at: str, expires_at: str) -> dict[str, Any]:
+        """Create the principal if new (never widen or rebind an existing one) and store one token digest."""
+        with self._tx() as c:
+            row = c.execute("SELECT * FROM principals WHERE principal_id = ?", (principal_id,)).fetchone()
+            if row is None:
+                if kind == "operator" and c.execute(
+                        "SELECT 1 FROM principals WHERE kind = 'operator' AND operator_id = ?", (operator_id,)).fetchone():
+                    raise Conflict("this operator already has a principal under a different principal_id")
+                c.execute("INSERT INTO principals(principal_id, kind, operator_id, operator_catalog_sha256,"
+                          " display_name, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                          (principal_id, kind, operator_id, operator_catalog_sha256, display_name, issued_at))
+            elif row["kind"] != kind or row["operator_id"] != operator_id:
+                raise Conflict("principal_id already exists with a different role or operator")
+            token_id = "tok_" + uuid.uuid4().hex[:16]
+            c.execute("INSERT INTO actor_tokens(token_id, principal_id, token_sha256, scopes, issued_at, expires_at)"
+                      " VALUES (?, ?, ?, ?, ?, ?)",
+                      (token_id, principal_id, token_sha256, " ".join(scopes), issued_at, expires_at))
+            return _token_meta(c.execute(_TOKEN_META_SQL + " WHERE t.token_id = ?", (token_id,)).fetchone())
+
+    def resolve_actor_token(self, token_sha256: str) -> dict[str, Any] | None:
+        """Metadata for a stored digest (including revoked/expired ones; the caller decides)."""
+        row = self._one(_TOKEN_META_SQL + " WHERE t.token_sha256 = ?", (token_sha256,))
+        return _token_meta(row) if row else None
+
+    def get_actor_token(self, token_id: str) -> dict[str, Any] | None:
+        row = self._one(_TOKEN_META_SQL + " WHERE t.token_id = ?", (token_id,))
+        return _token_meta(row) if row else None
+
+    def list_actor_tokens(self, principal_id: str | None = None) -> list[dict[str, Any]]:
+        if principal_id is None:
+            rows = self._all(_TOKEN_META_SQL + " ORDER BY t.issued_at")
+        else:
+            rows = self._all(_TOKEN_META_SQL + " WHERE t.principal_id = ? ORDER BY t.issued_at", (principal_id,))
+        return [_token_meta(r) for r in rows]
+
+    def revoke_actor_token(self, token_id: str, revoked_at: str,
+                           reason: str | None) -> tuple[dict[str, Any] | None, bool]:
+        """Idempotent. Returns (metadata, changed); (None, False) for an unknown token_id."""
+        with self._tx() as c:
+            row = c.execute("SELECT revoked_at FROM actor_tokens WHERE token_id = ?", (token_id,)).fetchone()
+            if row is None:
+                return None, False
+            changed = row["revoked_at"] is None
+            if changed:
+                c.execute("UPDATE actor_tokens SET revoked_at = ?, revoke_reason = ? WHERE token_id = ?",
+                          (revoked_at, reason, token_id))
+            return _token_meta(c.execute(_TOKEN_META_SQL + " WHERE t.token_id = ?", (token_id,)).fetchone()), changed
+
+    def owned_verified_sessions(self, operator_id: str) -> list[s.Session]:
+        rows = self._all("SELECT * FROM sessions WHERE binding_status = 'catalog_verified' AND operator_id = ?"
+                         " ORDER BY created_at", (operator_id,))
+        return [_session(r) for r in rows]
 
     # ------------------------------------------------------------------ alerts
 
@@ -485,6 +559,21 @@ class AlertTemplate:
 
 
 # ---------------------------------------------------------------------- row mappers
+
+# Never selects token_sha256: token metadata leaving the store cannot carry the digest.
+_TOKEN_META_SQL = (
+    "SELECT t.token_id, t.principal_id, p.kind, p.operator_id, p.display_name, t.scopes, t.issued_at, t.expires_at,"
+    " t.revoked_at, t.revoke_reason FROM actor_tokens t JOIN principals p USING (principal_id)"
+)
+
+
+def _token_meta(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "token_id": r["token_id"], "principal_id": r["principal_id"], "kind": r["kind"],
+        "operator_id": r["operator_id"], "display_name": r["display_name"], "scopes": tuple(r["scopes"].split()),
+        "issued_at": parse_dt(r["issued_at"]), "expires_at": parse_dt(r["expires_at"]),
+        "revoked_at": parse_dt(r["revoked_at"]), "revoke_reason": r["revoke_reason"],
+    }
 
 
 def _session(r: sqlite3.Row) -> s.Session:

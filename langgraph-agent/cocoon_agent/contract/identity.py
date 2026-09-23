@@ -8,31 +8,17 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ..api import schemas as s
-from .common import MachineId, OperatorId, PageInfo, ShiftId, SiteId, StableId, Strict, UtcTime
+from .common import OperatorId, PageInfo, StableId, Strict, UtcTime
 
 PrincipalKind = Literal["service", "operator", "supervisor", "simulator"]
 """Resolved by the server from the bearer token. Never taken from a body field, utterance, consumer_id,
 room name or client metadata."""
 
 
-class SessionAssociation(Strict):
-    operator_id: OperatorId
-    machine_id: MachineId
-    site_id: SiteId | None = None
-    shift_id: ShiftId | None = None
-
-
-class MeResponse(Strict):
-    """GET /v1/me. Never echoes the bearer token or its hash."""
-
-    subject_id: StableId
-    principal_kind: PrincipalKind
-    display_name: str | None = Field(default=None, max_length=128)
-    site_ids: list[SiteId] = Field(description="Sites this principal may read. Empty for the global service.")
-    allowed_associations: list[SessionAssociation] = Field(
-        description="Operator: own operator/machine/shift bindings. Supervisor: none (supervisors never bind to "
-                    "an operator session).")
-    token_expires_at: UtcTime | None = Field(default=None, description="Null for the configured service token.")
+# GET /v1/me is IMPLEMENTED since I02b; the runtime models are the contract. Site grants for supervisors (site_ids)
+# stay empty until a trusted site source exists (DG-01, I13).
+SessionAssociation = s.SessionAssociation
+MeResponse = s.MeResponse
 
 
 class SessionCreateRequestTarget(s.SessionCreateRequest):

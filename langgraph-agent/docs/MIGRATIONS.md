@@ -10,6 +10,7 @@ The authoritative version is the highest row of the `schema_migrations` table (`
 |---|---|---|
 | 1 | `baseline_v1` | The v1 tables exactly as the pre-I02a code created them: sessions, turns, tasks, lessons, incidents, training_assignments, alerts (+ `one_active_episode_per_rule`), telemetry_events, announcements, deliveries. |
 | 2 | `catalog_bound_sessions` | Adds `catalog_versions`, `catalog_version_machines` and `catalog_version_operators`: append-only snapshots, and triggers refuse UPDATE/DELETE. Adds nullable session columns `dataset_manifest_sha256`, `site_id`, `shift_id` and `context_source`, plus `binding_status` and `context_status` (NOT NULL, default `legacy_unverified`). Adds the `sessions_association_immutable` trigger: after creation, only `state_version` and `last_observed_at` can change. |
+| 3 | `actor_tokens` | Adds `principals` (operator or supervisor; an operator principal is bound to one catalog operator and the catalog snapshot it was verified against; immutable) and `actor_tokens` (SHA-256 digest only, never the token; scopes, issue/expiry times; only `revoked_at`/`revoke_reason` can change, once; no deletes). Existing rows are untouched. |
 
 All changes are additive (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, `CREATE TRIGGER`). No table is rebuilt, and no row, ID, index, constraint or reference is rewritten.
 
@@ -19,8 +20,8 @@ All changes are additive (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, `CREATE 
 2. Each migration and its ledger row run inside one explicit `BEGIN IMMEDIATE ... COMMIT`. `executescript()` is never used, because Python's `executescript()` COMMITs any pending transaction first.
 3. SQLite DDL is transactional. If any statement fails, the whole step rolls back and the database stays at its previous version with every row intact.
 4. Detection cases:
-   - **Empty database:** version 1 is applied, then 2.
-   - **Unversioned database whose tables, columns and named indexes exactly equal the v1 baseline:** version 1 is recorded as `adopted_existing` without touching anything, then 2 is applied. Existing sessions become `binding_status = legacy_unverified` and `context_status = legacy_unverified`, with NULL manifest, site and shift. No provenance is invented and no current catalog hash is attached retroactively.
+   - **Empty database:** versions 1, 2 and 3 are applied in order.
+   - **Unversioned database whose tables, columns and named indexes exactly equal the v1 baseline:** version 1 is recorded as `adopted_existing` without touching anything, then 2 and 3 are applied. Existing sessions become `binding_status = legacy_unverified` and `context_status = legacy_unverified`, with NULL manifest, site and shift. No provenance is invented and no current catalog hash is attached retroactively.
    - **Any other unversioned layout:** refused (`unknown_layout`). Nothing is modified.
    - **Version newer than supported, or a gap in the ledger:** refused (`newer_schema`, `ledger_inconsistent`).
    - **Database locked:** `BEGIN IMMEDIATE` waits up to `PRAGMA busy_timeout` (5000 ms), then fails with `database_locked`. No step is applied.
@@ -50,6 +51,13 @@ Each backup file is a complete, self-contained database with no `-wal` or `-shm`
 4. Start the backend. Migrations bring an older backup forward. A backup from a *newer* code version is refused (`newer_schema`) rather than being modified.
 
 **If a migration fails:** the database is still at its previous version. Fix the cause (for example, a lock held by another process), then restart. Restore from backup only if the database was damaged by something other than the migration.
+
+## Recovery notes and open observations
+
+- **Orderly restart** (Ctrl+C / Ctrl+Break, lifespan shutdown) is verified: I02a (session, binding and saved turn result) and I02b (token metadata and persistent revocation).
+- **Hard-kill observation (I02a, unresolved).** In one I02a check the server was stopped with `Popen.terminate()`, which is a hard kill on Windows. Opening `cocoon.db` immediately afterwards raised a transient `sqlite3.OperationalError: disk I/O error`. Re-opening shortly after worked, and `PRAGMA integrity_check` returned `ok`. The cause has **not** been established; a file handle still held by the dying process is a plausible explanation, but it is unproven. This was **not** a successful crash-recovery test, and it proves nothing about data written during a hard kill. The error was not reproduced during ordinary I02b operation (orderly stops only). Interrupted-turn and abrupt-termination recovery belong to I02d/I08.
+- After any abrupt stop: keep the `cocoon.db`, `-wal` and `-shm` files together, start the backend normally (SQLite replays the WAL on open), and run `PRAGMA integrity_check`. If it is not `ok`, restore from a backup as above.
+
 
 ## Catalog reference (provisional)
 

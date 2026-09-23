@@ -2,9 +2,10 @@
 
 import logging
 import re
-import secrets
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request, Response
@@ -15,6 +16,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
 from ..graph.brain import Brain, build_brain
@@ -26,13 +28,22 @@ from . import schemas as s
 log = logging.getLogger("cocoon_agent.api")
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
-_bearer = HTTPBearer(auto_error=False, description="Service token from COCOON_SERVICE_TOKEN")
+_bearer = HTTPBearer(auto_error=False, description=(
+    "Exactly ONE of: the trusted service credential (COCOON_SERVICE_TOKEN; server-side callers only, never embedded "
+    "in Android or React), or an actor token (`cct_...`) issued locally by scripts/actor_tokens.py for an operator or "
+    "supervisor principal. Access per route is listed in API_CONTRACT.md."))
 
+AUTH_UNAVAILABLE = "auth_unavailable: the token store could not be read (retryable; never treated as success)"
 ERRORS = {
-    401: {"model": s.ErrorResponse, "description": "Missing or invalid service bearer token"},
-    404: {"model": s.ErrorResponse, "description": "Unknown session or resource"},
+    401: {"model": s.ErrorResponse,
+          "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than "
+                         "one Authorization header (the cause is deliberately not distinguished)"},
+    403: {"model": s.ErrorResponse, "description": "forbidden: authenticated, but this role may not use the route"},
+    404: {"model": s.ErrorResponse,
+          "description": "Unknown session or resource; also returned for a session an operator does not own"},
     422: {"model": s.ErrorResponse, "description": "Malformed request"},
     500: {"model": s.ErrorResponse, "description": "Unexpected server error (retryable)"},
+    503: {"model": s.ErrorResponse, "description": AUTH_UNAVAILABLE},
 }
 
 
@@ -46,8 +57,10 @@ def _error_response(status: int, code: str, message: str, retryable: bool, reque
                         headers={"X-Request-ID": request_id, **(headers or {})})
 
 
-def create_app(settings: Settings | None = None, brain: Brain | None = None) -> FastAPI:
-    """`brain` overrides the configured router/composer (tests inject slow or failing brains)."""
+def create_app(settings: Settings | None = None, brain: Brain | None = None,
+               clock: Callable[[], datetime] | None = None) -> FastAPI:
+    """`brain` overrides the configured router/composer (tests inject slow or failing brains).
+    `clock` overrides the wall clock used for token expiry (tests); it is never the data/replay clock."""
     settings = settings or get_settings()
     injected_brain = brain
 
@@ -96,6 +109,7 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
         summary="LangGraph application backend for the Cocoon voice assistant (Team Butterfly).",
         lifespan=lifespan,
     )
+    app.state.clock = clock or utcnow  # wall-clock UTC for token expiry
 
     # ------------------------------------------------------------------ plumbing
 
@@ -130,20 +144,40 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
         log.exception("unhandled error request_id=%s", rid(request))
         return _error_response(500, "internal_error", "unexpected server error", True, rid(request))
 
-    async def require_token(
-        creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-    ) -> None:
-        expected = settings.service_token.get_secret_value()
-        if creds is None or not secrets.compare_digest(creds.credentials.encode(), expected.encode()):
-            raise ApiError(401, "unauthorized", "missing or invalid service bearer token")
-
     def svc(request: Request) -> CocoonService:
         return request.app.state.service
 
     Service = Annotated[CocoonService, Depends(svc)]
 
-    def v1(extra: dict[int | str, Any] | None = None) -> dict[str, Any]:
-        return {"dependencies": [Depends(require_token)], "responses": {**ERRORS, **(extra or {})}}
+    async def authenticate(
+        request: Request, creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    ) -> Principal:
+        """One immutable principal per request, resolved on every request (no cache that outlives revocation)."""
+        service: CocoonService | None = getattr(request.app.state, "service", None)
+        if service is None:
+            raise ApiError(503, "auth_unavailable", "authentication is temporarily unavailable", retryable=True)
+        return service.authenticate(creds.credentials if creds else None,
+                                    len(request.headers.getlist("authorization")), request.app.state.clock())
+
+    Caller = Annotated[Principal, Depends(authenticate)]
+
+    async def service_only(principal: Caller, service: Service) -> Principal:
+        service.require_service(principal)
+        return principal
+
+    async def session_access(session_id: str, principal: Caller, service: Service) -> s.Session:
+        return service.authorize_session(principal, session_id)
+
+    # Dependencies are resolved before the request body is parsed or any tool runs.
+    ServiceCaller = Depends(service_only)
+    OwnedSession = Depends(session_access)
+
+    def v1(extra: dict[int | str, Any] | None = None, *, access: Any = None) -> dict[str, Any]:
+        deps = [Depends(authenticate)] + ([access] if access is not None else [])
+        responses = {**ERRORS, **(extra or {})}
+        if 503 in (extra or {}):
+            responses[503] = {**extra[503], "description": extra[503]["description"] + "; or " + AUTH_UNAVAILABLE}
+        return {"dependencies": deps, "responses": responses}
 
     # ------------------------------------------------------------------ health
 
@@ -177,6 +211,14 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
                                catalog_issue=None if catalog else (service.catalog_issue if service else None),
                                schema_version=schema_version)
 
+    # ------------------------------------------------------------------ current principal
+
+    @app.get("/v1/me", response_model=s.MeResponse, tags=["identity"], **v1())
+    async def me(principal: Caller, service: Service, response: Response) -> s.MeResponse:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return service.describe(principal)
+
     # ------------------------------------------------------------------ sessions
 
     @app.post("/v1/sessions", response_model=s.Session, status_code=201, tags=["sessions"],
@@ -189,7 +231,8 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
                                          "(unknown_machine, checked first) or operator_id (unknown_operator) is not "
                                          "in the verified catalog, or whose site/shift has no trusted binding"},
                     503: {"model": s.ErrorResponse,
-                          "description": "catalog_unavailable: no verified catalog loaded; new sessions refused"}}))
+                          "description": "catalog_unavailable: no verified catalog loaded; new sessions refused"}},
+                   access=ServiceCaller))
     async def create_session(body: s.SessionCreateRequest, service: Service, response: Response) -> s.Session:
         session, created = service.create_session(body)
         response.status_code = 201 if created else 200
@@ -205,7 +248,7 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
                 "then GET poll_url (also the Location header). Do not resubmit with a new turn_id.")},
             409: {"model": s.ErrorResponse, "description": "turn_id reused with a different text or source"},
             503: {"model": s.ErrorResponse, "description": "LLM unavailable or turn timed out (retryable, same turn_id)"},
-        }),
+        }, access=OwnedSession),
     )
     async def submit_turn(session_id: str, body: s.TurnRequest, service: Service, request: Request,
                           response: Response) -> s.TurnResult:
@@ -216,26 +259,30 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
             response.headers["Location"] = result.poll_url or ""
         return result
 
-    @app.get("/v1/sessions/{session_id}/turns/{turn_id}", response_model=s.TurnResult, tags=["turns"], **v1())
+    @app.get("/v1/sessions/{session_id}/turns/{turn_id}", response_model=s.TurnResult, tags=["turns"],
+             **v1(access=OwnedSession))
     async def get_turn(session_id: str, turn_id: str, service: Service) -> s.TurnResult:
         return service.get_turn(session_id, turn_id)
 
     # ------------------------------------------------------------------ state
 
-    @app.get("/v1/sessions/{session_id}/state", response_model=s.SessionState, tags=["state"], **v1())
+    @app.get("/v1/sessions/{session_id}/state", response_model=s.SessionState, tags=["state"],
+             **v1(access=OwnedSession))
     async def get_state(session_id: str, service: Service) -> s.SessionState:
         return await service.get_state(session_id)
 
     # ------------------------------------------------------------------ telemetry
 
     @app.post("/v1/sessions/{session_id}/telemetry", response_model=s.TelemetryResult, tags=["telemetry"],
-              **v1({409: {"model": s.ErrorResponse, "description": "event_id reused with a different payload"}}))
+              **v1({409: {"model": s.ErrorResponse, "description": "event_id reused with a different payload"}},
+                   access=ServiceCaller))
     async def submit_telemetry(session_id: str, body: s.TelemetryRequest, service: Service) -> s.TelemetryResult:
         return await service.submit_telemetry(session_id, body)
 
     # ------------------------------------------------------------------ announcements
 
-    @app.get("/v1/sessions/{session_id}/events", response_model=s.EventsPage, tags=["announcements"], **v1())
+    @app.get("/v1/sessions/{session_id}/events", response_model=s.EventsPage, tags=["announcements"],
+             **v1(access=OwnedSession))
     async def list_events(
         session_id: str, service: Service,
         after: Annotated[int, Query(ge=0, description="Return announcements with sequence > after")] = 0,
@@ -244,7 +291,7 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None) -> 
         return service.list_events(session_id, after, limit)
 
     @app.post("/v1/sessions/{session_id}/events/{event_id}/delivery", response_model=s.DeliveryRecord,
-              tags=["announcements"], **v1())
+              tags=["announcements"], **v1(access=ServiceCaller))
     async def record_delivery(session_id: str, event_id: str, body: s.DeliveryReport,
                               service: Service) -> s.DeliveryRecord:
         return service.record_delivery(session_id, event_id, body)

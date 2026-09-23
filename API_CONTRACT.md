@@ -55,7 +55,7 @@ pytest tests/test_contract.py
 
 ## Common rules
 
-- **Auth.** Every `/v1/*` call sends `Authorization: Bearer $COCOON_SERVICE_TOKEN`, a shared service secret configured in both `.env` files. `/healthz`, `/readyz` and `/docs` are public. The server binds to `127.0.0.1` by default.
+- **Auth.** Every `/v1/*` call sends exactly one `Authorization: Bearer <credential>`. The credential is either the trusted service secret `COCOON_SERVICE_TOKEN` (configured in both `.env` files; server-side callers only, never embedded in Android or React) or, since I02b, a locally issued actor token (`cct_...`) for an operator or supervisor principal. Route access is listed in "Actor access (I02b)" below. `/healthz`, `/readyz` and `/docs` are public. The server binds to `127.0.0.1` by default; beyond localhost, use TLS (for example a TLS-terminating reverse proxy) so bearer tokens never cross a network in clear text.
 - **Correlation.** Clients may send `X-Request-ID` (`[A-Za-z0-9._:-]{1,128}`). The server echoes it, or generates one, and includes it in every error. The worker uses `<turn_id>.<attempt>`.
 - **Time.** All timestamps are ISO-8601 in UTC (`...Z`). Timezone-naive input is rejected.
 - **Secrets.** Provider credentials (Anthropic, LiveKit) never appear in requests, responses or logs.
@@ -68,7 +68,8 @@ pytest tests/test_contract.py
 
 | Status | `code` | Retry? |
 |---|---|---|
-| 401 | `unauthorized` | no |
+| 401 | `unauthorized` (missing, malformed, unknown, expired or revoked credential, or two `Authorization` headers; the cause is not distinguished) | no |
+| 403 | `forbidden` (authenticated, but the role may not use this route) | no |
 | 404 | `not_found` (unknown session, turn or announcement) | no |
 | 409 | `session_conflict`, `idempotency_conflict` | no (client bug) |
 | 422 | `validation_error` (with `details`); `unknown_machine`, `unknown_operator` (new sessions, since I02a) | no |
@@ -87,6 +88,29 @@ pytest tests/test_contract.py
 | `POST /v1/sessions/{session_id}/telemetry` | Post one **simulated** sensor sample | `200`. A repeat of the same `event_id` returns `duplicate: true`. `409` if the payload differs. |
 | `GET /v1/sessions/{session_id}/events?after={cursor}&limit=20` | Read retained announcements with `sequence > after`. Reading does not consume them. | `200` with `next_cursor` and `has_more` |
 | `POST /v1/sessions/{session_id}/events/{event_id}/delivery` | Record a playback outcome, one record per `consumer_id` (last write wins) | `200` |
+
+### Actor access (I02b)
+
+The trusted service keeps all of its existing behaviour on the seven JSON routes. Actor tokens get exactly this, and nothing through any role hierarchy:
+
+| Operation | Trusted service | Operator token | Supervisor token |
+|---|---|---|---|
+| `GET /healthz`, `GET /readyz` | public | public | public |
+| `GET /v1/me` | service principal (no associations) | own principal and own `catalog_verified` sessions | own principal, no associations, no sites |
+| `POST /v1/sessions` | create/retrieve (catalog-bound) | 403 | 403 |
+| `POST .../turns`, `GET .../turns/{turn_id}`, `GET .../state`, `GET .../events` | existing behaviour | own `catalog_verified` session only | 403 |
+| `POST .../telemetry`, `POST .../events/{event_id}/delivery` | existing behaviour | 403 | 403 |
+
+- **Sessions are created only by the trusted service**, because creation binds a room, participant and machine. An operator token uses a session the service already created for that operator. Holding a token does not prove ownership of any voice room. There is no token-bootstrap or room-discovery API; `GET /v1/me` lists the operator's own verified sessions.
+- **Ownership:** an operator may use a session only if it is `catalog_verified` and its stored `operator_id` equals the token's operator. Anything else (another operator's session, a `legacy_unverified` session even with a matching free-text operator name, a non-existent session) gets the same `404 not_found "session not found"`, so existence is not revealed. The session is checked before the request body is parsed or any tool runs. Turn and event IDs are looked up inside that session only.
+- **Tools and projections are bound to the trusted session**, never to body fields, `client_context` or utterance text (unknown request fields are 422). Incidents, alerts, announcements, pending questions and turn history are per session. Training assignments are shown and reused only from sessions of the same binding class and operator. The seed task list (T-101..T-103) and the lesson catalogue are shared, unassigned demo content with no owner; they are not operator assignments (those come in I07A).
+- **Not in I02b:** site-scoped supervisor access (no trusted site data yet), consent enforcement (I02c), actor commands and presence (I02d/I15), and revalidation of long-lived streams (I08). The prototype token mechanism is not an identity provider.
+- **Token lifecycle:**
+  - Tokens are issued, listed and revoked locally with `langgraph-agent/scripts/actor_tokens.py`.
+  - Each token is 32 random bytes, and only its SHA-256 is stored.
+  - Lifetime is 5 minutes to 30 days (default 12 h), on the wall clock.
+  - Revocation takes effect on the next request.
+
 
 ### Client migration note (I02a)
 
@@ -176,7 +200,7 @@ Example bodies are in `contracts/examples/`, including a completed turn, a turn 
 | `POST /v1/sessions/{session_id}/turns/{turn_id}/cancel` | proposed | I08B | voice | Persist an idempotent cancellation intent | 202 pending, 200 terminal. Committed actions are never rolled back. |
 | `POST /v1/sessions/{session_id}/turns/{turn_id}/delivery` | proposed | I08B | voice | Record response playback separately | Immutable attempts keyed by `delivery_id`. |
 | `GET /v1/sessions/{session_id}/events/stream` | proposed | I08A/I11 | voice, operator | Announcement SSE in the polling order | Shares `event_id`/`sequence` with polling. |
-| `GET /v1/me` | proposed | I02 | voice, operator, supervisor | Resolve the authenticated principal | Never echoes a token. |
+| `GET /v1/me` | implemented | I02b | voice, operator, supervisor | Describe the authenticated principal (`Cache-Control: no-store`) | Never returns a token, digest or service configuration. `site_ids` are always empty until site grants exist (I13). |
 | `POST /v1/sessions/{session_id}/commands` | proposed | I02/I15 | operator, voice | Typed command (tap, voice-confirmed or offline sync) | Finite `kind` allowlist; same domain services as graph tools. |
 | `GET /v1/sessions/{session_id}/commands/{command_id}` | proposed | I02/I15 | operator, voice | Authoritative command result | Never re-executes. |
 | `POST /v1/sessions/{session_id}/presence` | proposed | I15 | operator, voice | Last-known connectivity and voice availability | Not proof the operator is conscious. |

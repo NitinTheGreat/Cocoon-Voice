@@ -35,6 +35,8 @@ ErrorCode = Literal[
     "unknown_machine",
     "unknown_operator",
     "catalog_unavailable",
+    "forbidden",
+    "auth_unavailable",
 ]
 
 
@@ -338,6 +340,36 @@ class EventsPage(ContractModel):
     events: list[Announcement]
     next_cursor: int = Field(description="Pass as ?after= on the next poll.")
     has_more: bool
+
+
+# --------------------------------------------------------------------------- current principal
+
+
+class SessionAssociation(ContractModel):
+    """An association the caller actually holds. For an operator: one of their own catalog_verified sessions,
+    created by the trusted service. Catalog membership alone is never listed as an association."""
+
+    operator_id: str
+    machine_id: str
+    site_id: str | None = None
+    shift_id: str | None = None
+    session_id: str | None = Field(default=None, description="The owned session this association comes from.")
+
+
+class MeResponse(ContractModel):
+    """GET /v1/me. Never contains a bearer token, its digest or service configuration."""
+
+    subject_id: str = Field(description="`service` for the service credential; otherwise the principal_id.")
+    principal_kind: Literal["service", "operator", "supervisor"]
+    operator_id: str | None = Field(default=None, description="Catalog operator ID of an operator principal.")
+    display_name: str | None = None
+    site_ids: list[str] = Field(description="Granted sites. Always empty in I02b: no site grants exist yet.")
+    allowed_associations: list[SessionAssociation] = Field(
+        description="Operator: own catalog_verified sessions. Service and supervisor: empty (the service is trusted "
+                    "for all sessions it manages; supervisors have no session access in I02b).")
+    scopes: list[str] = Field(default_factory=list, description="Actor token scopes; empty for the service.")
+    token_id: str | None = Field(default=None, description="Non-secret record ID of the presented actor token.")
+    token_expires_at: datetime | None = Field(default=None, description="Null for the service credential.")
 
 
 # --------------------------------------------------------------------------- health

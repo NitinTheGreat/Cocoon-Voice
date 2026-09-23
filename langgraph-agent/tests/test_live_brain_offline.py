@@ -23,7 +23,8 @@ def _message(text: str, stop_reason: str = "end_turn") -> dict:
 
 
 def _brain(tmp_path, handler, **overrides) -> AnthropicBrain:
-    settings = make_settings(tmp_path, COCOON_LLM_MODE="live", ANTHROPIC_API_KEY="sk-test-not-real", **overrides)
+    settings = make_settings(tmp_path, COCOON_LLM_MODE="live", COCOON_LLM_PROVIDER="anthropic",
+                             ANTHROPIC_API_KEY="sk-test-not-real", **overrides)
     client = anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))
     return AnthropicBrain(settings, http_client=client)
 
@@ -68,6 +69,8 @@ async def test_provider_failures_never_fabricate(tmp_path, response):
         await _brain(tmp_path, lambda request: response).route(TurnContext(text="hello"))
 
 
-def test_live_mode_requires_key(tmp_path):
+def test_live_mode_requires_provider_configuration(tmp_path):
+    with pytest.raises(ValueError, match="GOOGLE_CLOUD_PROJECT"):
+        make_settings(tmp_path, COCOON_LLM_MODE="live")  # Vertex is the default live provider
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        make_settings(tmp_path, COCOON_LLM_MODE="live")
+        make_settings(tmp_path, COCOON_LLM_MODE="live", COCOON_LLM_PROVIDER="anthropic")

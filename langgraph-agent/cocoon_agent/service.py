@@ -11,18 +11,21 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
+import sqlite3
 import time
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
 from .api import schemas as s
+from .auth import MAX_CREDENTIAL_LENGTH, ROLE_SCOPES, SERVICE_PRINCIPAL, TOKEN_PREFIX, Principal, token_digest
+from .catalog import Catalog, SessionBindings
 from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
-from .catalog import Catalog, SessionBindings
 from .rules import SEATBELT_RULE, seatbelt_condition
 from .store import Conflict, NewSessionBinding, Store, utcnow
 
@@ -89,7 +92,9 @@ class CocoonService:
             raise ApiError(422, "validation_error", "site_id and shift_id must be supplied together",
                            details=[{"field": "body.site_id" if req.site_id is None else "body.shift_id",
                                      "issue": "required when the other is supplied"}])
-        binding = self.bindings.match(req.operator_id, req.machine_id, req.site_id, req.shift_id)             if self.bindings else None
+        binding = None
+        if self.bindings is not None:
+            binding = self.bindings.match(req.operator_id, req.machine_id, req.site_id, req.shift_id)
         if binding is None:
             raise ApiError(422, "validation_error", "site_id/shift_id do not match a trusted binding",
                            details=[{"field": "body.site_id", "issue": "no trusted binding for this association"}])
@@ -97,6 +102,68 @@ class CocoonService:
             dataset_manifest_sha256=catalog.manifest_sha256, context_status="trusted_binding",
             site_id=binding.site_id, shift_id=binding.shift_id,
             context_source=f"session-bindings:{self.bindings.sha256}:{binding.binding_id}",
+        )
+
+    # ------------------------------------------------------------------ authentication and authorisation
+
+    def authenticate(self, credential: str | None, header_count: int, now: datetime) -> Principal:
+        """Resolve exactly one server-side principal. Every failure is the same sanitized 401, so the response
+        never reveals whether a token was unknown, expired or revoked. An auth-store failure is 503, never success."""
+        denied = ApiError(401, "unauthorized", "missing or invalid bearer token")
+        if header_count > 1 or not credential or len(credential) > MAX_CREDENTIAL_LENGTH:
+            raise denied
+        expected = self.settings.service_token.get_secret_value()
+        if secrets.compare_digest(credential.encode(), expected.encode()):
+            return SERVICE_PRINCIPAL
+        if not credential.startswith(TOKEN_PREFIX):
+            raise denied  # never falls back to service privileges
+        try:
+            meta = self.store.resolve_actor_token(token_digest(credential))
+        except sqlite3.Error as exc:
+            log.error("actor token lookup failed: %s", type(exc).__name__)
+            raise ApiError(503, "auth_unavailable", "authentication is temporarily unavailable",
+                           retryable=True) from exc
+        if meta is None or meta["revoked_at"] is not None or meta["expires_at"] <= now \
+                or meta["kind"] not in ROLE_SCOPES:
+            raise denied
+        return Principal(
+            kind=meta["kind"], subject_id=meta["principal_id"], operator_id=meta["operator_id"],
+            display_name=meta["display_name"], token_id=meta["token_id"],
+            # a stored token can never hold more than its role allows
+            scopes=frozenset(meta["scopes"]) & frozenset(ROLE_SCOPES[meta["kind"]]),
+            expires_at=meta["expires_at"],
+        )
+
+    @staticmethod
+    def require_service(principal: Principal) -> None:
+        if principal.kind != "service":
+            raise ApiError(403, "forbidden", "this operation is reserved for the trusted service")
+
+    def authorize_session(self, principal: Principal, session_id: str) -> s.Session:
+        """Parent-session check done before any child read or tool runs. An operator sees only their own
+        catalog_verified sessions; anything else is the same 404 as a missing session (existence is not revealed)."""
+        if principal.kind == "service":
+            return self.require_session(session_id)
+        if principal.kind != "operator" or not principal.has_scope("sessions:own"):
+            raise ApiError(403, "forbidden", "this principal cannot access sessions")
+        session = self.store.get_session(session_id)
+        if session is None or session.binding_status != "catalog_verified" \
+                or session.operator_id != principal.operator_id:
+            raise ApiError(404, "not_found", "session not found")
+        return session
+
+    def describe(self, principal: Principal) -> s.MeResponse:
+        associations = []
+        if principal.kind == "operator" and principal.operator_id:
+            associations = [
+                s.SessionAssociation(operator_id=x.operator_id, machine_id=x.machine_id, site_id=x.site_id,
+                                     shift_id=x.shift_id, session_id=x.session_id)
+                for x in self.store.owned_verified_sessions(principal.operator_id)
+            ]
+        return s.MeResponse(
+            subject_id=principal.subject_id, principal_kind=principal.kind, operator_id=principal.operator_id,
+            display_name=principal.display_name, site_ids=[], allowed_associations=associations,
+            scopes=sorted(principal.scopes), token_id=principal.token_id, token_expires_at=principal.expires_at,
         )
 
     def require_session(self, session_id: str) -> s.Session:
@@ -210,7 +277,7 @@ class CocoonService:
             llm_mode=self.brain.mode,
             tasks=self.store.list_tasks(),
             incidents=self.store.list_incidents(session_id),
-            training_assignments=self.store.list_assignments(session.operator_id),
+            training_assignments=self.store.list_assignments(session),
             available_lessons=self.store.list_lessons(),
             active_alerts=self.store.active_alerts(session_id),
             latest_alert=self.store.latest_alert(session_id),

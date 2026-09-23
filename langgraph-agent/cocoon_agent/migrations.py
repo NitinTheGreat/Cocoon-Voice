@@ -181,6 +181,44 @@ CATALOG_BOUND_SESSIONS: tuple[str, ...] = (
 )
 
 
+ACTOR_TOKENS: tuple[str, ...] = (
+    # Server-owned actor identities. The service credential (COCOON_SERVICE_TOKEN) is never stored here.
+    """CREATE TABLE principals (
+    principal_id TEXT PRIMARY KEY CHECK (length(principal_id) BETWEEN 1 AND 128),
+    kind TEXT NOT NULL CHECK (kind IN ('operator', 'supervisor')),
+    operator_id TEXT,
+    operator_catalog_sha256 TEXT REFERENCES catalog_versions(manifest_sha256),
+    display_name TEXT CHECK (display_name IS NULL OR length(display_name) <= 128),
+    created_at TEXT NOT NULL,
+    CHECK ((kind = 'operator' AND operator_id IS NOT NULL AND operator_catalog_sha256 IS NOT NULL)
+        OR (kind = 'supervisor' AND operator_id IS NULL AND operator_catalog_sha256 IS NULL))
+)""",
+    "CREATE UNIQUE INDEX one_principal_per_operator ON principals(operator_id) WHERE kind = 'operator'",
+    *(f"""CREATE TRIGGER principals_immutable_{op.lower()} BEFORE {op} ON principals
+    BEGIN SELECT RAISE(ABORT, 'principals are immutable'); END""" for op in ("UPDATE", "DELETE")),
+    # Opaque bearer tokens: only a SHA-256 digest of the random token is stored, never the token itself.
+    """CREATE TABLE actor_tokens (
+    token_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    token_sha256 TEXT NOT NULL UNIQUE CHECK (length(token_sha256) = 64),
+    scopes TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 200),
+    CHECK (expires_at > issued_at)
+)""",
+    """CREATE TRIGGER actor_tokens_fixed BEFORE UPDATE OF
+    token_id, principal_id, token_sha256, scopes, issued_at, expires_at ON actor_tokens
+    BEGIN SELECT RAISE(ABORT, 'token records are immutable except for revocation'); END""",
+    """CREATE TRIGGER actor_tokens_revoke_once BEFORE UPDATE OF revoked_at, revoke_reason ON actor_tokens
+    WHEN OLD.revoked_at IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'a revoked token stays revoked'); END""",
+    """CREATE TRIGGER actor_tokens_no_delete BEFORE DELETE ON actor_tokens
+    BEGIN SELECT RAISE(ABORT, 'token records are kept for audit'); END""",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -191,6 +229,7 @@ class Migration:
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline_v1", BASELINE_STATEMENTS),
     Migration(2, "catalog_bound_sessions", CATALOG_BOUND_SESSIONS),
+    Migration(3, "actor_tokens", ACTOR_TOKENS),
 )
 
 

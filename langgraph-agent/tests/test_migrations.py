@@ -93,11 +93,12 @@ def ledger(path: Path) -> list[tuple]:
 
 def test_fresh_database_gets_every_migration_once(tmp_path):
     store = Store(tmp_path / "cocoon.db")
-    assert store.init_schema() == ["applied:1", "applied:2"]
+    assert store.init_schema() == ["applied:1", "applied:2", "applied:3"]
     assert store.init_schema() == []  # re-running startup changes nothing
     store.close()
-    assert ledger(tmp_path / "cocoon.db") == [(1, "baseline_v1", "applied"), (2, "catalog_bound_sessions", "applied")]
-    assert latest_version() == 2
+    assert ledger(tmp_path / "cocoon.db") == [(1, "baseline_v1", "applied"), (2, "catalog_bound_sessions", "applied"),
+                                          (3, "actor_tokens", "applied")]
+    assert latest_version() == 3
 
 
 # ------------------------------------------------------------------ upgrade of the real v1 baseline
@@ -108,7 +109,7 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
     make_populated_baseline(db)
     before = dump(db)
     store = Store(db)
-    assert store.init_schema() == ["adopted:1", "applied:2"]
+    assert store.init_schema() == ["adopted:1", "applied:2", "applied:3"]
     assert store.init_schema() == []
     # the next incident continues the AUTOINCREMENT sequence rather than restarting it
     session = store.get_session("ses_legacy")
@@ -120,7 +121,8 @@ def test_populated_v1_baseline_is_adopted_and_upgraded_without_losing_rows(tmp_p
     after["incidents"] = [r for r in after["incidents"] if r[0] == 1]
     after["sqlite_sequence"] = before["sqlite_sequence"]
     assert after == before  # every legacy row and value is unchanged
-    assert ledger(db) == [(1, "baseline_v1", "adopted_existing"), (2, "catalog_bound_sessions", "applied")]
+    assert ledger(db) == [(1, "baseline_v1", "adopted_existing"), (2, "catalog_bound_sessions", "applied"),
+                          (3, "actor_tokens", "applied")]
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT dataset_manifest_sha256, site_id, shift_id, binding_status, context_status,"
                        " context_source FROM sessions WHERE session_id = 'ses_legacy'").fetchone()
@@ -176,7 +178,7 @@ def test_newer_schema_and_ledger_gaps_are_refused(tmp_path):
     db = tmp_path / "cocoon.db"
     Store(db).init_schema()
     conn = _connect(db)
-    conn.execute("INSERT INTO schema_migrations VALUES (3, 'from_the_future', 'applied', 'x')")
+    conn.execute("INSERT INTO schema_migrations VALUES (4, 'from_the_future', 'applied', 'x')")
     with pytest.raises(MigrationError) as err:
         migrate(conn)
     assert err.value.issue == "newer_schema"
@@ -255,7 +257,7 @@ def test_backup_api_copy_is_consistent_while_the_database_is_open(tmp_path):
     store.close()
     copy = sqlite3.connect(backup)
     assert copy.execute("SELECT COUNT(*) FROM tasks WHERE task_id = 'T-999'").fetchone()[0] == 1
-    assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
     assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     copy.close()
     with pytest.raises(FileExistsError):

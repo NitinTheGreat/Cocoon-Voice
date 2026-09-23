@@ -199,8 +199,10 @@ ROUTES: tuple[Route, ...] = (
                      410: Resp("replay_expired; poll GET .../events for retained history", ERR),
                      **_errs(401, 403, 404, 422, 429)}),
     # ------------------------------------------------------------------ proposed operator/supervisor/sync
-    Route("get", "/v1/me", "proposed", "I02", ("voice_service", "operator", "supervisor"),
-          "Resolve the authenticated principal", responses={200: Resp("Principal", idn.MeResponse), **_errs(401)}),
+    Route("get", "/v1/me", "implemented", "I02b", ("voice_service", "operator", "supervisor"),
+          "Resolve the authenticated principal",
+          target_changes=({"stage": "I13", "change": "site_ids from trusted supervisor site grants (none exist "
+                                                     "yet; always empty in I02b)."},)),
     Route("post", "/v1/sessions/{session_id}/commands", "proposed", "I02/I15", ("operator", "voice_service"),
           "Submit a typed command (tap, voice-confirmed or offline sync)",
           idempotency="command_id unique per issuing subject across sessions and reconnects. Identical retry "
@@ -449,4 +451,8 @@ def model_index() -> dict[str, type[BaseModel]]:
         for value in vars(mod).values():
             if isinstance(value, type) and issubclass(value, BaseModel) and value.__module__ == mod.__name__:
                 index[value.__name__] = value
+    for mod in (idn,):  # runtime models re-exported as the contract once their route is implemented
+        for name, value in vars(mod).items():
+            if isinstance(value, type) and issubclass(value, BaseModel) and value.__module__ == s.__name__:
+                index.setdefault(name, value)
     return index
