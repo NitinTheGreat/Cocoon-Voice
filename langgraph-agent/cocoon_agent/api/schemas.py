@@ -408,14 +408,155 @@ class Lesson(ContractModel):
         default=None, description="demo_authored_unreviewed: written for the demo, not reviewed by a trainer.")
 
 
+class LessonMediaAsset(ContractModel):
+    """Catalog media for a lesson. `content_ref` is a server route resolved by catalog ID inside the content root (never
+    an arbitrary path or URL); fetch it with the same bearer token. Metadata or a fetch is not playback evidence and
+    never counts as completing a lesson."""
+
+    asset_id: str
+    version: int
+    kind: Literal["video"]
+    mime_type: str
+    title: str
+    duration_seconds: float
+    availability: Literal["available", "withdrawn"] = Field(
+        description="withdrawn: the file is missing or does not match its catalog checksum; clients must not play it.")
+    content_ref: str | None = None
+    captions_ref: str | None = None
+    checksum_sha256: str | None = None
+    licence: str
+    provenance: str
+    review_status: str
+    playback: str
+
+
+class LessonStepView(ContractModel):
+    step_id: str
+    kind: Literal["text", "media"]
+    index: int = Field(description="1-based.")
+    total: int
+    speak: str = Field(description="Short text for TTS.")
+    media_asset_ids: list[str] = Field(default_factory=list)
+
+
+class AssessmentSummary(ContractModel):
+    """Shape of a lesson's assessment. The answer key is never part of a public payload."""
+
+    kind: Literal["quiz", "scenario"]
+    quiz_id: str
+    version: int
+    question_count: int | None = Field(default=None, description="Null for a branching scenario.")
+    pass_mark: float
+
+
+class LessonView(ContractModel):
+    lesson_id: str
+    version: str
+    title: str
+    summary: str
+    level: Literal["beginner", "intermediate", "expert"]
+    intended_duration_seconds: int
+    machine_applicability: list[str]
+    prerequisites: list[str]
+    review_status: str = Field(description="demo_authored_unreviewed: written for the prototype, not reviewed.")
+    curriculum_version: str
+    steps: list[LessonStepView]
+    media: list[LessonMediaAsset]
+    assessment: AssessmentSummary
+
+
+class QuizChoice(ContractModel):
+    choice_id: str
+    text: str
+
+
+class QuizQuestionView(ContractModel):
+    attempt_id: str
+    lesson_id: str
+    kind: Literal["quiz", "scenario"]
+    question_id: str = Field(description="Quiz question or scenario node; answering needs this exact ID.")
+    index: int
+    total: int | None = None
+    prompt: str
+    choices: list[QuizChoice]
+
+
+class AnswerFeedback(ContractModel):
+    question_id: str
+    choice_id: str
+    correct: bool
+    correct_choice_id: str = Field(description="Shown only after the answer was saved.")
+    remediation: str | None = None
+    feedback: str | None = None
+
+
+class AttemptResult(ContractModel):
+    attempt_id: str
+    lesson_id: str
+    lesson_version: str
+    attempt_number: int
+    kind: Literal["quiz", "scenario"]
+    status: Literal["passed", "failed"]
+    correct: int
+    total: int
+    score: float
+    pass_mark: float
+    lesson_completed: bool = Field(description="True only when this pass completed the lesson.")
+    remediation: list[str] = Field(default_factory=list)
+
+
+class LessonProgressView(ContractModel):
+    lesson_id: str
+    title: str
+    level: str
+    lesson_version: str | None = None
+    status: Literal["not_started", "in_progress", "paused", "deferred", "awaiting_assessment", "completed"]
+    current_step: int | None = None
+    total_steps: int
+    steps_presented: int
+    attempts: int
+    best_score: float | None = None
+    last_attempt_status: str | None = None
+    assignment_id: str | None = None
+    assigned_for_episode_id: str | None = Field(default=None, description="Safety episode behind the assignment.")
+    deferred_until: datetime | None = None
+
+
+class LevelTransition(ContractModel):
+    level: str
+    previous_level: str | None = None
+    criteria_version: str
+    evidence: dict[str, Any]
+    achieved_at: datetime
+
+
+class LearnerView(ContractModel):
+    """The operator's learning record. `level` is a demo educational level under `criteria_version`; it is not an
+    equipment certification and is separate from `dataset_operator_skill`."""
+
+    learner_id: str
+    level: Literal["beginner", "intermediate", "expert"]
+    criteria_version: str
+    level_note: str
+    dataset_operator_skill: str | None = None
+    level_history: list[LevelTransition] = Field(default_factory=list)
+    lessons: list[LessonProgressView]
+    active_question: QuizQuestionView | None = None
+    recommended: list[str] = Field(default_factory=list)
+    curriculum_version: str
+
+
 class TrainingAssignment(ContractModel):
     assignment_id: str
     lesson_id: str
     lesson_title: str
     operator_id: str
-    status: Literal["assigned", "completed"] = Field(description="Reading or playback never sets completed.")
+    status: Literal["assigned", "completed"] = Field(description="Reading or playback never sets completed; only a "
+                                                                 "passed assessment of the lesson does (C4).")
     assigned_at: datetime
     source_episode_id: str | None = Field(default=None, description="Safety episode that triggered the assignment.")
+    completed_at: datetime | None = None
+    deferred_until: datetime | None = None
 
 
 OperatingState = Literal["off", "idle", "working", "travel"]
@@ -550,8 +691,8 @@ class PendingQuestion(ContractModel):
     """The one question Cocoon is waiting on. For incident_severity / incident_time the report is already saved as
     `draft_id` (nothing is lost if the operator never answers)."""
 
-    kind: Literal["incident_description", "incident_severity", "incident_time", "task_start_ack"]
-    for_action: Literal["log_incident", "start_task"]
+    kind: Literal["incident_description", "incident_severity", "incident_time", "task_start_ack", "quiz_answer"]
+    for_action: Literal["log_incident", "start_task", "answer_quiz"]
     asked_in_turn_id: str
     notify_supervisor: bool = Field(default=False, description="The report was asked to go to a supervisor too.")
     severity: Severity | None = None
@@ -562,6 +703,9 @@ class PendingQuestion(ContractModel):
     then_confirm: bool = Field(default=True, description="Answering also confirms the draft once nothing is missing "
                                                          "(false when the question came from an edit).")
     task_id: str | None = Field(default=None, description="task_start_ack: the task waiting for confirmation.")
+    attempt_id: str | None = Field(default=None, description="quiz_answer: the active attempt.")
+    question_id: str | None = Field(default=None, description="quiz_answer: the question/node being asked.")
+    choices: list[QuizChoice] = Field(default_factory=list, description="quiz_answer: the options (no answer key).")
 
 
 # --------------------------------------------------------------------------- turns
@@ -636,6 +780,29 @@ class IdleReasonRecordedAction(ContractModel):
     created: bool
 
 
+class LearningAction(ContractModel):
+    """One LMS outcome of a turn or tap (lesson step, assessment question, answer feedback, result, progress...)."""
+
+    type: Literal["learning"]
+    event: Literal["lesson_started", "lesson_resumed", "lesson_step", "lesson_paused", "lesson_deferred",
+                   "assessment_ready", "assessment_started", "assessment_resumed", "answer_recorded",
+                   "assessment_finished", "lesson_already_completed", "progress", "training_needs",
+                   "answer_unclear", "rejected"]
+    lesson_id: str | None = None
+    lesson_title: str | None = None
+    step: LessonStepView | None = None
+    media: list[LessonMediaAsset] = Field(default_factory=list)
+    question: QuizQuestionView | None = None
+    feedback: AnswerFeedback | None = None
+    result: AttemptResult | None = None
+    level_change: dict[str, Any] | None = None
+    progress: LessonProgressView | None = None
+    learner: LearnerView | None = None
+    deferred_until: str | None = None
+    attempt_number: int | None = None
+    reason: str | None = Field(default=None, description="Why nothing changed (rejected / answer_unclear).")
+
+
 class LessonContentAction(ContractModel):
     type: Literal["lesson_content"]
     lesson: Lesson
@@ -644,7 +811,7 @@ class LessonContentAction(ContractModel):
 
 class PendingCancelledAction(ContractModel):
     type: Literal["pending_cancelled"]
-    cancelled: Literal["log_incident", "start_task"] | None
+    cancelled: Literal["log_incident", "start_task", "answer_quiz"] | None
     kept_draft_number: int | None = Field(
         default=None, description="The report stays saved as this draft; cancelling a question never deletes it.")
 
@@ -745,6 +912,7 @@ ActionResult = Annotated[
         LessonContentAction,
         ConditionsReportAction,
         TaskEstimateAction,
+        LearningAction,
         EscalationRequestedAction,
         ClarificationAction,
         CapabilityUnavailableAction,
@@ -801,6 +969,8 @@ class SessionState(ContractModel):
     machine_state: MachineStateView | None = Field(default=None, description="Freshness of machine observations.")
     idle_reasons: list["IdleReason"] = Field(default_factory=list)
     shift_briefing: "ShiftBriefing | None" = None
+    learning: LearnerView | None = Field(
+        default=None, description="Learning record of a verified operator (null for legacy/unverified sessions).")
     rule_coverage: list["RuleCoverage"] = Field(
         default_factory=list, description="Whether each safety rule could evaluate the latest observation.")
     site_conditions: WorkingConditionsCheck | None = Field(
@@ -897,7 +1067,7 @@ class DeliveryRecord(ContractModel):
 class Announcement(ContractModel):
     event_id: str
     sequence: int
-    type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated"]
+    type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated", "coaching_prompt"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -967,7 +1137,9 @@ class ReadyResponse(ContractModel):
 
 # --------------------------------------------------------------------------- commands (taps and graph tools)
 
-CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss"]
+CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss",
+                      "lesson.start", "lesson.next", "lesson.pause", "lesson.resume", "lesson.defer", "quiz.start",
+                      "quiz.answer"]
 
 
 class CommandPayload(ContractModel):
@@ -984,6 +1156,12 @@ class CommandPayload(ContractModel):
                     "against the command's first receipt time and the trusted site time zone.")
     occurred_at: AwareDatetime | None = Field(
         default=None, description="incident.edit: an exact occurrence time picked on the device.")
+    lesson_id: StableId | None = Field(default=None, description="lesson.* and quiz.start commands.")
+    attempt_id: StableId | None = Field(default=None, description="quiz.answer: the active attempt.")
+    question_id: StableId | None = Field(default=None, description="quiz.answer: the question or scenario node shown.")
+    choice_id: StableId | None = Field(default=None, description="quiz.answer: the chosen choice/option.")
+    expected_step: int | None = Field(default=None, ge=1, description="lesson.next: the 1-based step on screen.")
+    defer_minutes: int | None = Field(default=None, ge=5, le=480, description="lesson.defer (default 30).")
     acknowledge_conditions: bool | None = Field(
         default=None, description="task.start: the operator confirms starting despite findings that need "
                                   "acknowledgement (never overrides a block).")
@@ -1006,6 +1184,11 @@ class SessionCommand(ContractModel):
             raise ValueError("task commands need payload.task_id")
         if self.kind.startswith("incident.") and not self.payload.incident_id:
             raise ValueError("incident commands need payload.incident_id")
+        if (self.kind.startswith("lesson.") or self.kind == "quiz.start") and not self.payload.lesson_id:
+            raise ValueError("lesson and quiz.start commands need payload.lesson_id")
+        if self.kind == "quiz.answer" and not (self.payload.attempt_id and self.payload.question_id
+                                               and self.payload.choice_id):
+            raise ValueError("quiz.answer needs payload.attempt_id, question_id and choice_id")
         return self
 
 
@@ -1023,6 +1206,7 @@ class SessionCommandResult(ContractModel):
     incident: Incident | None = None
     approval: ApprovalRequest | None = Field(
         default=None, description="Pending supervisor-review request created with a confirmation (not a notification).")
+    learning: LearningAction | None = Field(default=None, description="lesson.* / quiz.* outcome.")
     created_at: datetime
 
 

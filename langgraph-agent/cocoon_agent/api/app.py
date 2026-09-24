@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -22,6 +22,7 @@ from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
 from ..conditions import Conditions
 from ..estimation import load_estimator
+from ..lms import load_lms
 from ..planning import Planner
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
@@ -105,15 +106,19 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
                                                      live=live)
         conditions = Conditions(store, weather, load_conditions_policy(settings.conditions_policy_path))
         planner = Planner(store, conditions, load_estimator(settings.estimator_config_path), catalog)
+        lms = load_lms(settings.curriculum_path)
+        lms.seed(store)  # lesson rows and pinned lesson versions (idempotent; never overwrites authored content)
         refresher = None
         if weather.live is not None:  # bounded background refresh; lookups never wait for it
             refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
                                                               utcnow))
         log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
-            graph = build_graph(store, brain, conditions=conditions, planner=planner).compile(checkpointer=saver)
+            graph = build_graph(store, brain, conditions=conditions, planner=planner,
+                                lms=lms).compile(checkpointer=saver)
             app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
-                                              catalog_issue=catalog_issue, conditions=conditions, planner=planner)
+                                              catalog_issue=catalog_issue, conditions=conditions, planner=planner,
+                                              lms=lms)
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -304,6 +309,43 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
     async def get_command(session_id: str, command_id: str, service: Service, principal: Caller,
                           session: Annotated[s.Session, OwnedSession]) -> s.SessionCommandResult:
         return service.get_command(principal, session, command_id)
+
+    # ------------------------------------------------------------------ lessons and content (C4)
+
+    @app.get("/v1/sessions/{session_id}/lessons", response_model=s.LearnerView, tags=["learning"],
+             **v1({404: {"model": s.ErrorResponse, "description": "Unknown session, or not a catalog-verified "
+                                                                   "operator session (no learning record)"}},
+                  access=OwnedSession))
+    async def get_learning(session_id: str, service: Service,
+                           session: Annotated[s.Session, OwnedSession]) -> s.LearnerView:
+        view = service.learner(session)
+        if view is None:
+            raise ApiError(404, "not_found", "no learning record for this session")
+        return view
+
+    @app.get("/v1/sessions/{session_id}/lessons/{lesson_id}", response_model=s.LessonView, tags=["learning"],
+             **v1(access=OwnedSession))
+    async def get_lesson(session_id: str, lesson_id: str, service: Service,
+                         session: Annotated[s.Session, OwnedSession]) -> s.LessonView:
+        return service.lesson(session, lesson_id)
+
+    @app.get("/v1/content/{asset_id}", response_model=s.LessonMediaAsset, tags=["learning"], **v1())
+    async def get_content(asset_id: str, service: Service) -> s.LessonMediaAsset:
+        return service.media(asset_id)
+
+    @app.get("/v1/content/{asset_id}/file", tags=["learning"], response_class=FileResponse,
+             responses={200: {"description": "The catalog media file (e.g. video/mp4)",
+                              "content": {"video/mp4": {}}}, **ERRORS}, dependencies=[Depends(authenticate)])
+    async def get_content_file(asset_id: str, service: Service) -> FileResponse:
+        path, media_type, digest = service.media_file(asset_id)
+        return FileResponse(path, media_type=media_type, headers={"ETag": f'"{digest}"', "Cache-Control": "private"})
+
+    @app.get("/v1/content/{asset_id}/captions", tags=["learning"], response_class=FileResponse,
+             responses={200: {"description": "WebVTT captions", "content": {"text/vtt": {}}}, **ERRORS},
+             dependencies=[Depends(authenticate)])
+    async def get_content_captions(asset_id: str, service: Service) -> FileResponse:
+        path, media_type, _ = service.media_file(asset_id, captions=True)
+        return FileResponse(path, media_type=media_type)
 
     # ------------------------------------------------------------------ state
 

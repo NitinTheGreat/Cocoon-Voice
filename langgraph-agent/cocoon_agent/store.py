@@ -1091,7 +1091,9 @@ class Store:
                           in_task_check: "s.WorkingConditionsCheck | None" = None,
                           evaluate_in_tx: "Callable[[sqlite3.Connection, dict], tuple[list[RuleOutcome], dict]] | None"
                           = None,
-                          repeat_in_tx: "Callable[[sqlite3.Connection], list[RuleOutcome]] | None" = None) -> dict[str, Any]:
+                          repeat_in_tx: "Callable[[sqlite3.Connection], list[RuleOutcome]] | None" = None,
+                          coaching_in_tx: "Callable[[sqlite3.Connection], list[tuple[str, str]]] | None" = None,
+                          ) -> dict[str, Any]:
         """Record one sample and apply every rule's episode transition, the linked automatic draft and the
         announcement in ONE short transaction (no model call inside).
 
@@ -1210,6 +1212,9 @@ class Store:
                 changed = apply(extra) or changed
                 if repeat_in_tx is not None:  # counts the episodes this very sample may have opened
                     changed = apply(repeat_in_tx(c)) or changed
+                for assignment_id, speech in coaching_in_tx(c) if coaching_in_tx is not None else ():
+                    announced.append(self._coach(c, session_id, assignment_id, speech, now, announcement_ttl))
+                    changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -1296,6 +1301,20 @@ class Store:
                 event_id = self._announce(c, sid, active["alert_id"], "alert_cleared", "low", o.clear_speech, now, ttl)
             return [("cleared", active["alert_id"], event_id)]
         return []
+
+    @staticmethod
+    def _coach(c: sqlite3.Connection, session_id: str, assignment_id: str, speech: str, now: datetime,
+               ttl: timedelta) -> str:
+        """One low-priority coaching prompt per episode-linked assignment (never repeated after a restart)."""
+        seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
+                        (session_id,)).fetchone()[0]
+        event_id = f"ann_coach_{assignment_id}"
+        c.execute("INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id,"
+                  " created_at, expires_at) VALUES (?, ?, ?, 'coaching_prompt', 'low', ?, NULL, ?, ?)",
+                  (event_id, session_id, seq, speech, iso(now), iso(now + ttl)))
+        c.execute("UPDATE training_assignments SET coaching_prompted_at = ? WHERE assignment_id = ?",
+                  (iso(now), assignment_id))
+        return event_id
 
     @staticmethod
     def _announce(c: sqlite3.Connection, session_id: str, alert_id: str, kind: str, priority: str, speech: str,
@@ -1560,10 +1579,13 @@ def _resolve_zone(c: sqlite3.Connection, session: s.Session,
 
 
 def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:
+    keys = r.keys()
     return s.TrainingAssignment(
         assignment_id=r["assignment_id"], lesson_id=r["lesson_id"], lesson_title=r["lesson_title"],
         operator_id=r["operator_id"], status=r["status"], assigned_at=parse_dt(r["assigned_at"]),
-        source_episode_id=r["source_episode_id"] if "source_episode_id" in r.keys() else None,
+        source_episode_id=r["source_episode_id"] if "source_episode_id" in keys else None,
+        completed_at=parse_dt(r["completed_at"]) if "completed_at" in keys else None,
+        deferred_until=parse_dt(r["deferred_until"]) if "deferred_until" in keys else None,
     )
 
 

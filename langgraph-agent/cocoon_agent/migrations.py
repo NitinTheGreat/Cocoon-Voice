@@ -569,6 +569,92 @@ TASK_ESTIMATES: tuple[str, ...] = (
 )
 
 
+CORE_LMS: tuple[str, ...] = (
+    # One pinned copy of each lesson version (text steps, assessment and answer key), so progress and attempts keep
+    # the exact version they started on.
+    """CREATE TABLE lesson_versions (
+    lesson_id TEXT NOT NULL REFERENCES lessons(lesson_id),
+    version TEXT NOT NULL,
+    curriculum_version TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    review_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (lesson_id, version)
+)""",
+    # Per learner (catalog operator of a verified session) and lesson version.
+    """CREATE TABLE lesson_progress (
+    learner_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    lesson_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('in_progress', 'paused', 'deferred', 'awaiting_assessment', 'completed')),
+    current_step INTEGER NOT NULL DEFAULT 0,
+    steps_seen INTEGER NOT NULL DEFAULT 0,
+    deferred_until TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    last_session_id TEXT,
+    PRIMARY KEY (learner_id, lesson_id, lesson_version),
+    FOREIGN KEY (lesson_id, lesson_version) REFERENCES lesson_versions(lesson_id, version)
+)""",
+    """CREATE TABLE quiz_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    lesson_version TEXT NOT NULL,
+    quiz_id TEXT NOT NULL,
+    quiz_version INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('quiz', 'scenario')),
+    attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'passed', 'failed')),
+    current_index INTEGER NOT NULL DEFAULT 0,
+    current_node TEXT,
+    correct INTEGER NOT NULL DEFAULT 0,
+    answered INTEGER NOT NULL DEFAULT 0,
+    total INTEGER,
+    score REAL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    session_id TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (learner_id, lesson_id, lesson_version, attempt_number),
+    FOREIGN KEY (lesson_id, lesson_version) REFERENCES lesson_versions(lesson_id, version)
+)""",
+    "CREATE UNIQUE INDEX one_active_attempt_per_lesson ON quiz_attempts(learner_id, lesson_id) WHERE status = 'active'",
+    """CREATE TABLE quiz_answers (
+    attempt_id TEXT NOT NULL REFERENCES quiz_attempts(attempt_id),
+    question_id TEXT NOT NULL,
+    choice_id TEXT NOT NULL,
+    correct INTEGER NOT NULL CHECK (correct IN (0, 1)),
+    answered_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (attempt_id, question_id)
+)""",
+    """CREATE TABLE learner_levels (
+    learner_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL CHECK (level IN ('beginner', 'intermediate', 'expert')),
+    criteria_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)""",
+    """CREATE TABLE level_history (
+    entry_id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    previous_level TEXT,
+    criteria_version TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    achieved_at TEXT NOT NULL
+)""",
+    # Assignment lifecycle beyond "assigned": completion (by a passed assessment only), deferral and the one-time
+    # coaching prompt for an episode-linked lesson.
+    "ALTER TABLE training_assignments ADD COLUMN completed_at TEXT",
+    "ALTER TABLE training_assignments ADD COLUMN deferred_until TEXT",
+    "ALTER TABLE training_assignments ADD COLUMN coaching_prompted_at TEXT",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -588,6 +674,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(9, "site_conditions", SITE_CONDITIONS),
     Migration(10, "hazard_rules", HAZARD_RULES),
     Migration(11, "task_estimates", TASK_ESTIMATES),
+    Migration(12, "core_lms", CORE_LMS),
 )
 
 

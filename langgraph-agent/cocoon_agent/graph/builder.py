@@ -11,6 +11,7 @@ decision is saved once per turn; a retry follows the same plan without another m
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -19,7 +20,10 @@ from langgraph.graph.message import add_messages
 
 from ..api import schemas as s
 from ..incident_time import interpret
-from ..store import ConditionsGate, InvalidTransition, NotFound, OccurrenceTime, Store, iso, utcnow
+from .. import lms as lms_ops
+from ..store import (
+    ConditionsGate, InvalidInput, InvalidTransition, NotFound, OccurrenceTime, Store, VersionConflict, iso, utcnow,
+)
 from .brain import Brain, TurnContext
 
 
@@ -56,7 +60,7 @@ def _history(state: CocoonState) -> list[tuple[str, str]]:
     return out
 
 
-def build_graph(store: Store, brain: Brain, conditions=None, planner=None):
+def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=None):
     """`conditions` (cocoon_agent.conditions.Conditions) enables the working-conditions gate on task starts and the
     conditions intent; without it task starts are ungated (as before Batch C)."""
     def _session(state: CocoonState) -> s.Session:
@@ -74,6 +78,7 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None):
             latest_alert=s.Alert.model_validate(alert) if alert else None,
             lessons=store.list_lessons(),
             drafts=store.list_drafts(state["session_id"]),
+            learning=lms_ops.active_learning(store, _session(state)) if lms is not None else None,
         )
 
     def _command(state: CocoonState, kind: str, fingerprint: str, mutate) -> tuple[dict[str, Any], bool]:
@@ -374,6 +379,8 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None):
                     else [_draft_action(kind, saved, created=False)]}
         open_drafts = store.list_drafts(state["session_id"])
         options = [f"draft number {d.draft_number}" for d in open_drafts]
+        if intent == "affirm" and pending.get("kind") == "quiz_answer":
+            return {"actions": [_unclear(pending)]}
         if intent == "affirm" and pending.get("kind") == "task_start_ack":
             if not open_drafts:  # the only thing waiting is the start confirmation
                 return _start(state, _session(state), pending.get("task_id"), True)
@@ -472,10 +479,78 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None):
         action = s.CapabilityUnavailableAction(type="capability_unavailable", capability=capability)
         return {"actions": [action.model_dump(mode="json")]}
 
+    def _unclear(pending: dict[str, Any]) -> dict[str, Any]:
+        question = None
+        if pending.get("attempt_id"):
+            row = store._one("SELECT * FROM quiz_attempts WHERE attempt_id = ?", (pending["attempt_id"],))
+            if row is not None and lms is not None:
+                question = lms_ops.question_view(lms_ops.Lesson.model_validate_json(store._one(
+                    "SELECT content_json FROM lesson_versions WHERE lesson_id = ? AND version = ?",
+                    (row["lesson_id"], row["lesson_version"]))["content_json"]), row)
+        return s.LearningAction(type="learning", event="answer_unclear", question=question,
+                                reason="the answer did not match exactly one choice").model_dump(mode="json")
+
+    def _learning(state: CocoonState, kind: str, key: str, mutate) -> CocoonState:
+        """Run one LMS command through the turn's command log and keep the quiz question pending when one is asked."""
+        pending = state.get("pending")
+        keep = None if pending and pending.get("kind") == "quiz_answer" else pending
+        try:
+            result, _ = _command(state, kind, f"{kind}:{key}", mutate)
+        except (NotFound, InvalidTransition, InvalidInput, VersionConflict) as exc:
+            action = s.LearningAction(type="learning", event="rejected", reason=str(exc))
+            return {"actions": [action.model_dump(mode="json")], "pending": pending}
+        action = s.LearningAction.model_validate(result["learning"])
+        if action.question is not None and action.event != "assessment_finished":
+            q = action.question
+            keep = s.PendingQuestion(kind="quiz_answer", for_action="answer_quiz", asked_in_turn_id=state["turn_id"],
+                                     attempt_id=q.attempt_id, question_id=q.question_id,
+                                     choices=q.choices).model_dump()
+        return {"actions": [action.model_dump(mode="json")], "pending": keep}
+
     async def training(state: CocoonState) -> CocoonState:
         session = _session(state)
         r = state["route"]
+        act = r.get("training_action")
         lessons = store.list_lessons()
+        if lms is not None and act not in (None, "assign", "status", "read"):
+            if act in ("needs", "progress"):
+                learner = lms_ops.learner_view(store, lms, session, planner.catalog.operator_skill.get(
+                    session.operator_id) if planner is not None and planner.catalog else None)
+                if learner is None:
+                    action = s.LearningAction(type="learning", event="rejected",
+                                              reason="lessons need a verified operator session")
+                else:
+                    action = s.LearningAction(type="learning", event="training_needs" if act == "needs" else "progress",
+                                              learner=learner)
+                return {"actions": [action.model_dump(mode="json")]}
+            if act == "answer":
+                pending = state.get("pending") or {}
+                if pending.get("kind") != "quiz_answer":
+                    action = s.LearningAction(type="learning", event="rejected", reason="no quiz question is waiting")
+                    return {"actions": [action.model_dump(mode="json")]}
+                if not r.get("quiz_choice_id"):
+                    return {"actions": [_unclear(pending)]}
+                return _learning(state, "quiz.answer", pending["question_id"], lms_ops.answer(
+                    lms, session, pending["attempt_id"], pending["question_id"], r["quiz_choice_id"], "voice"))
+            active = lms_ops.active_learning(store, session) or {}
+            lesson_id = r.get("lesson_id") or active.get("lesson_id")
+            if act == "start" and lesson_id is None:  # "start my lesson": an outstanding assignment, else a suggestion
+                learner = lms_ops.learner_view(store, lms, session, None)
+                lesson_id = learner.recommended[0] if learner and learner.recommended else None
+            if lesson_id is None:
+                action = s.LearningAction(type="learning", event="rejected", reason="no lesson is in progress")
+                return {"actions": [action.model_dump(mode="json")]}
+            if act == "start":
+                machine = planner.catalog.machines.get(session.machine_id) if planner and planner.catalog else None
+                return _learning(state, "lesson.start", lesson_id, lms_ops.start_lesson(
+                    lms, session, lesson_id, machine.category if machine else None))
+            if act == "quiz":
+                return _learning(state, "quiz.start", lesson_id, lms_ops.start_quiz(lms, session, lesson_id))
+            until = None
+            if act == "defer":
+                until = (store.data_clock(session.session_id) or utcnow()) + timedelta(minutes=30)
+            return _learning(state, f"lesson.{act}", lesson_id, lms_ops.lesson_step(lms, session, lesson_id, act,
+                                                                                     None, until))
         if r.get("training_action") == "read":
             assignments = store.list_assignments(session)
             readable = {l.lesson_id for l in lessons if l.content_text}

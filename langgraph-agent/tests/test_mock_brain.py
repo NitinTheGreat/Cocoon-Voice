@@ -30,7 +30,7 @@ async def test_pending_answer_and_cancel():
 
 @pytest.mark.parametrize("text,lesson,action", [
     ("assign me lesson two", "L2", "assign"),
-    ("start the seatbelt training", "L1", "assign"),
+    ("start the seatbelt training", "L1", "start"),  # C4: "start" opens the lesson; "assign" still assigns
     ("what training do I have", None, "status"),
 ])
 async def test_mock_training(text, lesson, action):

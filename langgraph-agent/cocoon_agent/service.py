@@ -29,6 +29,7 @@ from .graph.builder import turn_input
 from .rules import SafetyPolicy, load_policy
 from .conditions import Conditions, conditions_sentence
 from .hazards import HazardEngine, load_hazard_policy
+from .lms import coaching_prompts
 from .store import (
     ConditionsGate, Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict,
     utcnow,
@@ -66,7 +67,7 @@ def thread_config(session_id: str) -> RunnableConfig:
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
                  bindings: SessionBindings | None = None, catalog_issue: str | None = None,
-                 conditions: Conditions | None = None, planner=None):
+                 conditions: Conditions | None = None, planner=None, lms=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -77,6 +78,7 @@ class CocoonService:
         self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
         self.conditions = conditions
         self.planner = planner  # cocoon_agent.planning.Planner (conditions + saved estimates per task)
+        self.lms = lms  # cocoon_agent.lms.LMS (curriculum; None = no LMS)
         self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
@@ -188,7 +190,9 @@ class CocoonService:
         fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
                                     "payload": _without_unset(req.payload.model_dump(mode="json"), ADDED_PAYLOAD),
                                     "expected_version": req.expected_version})
-        if req.kind.startswith("task."):
+        if req.kind.startswith(("lesson.", "quiz.")):
+            mutate, noun = self._lms_mutation(session, req), "lesson"
+        elif req.kind.startswith("task."):
             gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
                 else None
             mutate = Store.task_transition(
@@ -209,6 +213,50 @@ class CocoonService:
             session=session, mutate=mutate, noun=noun)
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
                                       status="completed", duplicate=duplicate)
+
+    def _lms_mutation(self, session: s.Session, req: s.SessionCommand):
+        from . import lms as lms_ops
+
+        if self.lms is None:
+            raise ApiError(404, "not_found", "no curriculum is loaded")
+        p = req.payload
+        machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+        if req.kind == "lesson.start":
+            return lms_ops.start_lesson(self.lms, session, p.lesson_id, machine.category if machine else None)
+        if req.kind == "quiz.start":
+            return lms_ops.start_quiz(self.lms, session, p.lesson_id)
+        if req.kind == "quiz.answer":
+            return lms_ops.answer(self.lms, session, p.attempt_id, p.question_id, p.choice_id, "tap")
+        action = req.kind.split(".", 1)[1]
+        until = None
+        if action == "defer":
+            until = (self.store.data_clock(session.session_id) or utcnow()) + timedelta(minutes=p.defer_minutes or 30)
+        return lms_ops.lesson_step(self.lms, session, p.lesson_id, action, p.expected_step, until)
+
+    def learner(self, session: s.Session) -> s.LearnerView | None:
+        from .lms import learner_view
+
+        if self.lms is None:
+            return None
+        return learner_view(self.store, self.lms, session,
+                            self.catalog.operator_skill.get(session.operator_id) if self.catalog else None)
+
+    def lesson(self, session: s.Session, lesson_id: str) -> s.LessonView:
+        if self.lms is None or lesson_id not in self.lms.lessons:
+            raise ApiError(404, "not_found", "lesson not found")
+        return self.lms.lesson_view(self.lms.lessons[lesson_id])
+
+    def media(self, asset_id: str) -> s.LessonMediaAsset:
+        if self.lms is None or asset_id not in self.lms.media:
+            raise ApiError(404, "not_found", "content not found")
+        return self.lms.media_view(asset_id)
+
+    def media_file(self, asset_id: str, captions: bool = False):
+        view = self.media(asset_id)
+        path = self.lms.media_path(asset_id, captions=captions)
+        if view.availability != "available" or path is None or not path.is_file():
+            raise ApiError(404, "not_found", "content file not available")
+        return path, ("text/vtt" if captions else view.mime_type), view.checksum_sha256
 
     def run_domain_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
                            mutate, noun: str) -> tuple[dict, bool]:
@@ -452,6 +500,7 @@ class CocoonService:
             machine_state=self._machine_state(session_id),
             idle_reasons=self.store.list_idle_reasons(session_id),
             rule_coverage=self.store.rule_coverage(session_id),
+            learning=self.learner(session),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
         )
 
@@ -512,6 +561,7 @@ class CocoonService:
                 outcomes=outcomes, in_task_check=in_task_check,
                 evaluate_in_tx=lambda c, state: self.hazards.evaluate(c, session, req, category, task, state),
                 repeat_in_tx=lambda c: self.hazards.repeat_outcomes(c, session, req),
+                coaching_in_tx=lambda c: coaching_prompts(c, session, req),
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
                 log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,

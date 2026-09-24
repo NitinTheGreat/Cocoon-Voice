@@ -82,8 +82,12 @@ class RouteDecision(BaseModel):
         default=False, description="The operator explicitly confirms starting despite the working-condition findings "
                                    "(e.g. 'start anyway').")
     idle_reason: str | None = Field(default=None, description="The operator's reason for idling, in their words.")
-    training_action: Literal["assign", "status", "read"] | None = None
-    lesson_id: Literal["L1", "L2", "L3"] | None = None
+    training_action: Literal["assign", "status", "read", "needs", "start", "next", "pause", "resume", "defer",
+                             "progress", "quiz", "answer"] | None = None
+    lesson_id: Literal["L1", "L2", "L3", "L4", "L5", "L6", "L7", "S1"] | None = None
+    quiz_choice_id: str | None = Field(
+        default=None, description="training/answer: the choice_id of the pending quiz question the operator chose; "
+                                  "null if unclear (never guess).")
 
     @model_validator(mode="after")
     def _branch_follows_intent(self) -> "RouteDecision":
@@ -106,6 +110,7 @@ class TurnContext:
     latest_alert: Alert | None = None
     lessons: list[Lesson] = field(default_factory=list)
     drafts: list[IncidentDraft] = field(default_factory=list)
+    learning: dict[str, Any] | None = None  # the operator's active lesson (id, status), no answer keys
 
 
 class LLMUnavailable(Exception):
@@ -168,7 +173,7 @@ _HINTS = [("weather", re.compile(r"\b(weather|wind|gust|rain|visibility|conditio
           ("slope", re.compile(r"\b(slope|tilt|steep|incline|grade|roll)\b")),
           ("fuel", re.compile(r"\bfuel\b")),
           ("repeat", re.compile(r"\b(repeat|again and again|supervisor)\b"))]
-_TRAINING = re.compile(r"\b(training|lesson|lessons|course)\b")
+_TRAINING = re.compile(r"\b(training|lesson|lessons|course|quiz|practice scenario)\b")
 _READ = re.compile(r"\b(read|open|play|tell me|what'?s in|go through)\b")
 _IDLE_REASON = re.compile(r"\b(waiting (for|on)|i'?m waiting|on standby|stuck behind|queue for|queued)\b")
 _HINT_BELT = re.compile(r"\bseat ?belt|\bbelt\b")
@@ -178,12 +183,49 @@ _LIST_TASKS = re.compile(r"\b(all|list|today'?s|my) (tasks|jobs)\b|\bwhat are my
 _START_TASK = re.compile(r"\b(start|begin|starting|beginning)\b.*\b(task|job|next one|it)\b")
 _COMPLETE_TASK = re.compile(r"\b(finished|finish|completed|complete|done with|done)\b.*\b(task|job|it|that)\b"
                             r"|\b(i'?m|i am) (done|finished)\b|\btask (is )?(done|complete|finished)\b")
-_ASSIGN = re.compile(r"\b(assign|start|give me|sign me up|enrol|enroll|begin|take)\b")
+_ASSIGN = re.compile(r"\b(assign|give me|sign me up|enrol|enroll)\b")
 _LESSON_WORDS = {
     "L1": re.compile(r"\b(lesson (1|one)|seat ?belt|rops|rollover)\b"),
     "L2": re.compile(r"\b(lesson (2|two)|walk ?around|pre-?start|inspection)\b"),
     "L3": re.compile(r"\b(lesson (3|three)|hydraulic|leak)\b"),
+    "L4": re.compile(r"\b(lesson (4|four)|idl(e|ing)|fuel)\b"),
+    "L5": re.compile(r"\b(lesson (5|five)|working[- ]conditions?|weather)\b"),
+    "L6": re.compile(r"\b(lesson (6|six)|blind spots?|proximity|people near)\b"),
+    "L7": re.compile(r"\b(lesson (7|seven)|smooth|slopes?|sudden)\b"),
+    "S1": re.compile(r"\b(practice|scenario)\b"),
 }
+_LESSON_START = re.compile(r"\b(start|begin|open|do)\b.*\b(lesson|training|course|practice|scenario)\b")
+_QUIZ = re.compile(r"\b(quiz( me)?|test me|take the (test|quiz)|retake|assessment)\b")
+_PROGRESS = re.compile(r"\bhow am i (doing|progressing|getting on)\b|\bmy (progress|level)\b|\bwhat level\b")
+_NEEDS = re.compile(r"\bwhat (training|lessons?) do i need\b|\bwhat should i (learn|study)\b|"
+                    r"\bwhat training should\b")
+_NEXT = re.compile(r"^(next|continue|go on|carry on|keep going|next step|next one|resume)\b|"
+                   r"\b(continue|resume) (my|the) lesson\b")
+_PAUSE = re.compile(r"^(pause|hold on the lesson)\b|\bpause (my|the) lesson\b")
+_DEFER = re.compile(r"\b(later|not now|remind me later|after (this|my) task)\b")
+_LETTER = re.compile(r"^(?:(?:option|answer|choice|it'?s|it is|i think|i'?ll go with|go with)\s+)?([a-e])\b[.!]?$")
+_ORDINAL = {"first": "a", "second": "b", "third": "c", "fourth": "d"}
+_STOP = {"with", "that", "this", "your", "have", "when", "then", "they", "them", "would", "should", "think",
+         "answer", "option", "choice", "the", "and", "only", "first", "before", "after", "whenever"}
+
+
+def match_choice(text: str, choices: list[dict[str, Any]]) -> str | None:
+    """Map a spoken answer to exactly one choice (letter, ordinal or distinctive words); None when unclear."""
+    t = text.lower().strip()
+    ids = [c["choice_id"] for c in choices]
+    m = _LETTER.match(t)
+    if m and m.group(1) in ids:
+        return m.group(1)
+    for word, letter in _ORDINAL.items():
+        if re.search(rf"\b(the )?{word}( one| option)?\b", t) and letter in ids and len(t.split()) <= 4:
+            return letter
+    said = {w for w in re.findall(r"[a-z]+", t) if len(w) > 3 and w not in _STOP}
+    scores = [(len(said & ({w for w in re.findall(r"[a-z]+", c["text"].lower()) if len(w) > 3} - _STOP)),
+               c["choice_id"]) for c in choices]
+    scores.sort(reverse=True)
+    if scores and scores[0][0] >= 1 and (len(scores) == 1 or scores[0][0] > scores[1][0]):
+        return scores[0][1]
+    return None
 _FILLER = re.compile(r"^(?:[\s:,\-]+|(?:an?|that|about|for|of|where|incident|please|it)\b)+", re.I)
 _SEVERITY_UNKNOWN_PHRASE = re.compile(r"[\s,]*\b(?:severity (?:is )?unknown|unknown severity|not sure how (?:bad|serious)"
                                       r"(?: it is)?|don'?t know how (?:bad|serious)(?: it is)?)\b", re.I)
@@ -251,6 +293,13 @@ class MockBrain:
                 return RouteDecision(intent="start_task", acknowledge_conditions=True)
             if _DECLINE.match(t):
                 return RouteDecision(intent="cancel_pending")
+        if pending_kind == "quiz_answer" and not _EXPLAIN.search(t) and not _INCIDENT.search(t):
+            choice = match_choice(t, ctx.pending.get("choices") or [])
+            if choice is not None or not (_TRAINING.search(t) or _NEXT_TASK.search(t) or _AFFIRM.match(t)):
+                return RouteDecision(intent="training", training_action="answer", quiz_choice_id=choice)
+        training = self._training(t, ctx)
+        if training is not None:
+            return training
         if _EXPLAIN.search(t):
             hint = "seatbelt" if _HINT_BELT.search(t) else ("idle" if _HINT_IDLE.search(t) else None)
             hint = hint or next((h for h, rx in _HINTS if rx.search(t)), None)
@@ -300,6 +349,28 @@ class MockBrain:
         if ctx.pending:
             return _mock_pending_answer(ctx)
         return RouteDecision(intent="smalltalk")
+
+    @staticmethod
+    def _training(t: str, ctx: TurnContext) -> RouteDecision | None:
+        """C4 lesson flow. Short commands ("next", "pause", "later") only count while a lesson is active."""
+        lesson = next((lid for lid, rx in _LESSON_WORDS.items() if rx.search(t)), None)
+        active = ctx.learning or {}
+        if _NEEDS.search(t):
+            return RouteDecision(intent="training", training_action="needs")
+        if _PROGRESS.search(t):
+            return RouteDecision(intent="training", training_action="progress")
+        if _QUIZ.search(t) and not _EXPLAIN.search(t):
+            return RouteDecision(intent="training", training_action="quiz", lesson_id=lesson)
+        if _LESSON_START.search(t) and not _ASSIGN.search(t):
+            return RouteDecision(intent="training", training_action="start", lesson_id=lesson)
+        if active:
+            if _PAUSE.search(t):
+                return RouteDecision(intent="training", training_action="pause", lesson_id=lesson)
+            if _NEXT.search(t):
+                return RouteDecision(intent="training", training_action="next", lesson_id=lesson)
+            if _DEFER.search(t) and len(t.split()) <= 6:
+                return RouteDecision(intent="training", training_action="defer", lesson_id=lesson)
+        return None
 
     async def compose(self, ctx: TurnContext, actions: list[dict[str, Any]]) -> str:
         return template_speech(actions)
@@ -406,6 +477,8 @@ def _template(a: dict[str, Any]) -> str:
         return "Okay, I've dropped that." if a["cancelled"] else "There was nothing to cancel."
     if kind == "assigned_tasks":
         return _tasks_speech(a)
+    if kind == "learning":
+        return _learning_speech(a)
     if kind == "task_estimate":
         est, task = a.get("estimate"), a.get("task")
         if not task:
@@ -449,6 +522,80 @@ def _template(a: dict[str, Any]) -> str:
                     else "You don't have a task in progress to complete.")
         return f"I can't do that: the task is {a.get('current_status') or 'in another state'}."
     raise ValueError(f"unknown action type {kind}")
+
+
+def _ask_question(q: dict[str, Any]) -> str:
+    lead = f"Question {q['index']} of {q['total']}: " if q.get("total") else ""
+    options = "; ".join(f"{c['choice_id'].upper()}: {c['text']}" for c in q["choices"])
+    letters = ", ".join(c["choice_id"].upper() for c in q["choices"][:-1]) + f" or {q['choices'][-1]['choice_id'].upper()}"
+    return f"{lead}{q['prompt']} {options}. Say {letters}."
+
+
+def _learning_speech(a: dict[str, Any]) -> str:
+    event, title = a["event"], a.get("lesson_title") or "the lesson"
+    if event == "rejected":
+        return f"I can't do that: {a.get('reason') or 'it is not available'}."
+    if event == "answer_unclear":
+        return "I didn't catch which answer you chose. " + (_ask_question(a["question"]) if a.get("question") else "")
+    if event in ("lesson_started", "lesson_resumed", "lesson_step"):
+        step = a["step"]
+        lead = {"lesson_started": f"Starting {title}. ", "lesson_resumed": f"Back to {title}. "}.get(event, "")
+        tail = ("That's the last step. Say quiz me to take the short check." if step["index"] == step["total"]
+                else "Say next to continue.")
+        media = " The captioned video is on your screen." if a.get("media") else ""
+        return f"{lead}Step {step['index']} of {step['total']}: {step['speak']}{media} {tail}"
+    if event == "lesson_paused":
+        return f"Paused {title}. Say continue when you're ready."
+    if event == "lesson_deferred":
+        return f"Okay, I'll hold {title} for later."
+    if event == "assessment_ready":
+        return f"You've been through all of {title}. Say quiz me to take the short check; that's what completes it."
+    if event == "lesson_already_completed":
+        return f"You've already completed {title}. Say retake the quiz if you want to practise."
+    if event in ("assessment_started", "assessment_resumed"):
+        q = a["question"]
+        lead = "Here's the practice scenario. " if q["kind"] == "scenario" else f"Quiz for {title}. "
+        return lead + _ask_question(q)
+    if event == "answer_recorded":
+        fb = a["feedback"]
+        said = "Correct." if fb["correct"] else f"Not quite. {fb.get('remediation') or fb.get('feedback') or ''}".strip()
+        if fb.get("feedback") and fb["correct"]:
+            said = fb["feedback"]
+        return f"{said} {_ask_question(a['question'])}"
+    if event == "assessment_finished":
+        r, fb = a["result"], a.get("feedback") or {}
+        first = ("Correct." if fb.get("correct") else "Not quite.") if fb else ""
+        if r["kind"] == "scenario":
+            first = fb.get("feedback") or first
+        if r["status"] == "passed":
+            text = f"{first} You scored {r['correct']} of {r['total']}: passed."
+            text += f" {title} is complete." if r["lesson_completed"] else " Practice attempt saved."
+            if a.get("level_change"):
+                text += (f" You've reached {a['level_change']['to']} level; that's a learning level in this demo, "
+                         "not a certification.")
+            return text
+        fix = " ".join(r.get("remediation") or [])
+        return (f"{first} You scored {r['correct']} of {r['total']}, which isn't a pass yet. {fix} "
+                "Say retake the quiz when you're ready.").replace("  ", " ")
+    learner = a.get("learner") or {}
+    lessons = learner.get("lessons", [])
+    titles = {x["lesson_id"]: x["title"] for x in lessons}
+    if event == "training_needs":
+        assigned = [x for x in lessons if x.get("assignment_id") and x["status"] != "completed"]
+        parts = [f"{x['title']}" + (" (after a safety warning)" if x.get("assigned_for_episode_id") else "")
+                 for x in assigned]
+        text = f"You have {len(parts)} lesson{'s' if len(parts) != 1 else ''} to do: {', '.join(parts)}." if parts \
+            else "You have no lessons assigned right now."
+        rec = [titles[lid] for lid in learner.get("recommended", []) if lid in titles and
+               not any(x["lesson_id"] == lid for x in assigned)]
+        return text + (f" I'd suggest next: {rec[0]}." if rec else "")
+    done = [x["title"] for x in lessons if x["status"] == "completed"]
+    going = [x["title"] for x in lessons if x["status"] in ("in_progress", "paused", "deferred", "awaiting_assessment")]
+    text = f"You're at {learner.get('level', 'beginner')} level, a learning level in this demo, not a certification."
+    text += f" Completed: {', '.join(done)}." if done else " No lessons completed yet."
+    if going:
+        text += f" In progress: {', '.join(going)}."
+    return text
 
 
 def _question_speech(a: dict[str, Any]) -> str:
@@ -510,7 +657,7 @@ Choose exactly one intent:
 - confirm_draft / dismiss_draft: the operator confirms or discards a draft report. Set incident_number if they name one.
 - edit_draft: the operator changes a draft report's severity, location or time ("set draft 2 to high", "it happened at 9:30"). Set incident_number if named and fill only the fields they changed (incident_severity, severity_unknown, incident_location, incident_time_expression).
 - affirm: a bare yes/okay/go ahead. Never guess what it confirms.
-- training: the operator asks about training or lessons. training_action is "assign" when they want a lesson assigned or started, "read" when they want to hear or read a lesson's content, "status" when they ask what is assigned. Set lesson_id only if a catalog lesson is identifiable.
+- training: the operator asks about training or lessons. training_action: "assign" (assign a lesson), "status" (what is assigned), "read" (hear a lesson's text), "needs" (what training they need), "start" (start or open a lesson), "next" (continue to the next step or resume), "pause", "defer" (do it later), "quiz" (take or retake the lesson's quiz or practice scenario), "progress" (their progress or level), "answer" (they answer the pending quiz question: set quiz_choice_id to the matching choice_id from the pending question's choices, or leave it null if unclear; never pick for them). Set lesson_id only if a catalog lesson is identifiable.
 - explain_alert: the operator asks why Cocoon warned them or about the latest alert, including a bare "why?" right after a warning. Set alert_hint (seatbelt, idle, weather, proximity, motion, slope, fuel or repeat) only if they said which warning.
 - record_idle_reason: the operator explains why they are idling or waiting (for example "I'm waiting for a truck"). Put their words in idle_reason.
 - answer_pending: a pending question exists and this utterance answers it. For pending kind incident_description put the answer in incident_description; for incident_severity fill incident_severity with the level they said, or severity_unknown if they do not know; for incident_time copy their time phrase into incident_time_expression, or set time_unknown if they do not know.

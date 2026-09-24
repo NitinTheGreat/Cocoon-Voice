@@ -131,7 +131,8 @@ def test_every_catalog_machine_can_be_selected_and_stays_isolated(tmp_path, monk
             state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
             assert len(state["incident_drafts"]) == 1 and state["incident_drafts"][0]["machine_id"] == m
             events = c.get(f"/v1/sessions/{sid}/events?after=0", headers=AUTH).json()["events"]
-            assert [e["type"] for e in events] == ["shift_briefing", "alert_started", "alert_cleared"]
+            # C4: once the warning has cleared with the machine idle, the episode-linked lesson is offered once
+            assert [e["type"] for e in events] == ["shift_briefing", "alert_started", "alert_cleared", "coaching_prompt"]
         # freshness uses the receipt clock: no new sample for longer than the limit -> stale, never "healthy"
         later = datetime.now(timezone.utc) + timedelta(seconds=settings.telemetry_stale_seconds + 5)
         monkeypatch.setattr(service_module, "utcnow", lambda: later)

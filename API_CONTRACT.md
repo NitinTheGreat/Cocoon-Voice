@@ -171,6 +171,12 @@ Valid new-session request against the development catalog:
 - `AssignedTask.estimate` (`TaskDurationEstimate`) is the saved estimate for the task's current inputs; `start_estimate` is the one in force when the task started and never changes afterwards; `elapsed_minutes` is wall-clock time since the start. `method`: `productivity_with_factors`, `provided_estimate_adjusted`, `typical_duration_fallback`, `not_estimable`. `calibration_status: uncalibrated_configured_prior` means nothing was fitted on historical outcomes.
 - Runtime component names `WorkingConditionsCheck`, `TaskDurationEstimate` and `TaskDurationFactor` are deliberately distinct from the proposed contract's `ConditionCheck`, `DurationEstimate` and `DurationFactor`, which stay as specified in `contracts/proposed/`.
 
+### Learning (C4)
+
+- `POST .../commands` accepts `lesson.start`, `lesson.next` (`expected_step` optional), `lesson.pause`, `lesson.resume`, `lesson.defer` (`defer_minutes`), `quiz.start` and `quiz.answer` (`attempt_id`, `question_id`, `choice_id`); the result's `learning` carries the step, question (never the answer key), feedback (the correct choice only after the answer is saved), result, progress and any level change. A stale step or question is 409 `version_conflict`; an unknown choice 422; missing prerequisites or unfinished steps 409 `invalid_transition`.
+- Completion requires every step presented plus a passed assessment. Media metadata or a media fetch never counts. Levels are demo learning levels with saved evidence, never certification.
+- Media: `GET /v1/content/{asset_id}` gives metadata; `content_ref` (`/file`) and `captions_ref` (`/captions`) are fetched with the same bearer token. Only catalog IDs resolve, and only when the file matches its catalog checksum.
+
 ### Example requests
 
 Bash:
@@ -238,7 +244,11 @@ Example bodies are in `contracts/examples/`, including a completed turn, a turn 
 | `GET /v1/approvals` | proposed | I13 | supervisor, operator | Authorised, paged proposal list | — |
 | `GET /v1/approvals/{approval_id}` | proposed | I13 | supervisor, operator | Proposal, decision and separate application outcome | — |
 | `POST /v1/approvals/{approval_id}/decision` | proposed | I13 | supervisor | Approve/reject with `decision_id`, version and payload hash | Approval is reported separately from execution. |
-| `GET /v1/content/{asset_id}` | proposed | I12A | operator, voice | Approved lesson text/media metadata | Not an arbitrary URL fetcher. |
+| `GET /v1/content/{asset_id}` | implemented | C4 | operator, voice | Catalog lesson media metadata (`LessonMediaAsset`) | Not an arbitrary URL fetcher: only catalog asset IDs. Target I12A: the fuller proposed `ContentAsset` shape. |
+| `GET /v1/content/{asset_id}/file` | implemented | C4 | operator, voice | The media file (e.g. `video/mp4`), resolved by catalog ID inside the content root, served only when its bytes match the catalog checksum | A fetch is not playback and never completes a lesson. |
+| `GET /v1/content/{asset_id}/captions` | implemented | C4 | operator, voice | WebVTT captions of a catalog video | |
+| `GET /v1/sessions/{session_id}/lessons` | implemented | C4 | operator, voice | Learning record of the verified operator: level (not a certification), per-lesson progress, active question | 404 for legacy/unverified sessions. No answer keys. |
+| `GET /v1/sessions/{session_id}/lessons/{lesson_id}` | implemented | C4 | operator, voice | One lesson version: speakable steps, media metadata, assessment shape | No answer keys. |
 
 The plan's "twelve session/turn/event routes" are the **seven implemented JSON routes plus the five proposed streaming/control routes**. Only the seven are served today. A `POST .../turns/stream` request to the current app returns 405 because the path matches the registered `GET /v1/sessions/{session_id}/turns/{turn_id}` template with `turn_id=stream`. No streaming handler exists.
 

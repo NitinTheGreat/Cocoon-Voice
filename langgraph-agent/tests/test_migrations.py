@@ -78,7 +78,7 @@ ADDED_COLUMNS = {
                "subject_key", "level", "last_seen_at", "cleared_reason"),
     "telemetry_events": ("provenance_json",),
     "lessons": ("version", "content_text", "content_status"),
-    "training_assignments": ("source_episode_id",),
+    "training_assignments": ("source_episode_id", "completed_at", "deferred_until", "coaching_prompted_at"),
 }
 
 

@@ -2873,16 +2873,10 @@
     "/v1/content/{asset_id}": {
       "get": {
         "tags": [
-          "target"
+          "learning"
         ],
-        "summary": "Approved lesson text/media metadata (not an arbitrary URL fetcher)",
-        "operationId": "get_content_asset_id_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I12A",
-        "x-callers": [
-          "operator",
-          "voice_service"
-        ],
+        "summary": "Get Content",
+        "operationId": "get_content_v1_content__asset_id__get",
         "security": [
           {
             "HTTPBearer": []
@@ -2895,52 +2889,508 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Asset Id"
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "Asset metadata",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ContentAsset"
+                  "$ref": "#/components/schemas/LessonMediaAsset"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated principal lacks scope (`forbidden`, `consent_required`)",
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Unknown or out-of-scope resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "C4",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ],
+        "x-target-changes": [
+          {
+            "stage": "I12A",
+            "change": "Full ContentAsset shape (text/image kinds, not_yet_supplied availability, structured provenance).",
+            "schema": "#/components/schemas/ContentAsset"
+          }
+        ]
+      }
+    },
+    "/v1/content/{asset_id}/file": {
+      "get": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Get Content File",
+        "operationId": "get_content_file_v1_content__asset_id__file_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog media file (e.g. video/mp4)",
+            "content": {
+              "video/mp4": {}
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "C4",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ]
+      }
+    },
+    "/v1/content/{asset_id}/captions": {
+      "get": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Get Content Captions",
+        "operationId": "get_content_captions_v1_content__asset_id__captions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "WebVTT captions",
+            "content": {
+              "text/vtt": {}
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "C4",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/lessons": {
+      "get": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Get Learning",
+        "operationId": "get_learning_v1_sessions__session_id__lessons_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearnerView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session, or not a catalog-verified operator session (no learning record)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "C4",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/lessons/{lesson_id}": {
+      "get": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Get Lesson",
+        "operationId": "get_lesson_v1_sessions__session_id__lessons__lesson_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "lesson_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Lesson Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LessonView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "C4",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ]
       }
     }
   },
@@ -3664,7 +4114,8 @@
               "alert_started",
               "alert_cleared",
               "shift_briefing",
-              "alert_escalated"
+              "alert_escalated",
+              "coaching_prompt"
             ],
             "title": "Type"
           },
@@ -4202,6 +4653,58 @@
         "title": "AnnouncementTarget",
         "type": "object"
       },
+      "AnswerFeedback": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id"
+          },
+          "choice_id": {
+            "type": "string",
+            "title": "Choice Id"
+          },
+          "correct": {
+            "type": "boolean",
+            "title": "Correct"
+          },
+          "correct_choice_id": {
+            "type": "string",
+            "title": "Correct Choice Id",
+            "description": "Shown only after the answer was saved."
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "question_id",
+          "choice_id",
+          "correct",
+          "correct_choice_id"
+        ],
+        "title": "AnswerFeedback"
+      },
       "ApplicationOutcome": {
         "additionalProperties": false,
         "properties": {
@@ -4612,6 +5115,52 @@
         "title": "ApprovalStatusView",
         "type": "object"
       },
+      "AssessmentSummary": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "quiz",
+              "scenario"
+            ],
+            "title": "Kind"
+          },
+          "quiz_id": {
+            "type": "string",
+            "title": "Quiz Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "question_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Count",
+            "description": "Null for a branching scenario."
+          },
+          "pass_mark": {
+            "type": "number",
+            "title": "Pass Mark"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "quiz_id",
+          "version",
+          "pass_mark"
+        ],
+        "title": "AssessmentSummary",
+        "description": "Shape of a lesson's assessment. The answer key is never part of a public payload."
+      },
       "AssignedTask": {
         "properties": {
           "task_id": {
@@ -4866,6 +5415,86 @@
         ],
         "title": "AssignedTasksAction",
         "description": "Read of the shift's assigned tasks (next task or full list)."
+      },
+      "AttemptResult": {
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "title": "Attempt Id"
+          },
+          "lesson_id": {
+            "type": "string",
+            "title": "Lesson Id"
+          },
+          "lesson_version": {
+            "type": "string",
+            "title": "Lesson Version"
+          },
+          "attempt_number": {
+            "type": "integer",
+            "title": "Attempt Number"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "quiz",
+              "scenario"
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "correct": {
+            "type": "integer",
+            "title": "Correct"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "pass_mark": {
+            "type": "number",
+            "title": "Pass Mark"
+          },
+          "lesson_completed": {
+            "type": "boolean",
+            "title": "Lesson Completed",
+            "description": "True only when this pass completed the lesson."
+          },
+          "remediation": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Remediation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "lesson_id",
+          "lesson_version",
+          "attempt_number",
+          "kind",
+          "status",
+          "correct",
+          "total",
+          "score",
+          "pass_mark",
+          "lesson_completed"
+        ],
+        "title": "AttemptResult"
       },
       "CancelRequest": {
         "additionalProperties": false,
@@ -5511,6 +6140,97 @@
             ],
             "title": "Occurred At",
             "description": "incident.edit: an exact occurrence time picked on the device."
+          },
+          "lesson_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lesson Id",
+            "description": "lesson.* and quiz.start commands."
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id",
+            "description": "quiz.answer: the active attempt."
+          },
+          "question_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Id",
+            "description": "quiz.answer: the question or scenario node shown."
+          },
+          "choice_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choice Id",
+            "description": "quiz.answer: the chosen choice/option."
+          },
+          "expected_step": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Step",
+            "description": "lesson.next: the 1-based step on screen."
+          },
+          "defer_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 480.0,
+                "minimum": 5.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defer Minutes",
+            "description": "lesson.defer (default 30)."
           },
           "acknowledge_conditions": {
             "anyOf": [
@@ -9454,6 +10174,262 @@
         "title": "LearnerProfile",
         "type": "object"
       },
+      "LearnerView": {
+        "properties": {
+          "learner_id": {
+            "type": "string",
+            "title": "Learner Id"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "beginner",
+              "intermediate",
+              "expert"
+            ],
+            "title": "Level"
+          },
+          "criteria_version": {
+            "type": "string",
+            "title": "Criteria Version"
+          },
+          "level_note": {
+            "type": "string",
+            "title": "Level Note"
+          },
+          "dataset_operator_skill": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Operator Skill"
+          },
+          "level_history": {
+            "items": {
+              "$ref": "#/components/schemas/LevelTransition"
+            },
+            "type": "array",
+            "title": "Level History"
+          },
+          "lessons": {
+            "items": {
+              "$ref": "#/components/schemas/LessonProgressView"
+            },
+            "type": "array",
+            "title": "Lessons"
+          },
+          "active_question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuizQuestionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recommended": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recommended"
+          },
+          "curriculum_version": {
+            "type": "string",
+            "title": "Curriculum Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "learner_id",
+          "level",
+          "criteria_version",
+          "level_note",
+          "lessons",
+          "curriculum_version"
+        ],
+        "title": "LearnerView",
+        "description": "The operator's learning record. `level` is a demo educational level under `criteria_version`; it is not an\nequipment certification and is separate from `dataset_operator_skill`."
+      },
+      "LearningAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "learning",
+            "title": "Type"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "lesson_started",
+              "lesson_resumed",
+              "lesson_step",
+              "lesson_paused",
+              "lesson_deferred",
+              "assessment_ready",
+              "assessment_started",
+              "assessment_resumed",
+              "answer_recorded",
+              "assessment_finished",
+              "lesson_already_completed",
+              "progress",
+              "training_needs",
+              "answer_unclear",
+              "rejected"
+            ],
+            "title": "Event"
+          },
+          "lesson_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lesson Id"
+          },
+          "lesson_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lesson Title"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LessonStepView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/LessonMediaAsset"
+            },
+            "type": "array",
+            "title": "Media"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuizQuestionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerFeedback"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttemptResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level_change": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level Change"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LessonProgressView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "learner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LearnerView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deferred_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred Until"
+          },
+          "attempt_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Number"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why nothing changed (rejected / answer_unclear)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "event"
+        ],
+        "title": "LearningAction",
+        "description": "One LMS outcome of a turn or tap (lesson step, assessment question, answer feedback, result, progress...)."
+      },
       "Lesson": {
         "properties": {
           "lesson_id": {
@@ -9698,6 +10674,110 @@
         ],
         "title": "LessonContentAction"
       },
+      "LessonMediaAsset": {
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "title": "Asset Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "kind": {
+            "type": "string",
+            "const": "video",
+            "title": "Kind"
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "title": "Duration Seconds"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "withdrawn"
+            ],
+            "title": "Availability",
+            "description": "withdrawn: the file is missing or does not match its catalog checksum; clients must not play it."
+          },
+          "content_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Ref"
+          },
+          "captions_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captions Ref"
+          },
+          "checksum_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum Sha256"
+          },
+          "licence": {
+            "type": "string",
+            "title": "Licence"
+          },
+          "provenance": {
+            "type": "string",
+            "title": "Provenance"
+          },
+          "review_status": {
+            "type": "string",
+            "title": "Review Status"
+          },
+          "playback": {
+            "type": "string",
+            "title": "Playback"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "asset_id",
+          "version",
+          "kind",
+          "mime_type",
+          "title",
+          "duration_seconds",
+          "availability",
+          "licence",
+          "provenance",
+          "review_status",
+          "playback"
+        ],
+        "title": "LessonMediaAsset",
+        "description": "Catalog media for a lesson. `content_ref` is a server route resolved by catalog ID inside the content root (never\nan arbitrary path or URL); fetch it with the same bearer token. Metadata or a fetch is not playback evidence and\nnever counts as completing a lesson."
+      },
       "LessonProgress": {
         "additionalProperties": false,
         "properties": {
@@ -9786,6 +10866,184 @@
         "title": "LessonProgress",
         "type": "object"
       },
+      "LessonProgressView": {
+        "properties": {
+          "lesson_id": {
+            "type": "string",
+            "title": "Lesson Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "lesson_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lesson Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "paused",
+              "deferred",
+              "awaiting_assessment",
+              "completed"
+            ],
+            "title": "Status"
+          },
+          "current_step": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step"
+          },
+          "total_steps": {
+            "type": "integer",
+            "title": "Total Steps"
+          },
+          "steps_presented": {
+            "type": "integer",
+            "title": "Steps Presented"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "best_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Score"
+          },
+          "last_attempt_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt Status"
+          },
+          "assignment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignment Id"
+          },
+          "assigned_for_episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned For Episode Id",
+            "description": "Safety episode behind the assignment."
+          },
+          "deferred_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lesson_id",
+          "title",
+          "level",
+          "status",
+          "total_steps",
+          "steps_presented",
+          "attempts"
+        ],
+        "title": "LessonProgressView"
+      },
+      "LessonStepView": {
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "text",
+              "media"
+            ],
+            "title": "Kind"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index",
+            "description": "1-based."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "speak": {
+            "type": "string",
+            "title": "Speak",
+            "description": "Short text for TTS."
+          },
+          "media_asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Media Asset Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "step_id",
+          "kind",
+          "index",
+          "total",
+          "speak"
+        ],
+        "title": "LessonStepView"
+      },
       "LessonVersion": {
         "additionalProperties": false,
         "properties": {
@@ -9866,6 +11124,97 @@
         "title": "LessonVersion",
         "type": "object"
       },
+      "LessonView": {
+        "properties": {
+          "lesson_id": {
+            "type": "string",
+            "title": "Lesson Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "beginner",
+              "intermediate",
+              "expert"
+            ],
+            "title": "Level"
+          },
+          "intended_duration_seconds": {
+            "type": "integer",
+            "title": "Intended Duration Seconds"
+          },
+          "machine_applicability": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Machine Applicability"
+          },
+          "prerequisites": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Prerequisites"
+          },
+          "review_status": {
+            "type": "string",
+            "title": "Review Status",
+            "description": "demo_authored_unreviewed: written for the prototype, not reviewed."
+          },
+          "curriculum_version": {
+            "type": "string",
+            "title": "Curriculum Version"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/LessonStepView"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/LessonMediaAsset"
+            },
+            "type": "array",
+            "title": "Media"
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/AssessmentSummary"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lesson_id",
+          "version",
+          "title",
+          "summary",
+          "level",
+          "intended_duration_seconds",
+          "machine_applicability",
+          "prerequisites",
+          "review_status",
+          "curriculum_version",
+          "steps",
+          "media",
+          "assessment"
+        ],
+        "title": "LessonView"
+      },
       "LevelEvidence": {
         "additionalProperties": false,
         "properties": {
@@ -9908,6 +11257,48 @@
         ],
         "title": "LevelEvidence",
         "type": "object"
+      },
+      "LevelTransition": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "previous_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Level"
+          },
+          "criteria_version": {
+            "type": "string",
+            "title": "Criteria Version"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence"
+          },
+          "achieved_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Achieved At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "level",
+          "criteria_version",
+          "evidence",
+          "achieved_at"
+        ],
+        "title": "LevelTransition"
       },
       "MachineStateObservation": {
         "additionalProperties": false,
@@ -11032,7 +12423,8 @@
                 "type": "string",
                 "enum": [
                   "log_incident",
-                  "start_task"
+                  "start_task",
+                  "answer_quiz"
                 ]
               },
               {
@@ -11070,7 +12462,8 @@
               "incident_description",
               "incident_severity",
               "incident_time",
-              "task_start_ack"
+              "task_start_ack",
+              "quiz_answer"
             ],
             "title": "Kind"
           },
@@ -11078,7 +12471,8 @@
             "type": "string",
             "enum": [
               "log_incident",
-              "start_task"
+              "start_task",
+              "answer_quiz"
             ],
             "title": "For Action"
           },
@@ -11164,6 +12558,38 @@
             ],
             "title": "Task Id",
             "description": "task_start_ack: the task waiting for confirmation."
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id",
+            "description": "quiz_answer: the active attempt."
+          },
+          "question_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Id",
+            "description": "quiz_answer: the question/node being asked."
+          },
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/QuizChoice"
+            },
+            "type": "array",
+            "title": "Choices",
+            "description": "quiz_answer: the options (no answer key)."
           }
         },
         "additionalProperties": false,
@@ -12225,6 +13651,88 @@
         "title": "QuizAttempt",
         "type": "object"
       },
+      "QuizChoice": {
+        "properties": {
+          "choice_id": {
+            "type": "string",
+            "title": "Choice Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "choice_id",
+          "text"
+        ],
+        "title": "QuizChoice"
+      },
+      "QuizQuestionView": {
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "title": "Attempt Id"
+          },
+          "lesson_id": {
+            "type": "string",
+            "title": "Lesson Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "quiz",
+              "scenario"
+            ],
+            "title": "Kind"
+          },
+          "question_id": {
+            "type": "string",
+            "title": "Question Id",
+            "description": "Quiz question or scenario node; answering needs this exact ID."
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt"
+          },
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/QuizChoice"
+            },
+            "type": "array",
+            "title": "Choices"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "lesson_id",
+          "kind",
+          "question_id",
+          "index",
+          "prompt",
+          "choices"
+        ],
+        "title": "QuizQuestionView"
+      },
       "ReadyResponse": {
         "properties": {
           "status": {
@@ -13028,7 +14536,14 @@
               "task.complete",
               "incident.edit",
               "incident.confirm",
-              "incident.dismiss"
+              "incident.dismiss",
+              "lesson.start",
+              "lesson.next",
+              "lesson.pause",
+              "lesson.resume",
+              "lesson.defer",
+              "quiz.start",
+              "quiz.answer"
             ],
             "title": "Kind"
           },
@@ -13161,6 +14676,17 @@
               }
             ],
             "description": "Pending supervisor-review request created with a confirmation (not a notification)."
+          },
+          "learning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LearningAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "lesson.* / quiz.* outcome."
           },
           "created_at": {
             "type": "string",
@@ -13461,6 +14987,17 @@
               }
             ]
           },
+          "learning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LearnerView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Learning record of a verified operator (null for legacy/unverified sessions)."
+          },
           "rule_coverage": {
             "items": {
               "$ref": "#/components/schemas/RuleCoverage"
@@ -13636,6 +15173,18 @@
               }
             ],
             "default": null
+          },
+          "learning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LearnerView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Learning record of a verified operator (null for legacy/unverified sessions)."
           },
           "rule_coverage": {
             "description": "Whether each safety rule could evaluate the latest observation.",
@@ -16817,7 +18366,7 @@
               "completed"
             ],
             "title": "Status",
-            "description": "Reading or playback never sets completed."
+            "description": "Reading or playback never sets completed; only a passed assessment of the lesson does (C4)."
           },
           "assigned_at": {
             "type": "string",
@@ -16835,6 +18384,30 @@
             ],
             "title": "Source Episode Id",
             "description": "Safety episode that triggered the assignment."
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "deferred_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred Until"
           }
         },
         "additionalProperties": false,
@@ -17785,6 +19358,9 @@
                   "$ref": "#/components/schemas/TaskEstimateAction"
                 },
                 {
+                  "$ref": "#/components/schemas/LearningAction"
+                },
+                {
                   "$ref": "#/components/schemas/EscalationRequestedAction"
                 },
                 {
@@ -17810,6 +19386,7 @@
                   "incident_drafts": "#/components/schemas/IncidentDraftsAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",
+                  "learning": "#/components/schemas/LearningAction",
                   "lesson_content": "#/components/schemas/LessonContentAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
@@ -17990,6 +19567,7 @@
                   "incident_drafts": "#/components/schemas/IncidentDraftsAction",
                   "incident_logged": "#/components/schemas/IncidentLoggedAction",
                   "information_requested": "#/components/schemas/InformationRequestedAction",
+                  "learning": "#/components/schemas/LearningAction",
                   "lesson_content": "#/components/schemas/LessonContentAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
@@ -18050,6 +19628,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/TaskEstimateAction"
+                },
+                {
+                  "$ref": "#/components/schemas/LearningAction"
                 },
                 {
                   "$ref": "#/components/schemas/EscalationRequestedAction"

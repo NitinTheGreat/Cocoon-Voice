@@ -116,7 +116,7 @@ def test_training_assign_and_status(client):
     status = turn(client, sid, "t3", "What training do I have?").json()["actions"][0]
     assert status["type"] == "training_status"
     assert [x["lesson_id"] for x in status["assignments"]] == ["L3"]
-    assert len(status["available_lessons"]) == 3
+    assert len(status["available_lessons"]) == 8  # C4 curriculum: L1-L7 and the practice scenario S1
 
 
 def test_retrying_same_turn_does_not_repeat_actions(client):

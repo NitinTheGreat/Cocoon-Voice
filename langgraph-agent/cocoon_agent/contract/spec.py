@@ -270,16 +270,26 @@ ROUTES: tuple[Route, ...] = (
           responses={200: Resp("Saved decision; execution reported separately", ap.DecisionResult),
                      409: Resp("decision_conflict / version_conflict / approval_expired", ERR),
                      **_errs(401, 403, 404, 422)}),
-    Route("get", "/v1/content/{asset_id}", "proposed", "I12A", ("operator", "voice_service"),
-          "Approved lesson text/media metadata (not an arbitrary URL fetcher)",
-          responses={200: Resp("Asset metadata", lms.ContentAsset), **_errs(401, 403, 404)}),
+    Route("get", "/v1/content/{asset_id}", "implemented", "C4", ("operator", "voice_service"),
+          "Catalog lesson media metadata (not an arbitrary URL fetcher)",
+          target_changes=({"stage": "I12A", "change": "Full ContentAsset shape (text/image kinds, not_yet_supplied "
+                                                      "availability, structured provenance).",
+                           "schema": "ContentAsset"},)),
+    Route("get", "/v1/content/{asset_id}/file", "implemented", "C4", ("operator", "voice_service"),
+          "The catalog media file itself, resolved by asset ID inside the content root"),
+    Route("get", "/v1/content/{asset_id}/captions", "implemented", "C4", ("operator", "voice_service"),
+          "WebVTT captions of a catalog video"),
+    Route("get", "/v1/sessions/{session_id}/lessons", "implemented", "C4", ("operator", "voice_service"),
+          "The verified operator's learning record: level, lesson progress, active question (no answer keys)"),
+    Route("get", "/v1/sessions/{session_id}/lessons/{lesson_id}", "implemented", "C4", ("operator", "voice_service"),
+          "One lesson version: speakable steps, media metadata and the assessment shape (no answer keys)"),
 )
 
 # Target schemas referenced from x-target-changes or used by fixtures that no route body names directly.
 EXTRA_MODELS: tuple[type[BaseModel], ...] = (
     idn.SessionCreateRequestTarget, idn.SessionTarget, tr.TurnResultTarget, cm.SessionStateTarget,
     tm.TelemetryRequestTarget, tm.TelemetryIngestResult, an.EventsPageTarget, an.AnnouncementDeliveryReportTarget,
-    tm.ConditionsSnapshot, lms.LessonVersion, lms.Course, lms.QuizAttempt,
+    tm.ConditionsSnapshot, lms.LessonVersion, lms.Course, lms.QuizAttempt, lms.ContentAsset,
     ap.ApprovalRecord, cm.Command, cm.CommandResult,
 )
 INTERNAL_MODELS: tuple[type[BaseModel], ...] = (inn.ClassifierDecision, inn.ActionPlan)
