@@ -788,6 +788,12 @@ components:
           - prolonged_idle
           - idle_unbelted
           - working_conditions
+          - proximity
+          - sudden_start
+          - sudden_stop
+          - steep_slope
+          - abnormal_fuel_per_cycle
+          - repeated_violations
           title: Alert Type
         severity:
           type: string
@@ -884,6 +890,30 @@ components:
           title: Details
           description: Family-specific evidence saved when the episode opened (e.g. the condition check of a working_conditions
             episode). Null for belt/idle episodes.
+        subject_key:
+          type: string
+          title: Subject Key
+          description: What the episode is about within its rule (e.g. the detected entity); empty for one-per-rule
+            episodes.
+          default: ''
+        level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Level
+          description: Current level of a graded episode (e.g. warning, danger).
+        cleared_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cleared Reason
+          description: observed_clear, expired_without_detection (not proof the hazard left), instant_event (a one-off
+            event such as a sudden stop), ...
+        updates:
+          items:
+            $ref: '#/components/schemas/AlertUpdate'
+          type: array
+          title: Updates
       additionalProperties: false
       type: object
       required:
@@ -979,6 +1009,47 @@ components:
       - alert
       title: AlertExplainedAction
       description: The explanation comes from the episode's saved evidence, never from the latest readings.
+    AlertUpdate:
+      properties:
+        update_id:
+          type: string
+          title: Update Id
+        level:
+          type: string
+          title: Level
+        previous_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Previous Level
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        event_id:
+          type: string
+          title: Event Id
+          description: Telemetry sample that caused the change.
+        details:
+          additionalProperties: true
+          type: object
+          title: Details
+        announcement_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Announcement Event Id
+          description: Set when the change was announced.
+      additionalProperties: false
+      type: object
+      required:
+      - update_id
+      - level
+      - observed_at
+      - event_id
+      - details
+      title: AlertUpdate
+      description: A later change of a published episode (e.g. warning -> danger), with its own evidence and identity.
     Announcement:
       properties:
         event_id:
@@ -993,6 +1064,7 @@ components:
           - alert_started
           - alert_cleared
           - shift_briefing
+          - alert_escalated
           title: Type
         priority:
           type: string
@@ -1043,11 +1115,21 @@ components:
           title: Approval Id
         kind:
           type: string
-          const: incident_escalation
+          enum:
+          - incident_escalation
+          - repeated_violations
           title: Kind
         incident_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Incident Id
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+          description: 'repeated_violations: the repeat episode behind it.'
         status:
           type: string
           enum:
@@ -1065,7 +1147,6 @@ components:
       required:
       - approval_id
       - kind
-      - incident_id
       - status
       - created_at
       title: ApprovalRequest
@@ -2360,6 +2441,48 @@ components:
       - allowed_associations
       title: MeResponse
       description: GET /v1/me. Never contains a bearer token, its digest or service configuration.
+    MotionSample:
+      properties:
+        t:
+          type: string
+          format: date-time
+          title: T
+          description: Observation time of this speed value.
+        speed_mps:
+          type: number
+          maximum: 40.0
+          minimum: 0.0
+          title: Speed Mps
+          description: Ground speed in metres per second.
+      additionalProperties: false
+      type: object
+      required:
+      - t
+      - speed_mps
+      title: MotionSample
+    MotionWindow:
+      properties:
+        samples:
+          items:
+            $ref: '#/components/schemas/MotionSample'
+          type: array
+          maxItems: 200
+          minItems: 2
+          title: Samples
+        source:
+          type: string
+          const: synthetic_scenario
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - samples
+      - source
+      title: MotionWindow
+      description: 'Higher-rate speed samples ending at (or before) the observation. Acceleration is derived between
+        consecutive
+
+        samples; minute averages and daily jerk scores are not accepted as motion evidence.'
     NextTaskAction:
       properties:
         type:
@@ -2478,6 +2601,65 @@ components:
         saved as
 
         `draft_id` (nothing is lost if the operator never answers).'
+    ProximityDetection:
+      properties:
+        entity_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Entity Id
+          examples:
+          - lk-item_4f2c9a
+        entity_type:
+          type: string
+          enum:
+          - person
+          - vehicle
+          - object
+          - unknown
+          title: Entity Type
+        distance_m:
+          type: number
+          maximum: 500.0
+          minimum: 0.0
+          title: Distance M
+        bearing_deg:
+          type: number
+          exclusiveMaximum: 360.0
+          minimum: 0.0
+          title: Bearing Deg
+        reference_frame:
+          type: string
+          const: machine_body
+          title: Reference Frame
+          default: machine_body
+        quality:
+          type: string
+          enum:
+          - good
+          - degraded
+          - poor
+          title: Quality
+        source:
+          type: string
+          const: synthetic_scenario
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - entity_id
+      - entity_type
+      - distance_m
+      - bearing_deg
+      - quality
+      - source
+      title: ProximityDetection
+      description: 'One detected entity in a proximity scan. Distance and bearing are relative to the machine body
+        frame
+
+        (bearing 0 = straight ahead, clockwise in degrees). Generated demo detections are `synthetic_scenario`;
+        they are
+
+        not Cat Detect or phone BLE output.'
     ReadyResponse:
       properties:
         status:
@@ -2534,6 +2716,44 @@ components:
       - checkpointer
       - version
       title: ReadyResponse
+    RuleCoverage:
+      properties:
+        rule_id:
+          type: string
+          title: Rule Id
+        family:
+          type: string
+          title: Family
+        status:
+          type: string
+          enum:
+          - evaluated
+          - unknown
+          - not_applicable
+          - not_configured
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Observed At
+      additionalProperties: false
+      type: object
+      required:
+      - rule_id
+      - family
+      - status
+      title: RuleCoverage
+      description: 'Evaluation status of one rule at the latest applied observation. `unknown` / `not_configured`
+        are never read
+
+        as safe: they mean the rule could not decide.'
     Session:
       properties:
         session_id:
@@ -2898,6 +3118,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ShiftBriefing'
           - type: 'null'
+        rule_coverage:
+          items:
+            $ref: '#/components/schemas/RuleCoverage'
+          type: array
+          title: Rule Coverage
+          description: Whether each safety rule could evaluate the latest observation.
         site_conditions:
           anyOf:
           - $ref: '#/components/schemas/ConditionCheck'
@@ -3200,6 +3426,57 @@ components:
           - type: 'null'
           title: Speed Kph
           description: Observed ground speed (motion).
+        proximity:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ProximityDetection'
+            type: array
+          - type: 'null'
+          title: Proximity
+          description: 'A proximity scan: omitted = no detector data (unknown); an empty list = a scan with no detections,
+            which is still not proof that nobody is near.'
+        motion:
+          anyOf:
+          - $ref: '#/components/schemas/MotionWindow'
+          - type: 'null'
+        pitch_deg:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            minimum: -90.0
+          - type: 'null'
+          title: Pitch Deg
+          description: Fore-aft tilt in degrees.
+        roll_deg:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            minimum: -90.0
+          - type: 'null'
+          title: Roll Deg
+          description: Side tilt in degrees.
+        grade_pct:
+          anyOf:
+          - type: number
+            maximum: 300.0
+            minimum: -300.0
+          - type: 'null'
+          title: Grade Pct
+          description: Ground grade in percent (100 % = 45 degrees), when pitch is not given.
+        fuel_meter_l:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Fuel Meter L
+          description: Cumulative fuel meter, litres.
+        load_cycles_total:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Load Cycles Total
+          description: Cumulative work/load cycle counter.
       additionalProperties: false
       type: object
       required:
@@ -3275,6 +3552,12 @@ components:
             type: string
           type: array
           title: Alerts Cleared
+        alerts_updated:
+          items:
+            type: string
+          type: array
+          title: Alerts Updated
+          description: Active episodes whose level changed.
         announcements_created:
           items:
             type: string

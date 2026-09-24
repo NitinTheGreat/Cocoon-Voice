@@ -340,8 +340,9 @@ class ApprovalRequest(ContractModel):
     is not a notification and not an approval."""
 
     approval_id: str
-    kind: Literal["incident_escalation"]
-    incident_id: str
+    kind: Literal["incident_escalation", "repeated_violations"]
+    incident_id: str | None = None
+    alert_id: str | None = Field(default=None, description="repeated_violations: the repeat episode behind it.")
     status: Literal["pending", "approved", "rejected", "expired"]
     created_at: datetime
 
@@ -383,6 +384,33 @@ class TrainingAssignment(ContractModel):
 OperatingState = Literal["off", "idle", "working", "travel"]
 
 
+class ProximityDetection(ContractModel):
+    """One detected entity in a proximity scan. Distance and bearing are relative to the machine body frame
+    (bearing 0 = straight ahead, clockwise in degrees). Generated demo detections are `synthetic_scenario`; they are
+    not Cat Detect or phone BLE output."""
+
+    entity_id: StableId
+    entity_type: Literal["person", "vehicle", "object", "unknown"]
+    distance_m: float = Field(ge=0, le=500)
+    bearing_deg: float = Field(ge=0, lt=360)
+    reference_frame: Literal["machine_body"] = "machine_body"
+    quality: Literal["good", "degraded", "poor"]
+    source: Literal["synthetic_scenario"]
+
+
+class MotionSample(ContractModel):
+    t: AwareDatetime = Field(description="Observation time of this speed value.")
+    speed_mps: float = Field(ge=0, le=40, description="Ground speed in metres per second.")
+
+
+class MotionWindow(ContractModel):
+    """Higher-rate speed samples ending at (or before) the observation. Acceleration is derived between consecutive
+    samples; minute averages and daily jerk scores are not accepted as motion evidence."""
+
+    samples: list[MotionSample] = Field(min_length=2, max_length=200)
+    source: Literal["synthetic_scenario"]
+
+
 class TelemetryReadings(ContractModel):
     engine_on: bool
     seatbelt_fastened: bool
@@ -391,6 +419,16 @@ class TelemetryReadings(ContractModel):
     operating_state: OperatingState | None = Field(
         default=None, description="Observed machine state. Omitted = unknown: idle rules neither open nor clear.")
     speed_kph: float | None = Field(default=None, ge=0, le=100, description="Observed ground speed (motion).")
+    proximity: list[ProximityDetection] | None = Field(
+        default=None, description="A proximity scan: omitted = no detector data (unknown); an empty list = a scan "
+                                  "with no detections, which is still not proof that nobody is near.")
+    motion: MotionWindow | None = None
+    pitch_deg: float | None = Field(default=None, ge=-90, le=90, description="Fore-aft tilt in degrees.")
+    roll_deg: float | None = Field(default=None, ge=-90, le=90, description="Side tilt in degrees.")
+    grade_pct: float | None = Field(default=None, ge=-300, le=300,
+                                    description="Ground grade in percent (100 % = 45 degrees), when pitch is not given.")
+    fuel_meter_l: float | None = Field(default=None, ge=0, description="Cumulative fuel meter, litres.")
+    load_cycles_total: int | None = Field(default=None, ge=0, description="Cumulative work/load cycle counter.")
 
 
 class AlertEvidence(ContractModel):
@@ -405,10 +443,23 @@ class AlertEvidence(ContractModel):
     applicability: Literal["all_categories", "category_listed"] = "all_categories"
 
 
+class AlertUpdate(ContractModel):
+    """A later change of a published episode (e.g. warning -> danger), with its own evidence and identity."""
+
+    update_id: str
+    level: str
+    previous_level: str | None = None
+    observed_at: datetime
+    event_id: str = Field(description="Telemetry sample that caused the change.")
+    details: dict[str, Any]
+    announcement_event_id: str | None = Field(default=None, description="Set when the change was announced.")
+
+
 class Alert(ContractModel):
     alert_id: str
     rule_id: str
-    alert_type: Literal["seatbelt_unfastened", "prolonged_idle", "idle_unbelted", "working_conditions"]
+    alert_type: Literal["seatbelt_unfastened", "prolonged_idle", "idle_unbelted", "working_conditions", "proximity",
+                        "sudden_start", "sudden_stop", "steep_slope", "abnormal_fuel_per_cycle", "repeated_violations"]
     severity: Literal["warning", "critical"]
     status: Literal["active", "cleared"]
     message: str
@@ -433,6 +484,13 @@ class Alert(ContractModel):
     details: dict[str, Any] | None = Field(
         default=None, description="Family-specific evidence saved when the episode opened (e.g. the condition check "
                                   "of a working_conditions episode). Null for belt/idle episodes.")
+    subject_key: str = Field(default="", description="What the episode is about within its rule (e.g. the detected "
+                                                     "entity); empty for one-per-rule episodes.")
+    level: str | None = Field(default=None, description="Current level of a graded episode (e.g. warning, danger).")
+    cleared_reason: str | None = Field(
+        default=None, description="observed_clear, expired_without_detection (not proof the hazard left), "
+                                  "instant_event (a one-off event such as a sudden stop), ...")
+    updates: list[AlertUpdate] = Field(default_factory=list)
 
 
 class MachineStateView(ContractModel):
@@ -697,8 +755,21 @@ class SessionState(ContractModel):
     machine_state: MachineStateView | None = Field(default=None, description="Freshness of machine observations.")
     idle_reasons: list["IdleReason"] = Field(default_factory=list)
     shift_briefing: "ShiftBriefing | None" = None
+    rule_coverage: list["RuleCoverage"] = Field(
+        default_factory=list, description="Whether each safety rule could evaluate the latest observation.")
     site_conditions: ConditionCheck | None = Field(
         default=None, description="Site conditions at the session's data clock (null when the session has no site).")
+
+
+class RuleCoverage(ContractModel):
+    """Evaluation status of one rule at the latest applied observation. `unknown` / `not_configured` are never read
+    as safe: they mean the rule could not decide."""
+
+    rule_id: str
+    family: str
+    status: Literal["evaluated", "unknown", "not_applicable", "not_configured"]
+    reason: str | None = None
+    observed_at: datetime | None = None
 
 
 class IdleReason(ContractModel):
@@ -750,6 +821,7 @@ class TelemetryResult(ContractModel):
                                   "the newest applied sample but different readings.")
     alerts_opened: list[str]
     alerts_cleared: list[str]
+    alerts_updated: list[str] = Field(default_factory=list, description="Active episodes whose level changed.")
     announcements_created: list[str]
     drafts_created: list[str] = Field(default_factory=list, description="Automatic incident drafts opened.")
     active_alerts: list[Alert]
@@ -779,7 +851,7 @@ class DeliveryRecord(ContractModel):
 class Announcement(ContractModel):
     event_id: str
     sequence: int
-    type: Literal["alert_started", "alert_cleared", "shift_briefing"]
+    type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None

@@ -499,6 +499,55 @@ SITE_CONDITIONS: tuple[str, ...] = (
 )
 
 
+HAZARD_RULES: tuple[str, ...] = (
+    # One active episode per rule AND subject (e.g. one proximity episode per detected entity). Existing rows get the
+    # empty subject, so the old one-per-rule behaviour of belt/idle episodes is unchanged.
+    "ALTER TABLE alerts ADD COLUMN subject_key TEXT NOT NULL DEFAULT ''",
+    "DROP INDEX one_active_episode_per_rule",
+    "CREATE UNIQUE INDEX one_active_episode_per_subject ON alerts(session_id, rule_id, subject_key)"
+    " WHERE status = 'active'",
+    # Current level of a graded episode (warning/danger, acknowledge/block) and why it ended.
+    "ALTER TABLE alerts ADD COLUMN level TEXT",
+    "ALTER TABLE alerts ADD COLUMN last_seen_at TEXT",
+    "ALTER TABLE alerts ADD COLUMN cleared_reason TEXT",
+    # Later changes of a published episode get their own evidence and identity; the opening evidence never changes.
+    """CREATE TABLE alert_updates (
+    update_id TEXT PRIMARY KEY,
+    alert_id TEXT NOT NULL REFERENCES alerts(alert_id),
+    level TEXT NOT NULL,
+    previous_level TEXT,
+    observed_at TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    announcement_event_id TEXT,
+    created_at TEXT NOT NULL
+)""",
+    "CREATE INDEX alert_updates_by_alert ON alert_updates(alert_id, observed_at)",
+    # Rule state carried between observations (fuel window accumulator, last evaluated motion sample, coverage).
+    "ALTER TABLE machine_state ADD COLUMN rule_state_json TEXT",
+    # A repeat-violation trigger creates a pending supervisor review linked to its episode (no incident involved), so
+    # the review table is rebuilt to widen its kind and make incident_id optional. Rows are copied unchanged.
+    """CREATE TABLE approval_requests_v10 (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('incident_escalation', 'repeated_violations')),
+    incident_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+    created_at TEXT NOT NULL,
+    alert_id TEXT,
+    details_json TEXT,
+    UNIQUE (kind, incident_id),
+    UNIQUE (kind, alert_id),
+    CHECK (incident_id IS NOT NULL OR alert_id IS NOT NULL)
+)""",
+    "INSERT INTO approval_requests_v10(approval_id, session_id, operator_id, kind, incident_id, status, created_at)"
+    " SELECT approval_id, session_id, operator_id, kind, incident_id, status, created_at FROM approval_requests",
+    "DROP TABLE approval_requests",
+    "ALTER TABLE approval_requests_v10 RENAME TO approval_requests",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -516,6 +565,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "operator_context", OPERATOR_CONTEXT),
     Migration(8, "incident_capture", INCIDENT_CAPTURE),
     Migration(9, "site_conditions", SITE_CONDITIONS),
+    Migration(10, "hazard_rules", HAZARD_RULES),
 )
 
 

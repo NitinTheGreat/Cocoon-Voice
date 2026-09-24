@@ -105,5 +105,8 @@ class Conditions:
             details={"task_id": task.task_id, "start_check_id": task.start_check.check_id,
                      "start_level": started, "level": now_check.level,
                      "check": now_check.model_dump(mode="json")},
-            subject_key=task.task_id, priority="critical" if now_check.level == "block" else "high")
+            subject_key=task.task_id, priority="critical" if now_check.level == "block" else "high",
+            level=now_check.level if held else None,
+            escalate_speech=(f"Conditions are now worse for {task.title}: {found}. Stop in a safe place and wait "
+                             "for them to improve." if now_check.level == "block" else None))
         return outcome, now_check

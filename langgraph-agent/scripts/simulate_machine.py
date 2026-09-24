@@ -25,7 +25,9 @@ from _http import client, ensure_session  # noqa: E402
 
 from cocoon_agent.config import Settings  # noqa: E402
 from cocoon_agent.demo_site import load_fixture  # noqa: E402
-from cocoon_agent.simulation import SCENARIOS, dataset_events, scenario_events  # noqa: E402
+from cocoon_agent.simulation import (  # noqa: E402
+    HAZARD_SCENARIOS, SCENARIOS, dataset_events, hazard_events, scenario_events,
+)
 
 
 def main() -> int:
@@ -35,7 +37,8 @@ def main() -> int:
     ap.add_argument("--operator", help="catalog operator ID (default: the machine's operator in the demo fixture)")
     ap.add_argument("--session-id")
     ap.add_argument("--room", help="LiveKit room name (default demo-<machine>)")
-    ap.add_argument("--scenario", choices=sorted(SCENARIOS) + ["dataset"], default="belt_idle")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS) + list(HAZARD_SCENARIOS) + ["dataset"],
+                    default="belt_idle")
     ap.add_argument("--start", help="simulation start (ISO 8601 with offset); default: now")
     ap.add_argument("--pace", type=float, default=0.5, help="wall-clock seconds between posts (0 = as fast as possible)")
     ap.add_argument("--seed", type=int, default=0, help="jitter seed (deterministic)")
@@ -58,6 +61,8 @@ def main() -> int:
     sid = args.session_id or ensure_session(c, args.room or f"demo-{args.machine}", operator, operator, args.machine)
     if args.scenario == "dataset":
         events = dataset_events(Settings().dataset_root, args.machine, start, args.run_id, args.day, args.limit)
+    elif args.scenario in HAZARD_SCENARIOS:
+        events = hazard_events(args.machine, args.scenario, start, args.run_id)
     else:
         events = scenario_events(args.machine, args.scenario, start, args.run_id, args.seed)
     print(f"SIMULATED observations -> session {sid} machine {args.machine} operator {operator} "
@@ -70,7 +75,8 @@ def main() -> int:
         note = " (duplicate)" if out["duplicate"] else (f" (ignored: {out['ignored_reason']})" if out["stale"] else "")
         print(f"  {body['observed_at']} engine={rd['engine_on']} belt={rd['seatbelt_fastened']} "
               f"state={rd['operating_state']} speed={rd['speed_kph']} -> opened={out['alerts_opened']} "
-              f"cleared={out['alerts_cleared']} drafts={out['drafts_created']} "
+              f"cleared={out['alerts_cleared']} updated={out.get('alerts_updated', [])} "
+              f"drafts={out['drafts_created']} "
               f"announcements={out['announcements_created']}{note}")
         if args.pace and i < len(events) - 1:
             time.sleep(args.pace)

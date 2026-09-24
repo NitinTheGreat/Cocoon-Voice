@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     weather_stale_limit_seconds: int = Field(default=3600, alias="COCOON_WEATHER_STALE_LIMIT_SECONDS", ge=60)
     weather_misalign_seconds: int = Field(default=5400, alias="COCOON_WEATHER_MISALIGN_SECONDS", ge=600)
     conditions_policy_path: Path | None = Field(default=None, alias="COCOON_CONDITIONS_POLICY_PATH")
+    # Versioned hazard rules (proximity, sudden motion, slope, fuel per cycle, repeats). Unset = policies/hazard_rules_v1.json.
+    hazard_policy_path: Path | None = Field(default=None, alias="COCOON_HAZARD_POLICY_PATH")
 
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
@@ -96,7 +98,7 @@ class Settings(BaseSettings):
             self.data_dir = SERVICE_DIR / self.data_dir
         if not self.dataset_root.is_absolute():
             self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
-        for name in ("weather_fixture_path", "conditions_policy_path"):
+        for name in ("weather_fixture_path", "conditions_policy_path", "hazard_policy_path"):
             value = getattr(self, name)
             if value is not None and not value.is_absolute():
                 setattr(self, name, (SERVICE_DIR / value).resolve())

@@ -227,15 +227,21 @@ def test_worsening_during_an_outdoor_task_is_announced_once_explained_and_cleare
         assert started["type"] == "task_started" and started["conditions"]["level"] == "clear"
         quiet = observe(c, sid, "o2", local("11:30"))  # acknowledge-level gusts: above start and at the minimum
         assert len(quiet["alerts_opened"]) == 1
-        worse = observe(c, sid, "o3", local("12:10"))  # storm while the episode is active: no second episode (C1)
-        assert worse["alerts_opened"] == [] and worse["announcements_created"] == []
+        worse = observe(c, sid, "o3", local("12:10"))  # storm: the same episode rises to block (an update)
+        assert worse["alerts_opened"] == [] and worse["alerts_updated"] == quiet["alerts_opened"]
+        assert [a.endswith("_escalated") for a in worse["announcements_created"]] == [True]
+        again = observe(c, sid, "o3b", local("12:20"))  # still block: nothing new
+        assert again["alerts_updated"] == [] and again["announcements_created"] == []
         state = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()
         alert = next(a for a in state["active_alerts"] if a["alert_type"] == "working_conditions")
-        assert alert["details"]["start_level"] == "clear" and alert["details"]["level"] == "acknowledge"
+        assert alert["details"]["start_level"] == "clear" and alert["details"]["level"] == "acknowledge"  # as opened
+        assert alert["level"] == "block" and alert["severity"] == "critical"
+        assert [(u["previous_level"], u["level"]) for u in alert["updates"]] == [("acknowledge", "block")]
+        assert alert["updates"][0]["details"]["check"]["weather"]["wind_gust_ms"] == 21.0  # its own evidence
         assert alert["details"]["check_id"].startswith("CHK-") and alert["source_status"] == "demo_assumption"
         events = c.get(f"/v1/sessions/{sid}/events?after=0", headers=AUTH).json()["events"]
         warn = [e for e in events if e["alert_id"] == alert["alert_id"]]
-        assert [e["type"] for e in warn] == ["alert_started"] and "gusts 14" in warn[0]["speech"]
+        assert [e["type"] for e in warn] == ["alert_started", "alert_escalated"] and "gusts 14" in warn[0]["speech"]
         why = say(c, sid, "t2", "why did you warn me about the weather?")["actions"][0]
         assert why["alert"]["alert_id"] == alert["alert_id"] and "synthetic fixture weather" in why["alert"]["explanation"]
         cleared = observe(c, sid, "o4", local("13:10"))  # light showers: back to the start level

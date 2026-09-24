@@ -28,6 +28,7 @@ from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
 from .rules import SafetyPolicy, load_policy
 from .conditions import Conditions, conditions_sentence
+from .hazards import HazardEngine, load_hazard_policy
 from .store import (
     ConditionsGate, Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict,
     utcnow,
@@ -48,6 +49,16 @@ def payload_hash(obj: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# Optional request fields added after B. They are left out of an idempotency digest while unset, so a request saved
+# before the upgrade still matches its own retry byte-for-byte (a digest never changes because the model grew).
+ADDED_READINGS = ("proximity", "motion", "pitch_deg", "roll_deg", "grade_pct", "fuel_meter_l", "load_cycles_total")
+ADDED_PAYLOAD = ("severity_unknown", "occurred_expression", "occurred_at", "acknowledge_conditions")
+
+
+def _without_unset(data: dict[str, Any], added: tuple[str, ...]) -> dict[str, Any]:
+    return {k: v for k, v in data.items() if not (k in added and v is None)}
+
+
 def thread_config(session_id: str) -> RunnableConfig:
     return {"configurable": {"thread_id": session_id}}
 
@@ -65,6 +76,7 @@ class CocoonService:
         self.catalog_issue = catalog_issue
         self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
         self.conditions = conditions
+        self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
         self._telemetry_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -170,7 +182,7 @@ class CocoonService:
                         req: s.SessionCommand) -> s.SessionCommandResult:
         """Tap path. The same domain mutation as the graph tools; identity is scoped to the calling principal."""
         fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
-                                    "payload": req.payload.model_dump(mode="json"),
+                                    "payload": _without_unset(req.payload.model_dump(mode="json"), ADDED_PAYLOAD),
                                     "expected_version": req.expected_version})
         if req.kind.startswith("task."):
             gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
@@ -432,6 +444,7 @@ class CocoonService:
             site_conditions=self.conditions.check(session, None) if self.conditions and session.site_id else None,
             machine_state=self._machine_state(session_id),
             idle_reasons=self.store.list_idle_reasons(session_id),
+            rule_coverage=self.store.rule_coverage(session_id),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
         )
 
@@ -466,7 +479,9 @@ class CocoonService:
         """Rules run synchronously on the sample, in one short transaction, without any model call. The graph reads
         alerts from the database when a turn starts, so no checkpoint write (and no turn lock) is needed here."""
         session = self.require_session(session_id)
-        digest = payload_hash(req.model_dump(mode="json", exclude={"event_id"}))
+        body = req.model_dump(mode="json", exclude={"event_id"})
+        body["readings"] = _without_unset(body["readings"], ADDED_READINGS)
+        digest = payload_hash(body)
         async with self._telemetry_locks[session_id]:
             prior = self.store.get_telemetry(session_id, req.event_id)
             if prior is not None:
@@ -479,11 +494,15 @@ class CocoonService:
                 worse, in_task_check = self.conditions.worsening(session, req.observed_at)
                 if worse is not None:
                     outcomes.append(worse)
+            category = machine.category if machine else None
+            task = self.store.in_progress_task(session.shift_id)
             outcome = self.store.apply_observation(
-                session, req, digest, self.policy, machine.category if machine else None,
+                session, req, digest, self.policy, category,
                 timedelta(seconds=self.settings.announcement_ttl_seconds),
                 requires_engine_on=self.settings.seatbelt_rule_requires_engine_on,
                 outcomes=outcomes, in_task_check=in_task_check,
+                evaluate_in_tx=lambda c, state: self.hazards.evaluate(c, session, req, category, task, state),
+                repeat_in_tx=lambda c: self.hazards.repeat_outcomes(c, session, req),
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
                 log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,

@@ -142,6 +142,15 @@ class RuleOutcome:
     details: dict[str, Any]
     subject_key: str = ""
     priority: str = "high"
+    level: str | None = None  # graded episodes: a higher level later is an update of the same episode
+    escalate_speech: str | None = None  # announced (once per episode) when the level rises
+    clear_reason: str = "observed_clear"
+    instant: bool = False  # a one-off event: opened and closed by the same observation
+    touch: bool = False  # record this observation as the latest sighting (proximity tracks)
+    on_open: Callable[[sqlite3.Connection, str], dict[str, Any]] | None = None  # links created with the episode
+
+
+LEVEL_RANK = {"warning": 1, "danger": 2, "advisory": 1, "acknowledge": 2, "block": 3}
 
 
 @dataclass
@@ -905,21 +914,43 @@ class Store:
 
     def active_alerts(self, session_id: str) -> list[s.Alert]:
         rows = self._all("SELECT * FROM alerts WHERE session_id = ? AND status = 'active' ORDER BY started_at", (session_id,))
-        return [_alert(r) for r in rows]
+        return self._with_updates([_alert(r) for r in rows])
 
     def latest_alert(self, session_id: str) -> s.Alert | None:
         row = self._one(
             "SELECT * FROM alerts WHERE session_id = ? ORDER BY (status = 'active') DESC, started_at DESC LIMIT 1",
             (session_id,),
         )
-        return _alert(row) if row else None
+        return self._with_updates([_alert(row)])[0] if row else None
+
+    def _with_updates(self, alerts: list[s.Alert]) -> list[s.Alert]:
+        """Attach each episode's later updates (level changes with their own evidence)."""
+        if not alerts:
+            return alerts
+        marks = ", ".join("?" * len(alerts))
+        rows = self._all(f"SELECT * FROM alert_updates WHERE alert_id IN ({marks}) ORDER BY observed_at",
+                         tuple(a.alert_id for a in alerts))
+        by_alert: dict[str, list[s.AlertUpdate]] = {}
+        for r in rows:
+            by_alert.setdefault(r["alert_id"], []).append(s.AlertUpdate(
+                update_id=r["update_id"], level=r["level"], previous_level=r["previous_level"],
+                observed_at=parse_dt(r["observed_at"]), event_id=r["event_id"], details=json.loads(r["details_json"]),
+                announcement_event_id=r["announcement_event_id"]))
+        return [a.model_copy(update={"updates": by_alert.get(a.alert_id, [])}) for a in alerts]
+
+    def rule_coverage(self, session_id: str) -> list[s.RuleCoverage]:
+        row = self._one("SELECT rule_state_json FROM machine_state WHERE session_id = ?", (session_id,))
+        if row is None or not row["rule_state_json"]:
+            return []
+        return [s.RuleCoverage(**c) for c in json.loads(row["rule_state_json"]).get("coverage", [])]
 
     def announced_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
         """Alerts that were announced, with the announcement's event_id and time, newest announcement first."""
         rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
                          " JOIN announcements n ON n.alert_id = a.alert_id AND n.type = 'alert_started'"
                          " WHERE a.session_id = ? ORDER BY n.sequence DESC", (session_id,))
-        return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+        alerts = self._with_updates([_alert(r) for r in rows])
+        return [(a, r["ann_event_id"], parse_dt(r["ann_created_at"])) for a, r in zip(alerts, rows)]
 
     def linked_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
         """Correlated (combined-condition) episodes that were not announced themselves, paired with the announcement
@@ -1022,7 +1053,10 @@ class Store:
     def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
                           machine_category: str | None, announcement_ttl: timedelta,
                           requires_engine_on: bool, outcomes: "list[RuleOutcome] | None" = None,
-                          in_task_check: "s.ConditionCheck | None" = None) -> dict[str, Any]:
+                          in_task_check: "s.ConditionCheck | None" = None,
+                          evaluate_in_tx: "Callable[[sqlite3.Connection, dict], tuple[list[RuleOutcome], dict]] | None"
+                          = None,
+                          repeat_in_tx: "Callable[[sqlite3.Connection], list[RuleOutcome]] | None" = None) -> dict[str, Any]:
         """Record one sample and apply every rule's episode transition, the linked automatic draft and the
         announcement in ONE short transaction (no model call inside).
 
@@ -1035,6 +1069,7 @@ class Store:
         session_id = session.session_id
         opened: list[str] = []
         cleared: list[str] = []
+        updated: list[str] = []
         announced: list[str] = []
         drafts: list[str] = []
         readings_json = req.readings.model_dump_json()
@@ -1117,14 +1152,29 @@ class Store:
                             announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
                                                             rule.clear_speech, now, announcement_ttl))
                         changed = True
-                for o in outcomes or ():
-                    step = self._rule_outcome(c, session, req, o, now, announcement_ttl, in_task_check)
-                    if step is not None:
-                        kind, alert_id, event_id = step
-                        (opened if kind == "opened" else cleared).append(alert_id)
-                        if event_id:
-                            announced.append(event_id)
-                        changed = True
+                rule_state = json.loads(prev["rule_state_json"]) if prev is not None and "rule_state_json" in \
+                    prev.keys() and prev["rule_state_json"] else {}
+                extra = list(outcomes or ())
+                if evaluate_in_tx is not None:
+                    more, rule_state = evaluate_in_tx(c, rule_state)
+                    extra += more
+                    c.execute("UPDATE machine_state SET rule_state_json = ? WHERE session_id = ?",
+                              (json.dumps(rule_state, default=str), session_id))
+
+                def apply(items: list[RuleOutcome]) -> bool:
+                    moved = False
+                    for o in items:
+                        for kind, alert_id, event_id in self._rule_outcome(c, session, req, o, now, announcement_ttl,
+                                                                           in_task_check):
+                            {"opened": opened, "cleared": cleared, "updated": updated}[kind].append(alert_id)
+                            if event_id:
+                                announced.append(event_id)
+                            moved = True
+                    return moved
+
+                changed = apply(extra) or changed
+                if repeat_in_tx is not None:  # counts the episodes this very sample may have opened
+                    changed = apply(repeat_in_tx(c)) or changed
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -1135,6 +1185,7 @@ class Store:
                 "ignored_reason": ignored,
                 "alerts_opened": opened,
                 "alerts_cleared": cleared,
+                "alerts_updated": updated,
                 "announcements_created": announced,
                 "drafts_created": drafts,
                 "state_version": version,
@@ -1149,12 +1200,14 @@ class Store:
 
     def _rule_outcome(self, c: sqlite3.Connection, session: s.Session, req: s.TelemetryRequest, o: RuleOutcome,
                       now: datetime, ttl: timedelta,
-                      in_task_check: "s.ConditionCheck | None") -> tuple[str, str, str | None] | None:
-        """Open or clear one C-family episode inside the observation transaction. Evidence is saved once, when the
-        episode opens; later samples never change it."""
+                      in_task_check: "s.ConditionCheck | None") -> list[tuple[str, str, str | None]]:
+        """Open, update or close one C-family episode inside the observation transaction. The opening evidence is
+        saved once; a later level change is an `alert_updates` row with its own evidence (announced once per episode
+        when it rises); a close records why it closed."""
         sid = session.session_id
-        active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND status = 'active'",
-                           (sid, o.rule_id)).fetchone()
+        at = iso(req.observed_at)
+        active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND subject_key = ?"
+                           " AND status = 'active'", (sid, o.rule_id, o.subject_key)).fetchone()
         if o.held and active is None:
             alert_id = "ALR-" + uuid.uuid4().hex[:12]
             details = dict(o.details)
@@ -1164,28 +1217,57 @@ class Store:
             c.execute(
                 "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message, explanation,"
                 " trigger_readings_json, opened_by_event_id, started_at, policy_version, source_status, reason,"
-                " recommended_action, evidence_json, announced, details_json)"
-                " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                " recommended_action, evidence_json, announced, details_json, subject_key, level, last_seen_at)"
+                " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
                 (alert_id, sid, o.rule_id, o.alert_type, o.severity, o.message, o.explanation,
-                 req.readings.model_dump_json(), req.event_id, iso(req.observed_at), o.policy_version, o.source_status,
-                 o.reason, o.recommended_action, evidence.model_dump_json(), json.dumps(details, default=str)))
-            return "opened", alert_id, self._announce(c, sid, alert_id, "alert_started", o.priority, o.start_speech,
-                                                      now, ttl)
+                 req.readings.model_dump_json(), req.event_id, at, o.policy_version, o.source_status, o.reason,
+                 o.recommended_action, evidence.model_dump_json(), json.dumps(details, default=str), o.subject_key,
+                 o.level, at))
+            if o.on_open is not None:
+                details.update(o.on_open(c, alert_id))
+                c.execute("UPDATE alerts SET details_json = ? WHERE alert_id = ?",
+                          (json.dumps(details, default=str), alert_id))
+            event_id = self._announce(c, sid, alert_id, "alert_started", o.priority, o.start_speech, now, ttl)
+            steps = [("opened", alert_id, event_id)]
+            if o.instant:
+                c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?,"
+                          " cleared_reason = 'instant_event' WHERE alert_id = ?", (at, req.event_id, alert_id))
+            return steps
+        if o.held and active is not None:
+            if o.touch:
+                c.execute("UPDATE alerts SET last_seen_at = ? WHERE alert_id = ?", (at, active["alert_id"]))
+            if not o.level or o.level == active["level"]:
+                return []
+            rising = LEVEL_RANK.get(o.level, 0) > LEVEL_RANK.get(active["level"] or "", 0)
+            update_id = "UPD-" + uuid.uuid4().hex[:12]
+            event_id = None
+            already = c.execute("SELECT 1 FROM announcements WHERE alert_id = ? AND type = 'alert_escalated'",
+                                (active["alert_id"],)).fetchone()
+            if rising and o.escalate_speech and already is None:
+                event_id = self._announce(c, sid, active["alert_id"], "alert_escalated", "critical" if
+                                          o.severity == "critical" else "high", o.escalate_speech, now, ttl)
+            c.execute("INSERT INTO alert_updates(update_id, alert_id, level, previous_level, observed_at, event_id,"
+                      " details_json, announcement_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (update_id, active["alert_id"], o.level, active["level"], at, req.event_id,
+                       json.dumps(o.details, default=str), event_id, iso(now)))
+            c.execute("UPDATE alerts SET level = ?, severity = CASE WHEN ? THEN ? ELSE severity END WHERE alert_id = ?",
+                      (o.level, int(rising), o.severity, active["alert_id"]))
+            return [("updated", active["alert_id"], event_id)]
         if o.held is False and active is not None:
-            c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ? WHERE alert_id = ?",
-                      (iso(req.observed_at), req.event_id, active["alert_id"]))
+            c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?, cleared_reason = ?"
+                      " WHERE alert_id = ?", (at, req.event_id, o.clear_reason, active["alert_id"]))
             event_id = None
             if o.clear_speech:
                 event_id = self._announce(c, sid, active["alert_id"], "alert_cleared", "low", o.clear_speech, now, ttl)
-            return "cleared", active["alert_id"], event_id
-        return None
+            return [("cleared", active["alert_id"], event_id)]
+        return []
 
     @staticmethod
     def _announce(c: sqlite3.Connection, session_id: str, alert_id: str, kind: str, priority: str, speech: str,
                   now: datetime, ttl: timedelta) -> str:
         seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
                         (session_id,)).fetchone()[0]
-        event_id = f"ann_{alert_id}_{'start' if kind == 'alert_started' else 'clear'}"
+        event_id = f"ann_{alert_id}_{ {'alert_started': 'start', 'alert_escalated': 'escalated'}.get(kind, 'clear')}"
         c.execute(
             "INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id, created_at,"
             " expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1411,7 +1493,8 @@ def _draft_edits(c: sqlite3.Connection, session: s.Session, e: dict[str, Any]) -
 
 def _approval(r: sqlite3.Row) -> s.ApprovalRequest:
     return s.ApprovalRequest(approval_id=r["approval_id"], kind=r["kind"], incident_id=r["incident_id"],
-                             status=r["status"], created_at=parse_dt(r["created_at"]))
+                             status=r["status"], created_at=parse_dt(r["created_at"]),
+                             alert_id=r["alert_id"] if "alert_id" in r.keys() else None)
 
 
 _ZONE_STOPWORDS = {"to", "the", "of", "road", "access", "north", "south", "east", "west", "yard", "strip"}
@@ -1459,6 +1542,8 @@ def _alert(r: sqlite3.Row) -> s.Alert:
                      training_assignment_id=r["training_assignment_id"] if "training_assignment_id" in keys else None,
                      evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None,
                      details=json.loads(r["details_json"]) if "details_json" in keys and r["details_json"] else None)
+    if "subject_key" in keys:
+        extra.update(subject_key=r["subject_key"], level=r["level"], cleared_reason=r["cleared_reason"])
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],
         status=r["status"], message=r["message"], explanation=r["explanation"], simulated=True,

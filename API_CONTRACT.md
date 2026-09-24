@@ -159,6 +159,13 @@ Valid new-session request against the development catalog:
 - `WeatherSnapshot` values are normalised (°C, %, mm/h, m/s, m). Open-Meteo values are model output for a grid cell with `issued_at: null` (no issue time is provided); fixture values are synthetic.
 - A `working_conditions` alert episode (with `details` = the saved check) is announced when conditions worsen during an outdoor task in progress.
 
+### Hazard rules (C2)
+
+- Simulated telemetry may carry `proximity` (a scan: omitted = no detector data; `[]` = no detections, still not proof nobody is near), `motion` (timestamped `speed_mps` samples, >= 3, strictly increasing, gaps <= 500 ms), `pitch_deg`/`roll_deg` (degrees) or `grade_pct` (percent), and cumulative `fuel_meter_l`/`load_cycles_total`. All values are synthetic; generated proximity is `source: synthetic_scenario`, never Cat Detect or BLE.
+- Episodes are per rule and `subject_key` (e.g. the proximity entity). A graded episode changes `level` in place: each change is an `Alert.updates[]` item with its own evidence; the first rise is announced once as `alert_escalated`. `cleared_reason` says how it ended (`observed_clear`, `expired_without_detection`, `instant_event`).
+- `/state.rule_coverage` reports, per rule, whether the latest observation could be evaluated (`evaluated`, `unknown`, `not_applicable`, `not_configured`). Unknown is never "safe".
+- A repeat-violation trigger creates one pending `ApprovalRequest` (`kind: repeated_violations`, `alert_id`) and one coaching assignment. Pending review is not a notification or a decision.
+
 ### Example requests
 
 Bash:
