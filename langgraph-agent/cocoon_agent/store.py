@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .api import schemas as s
 from .catalog import Catalog, CatalogError
+from .incident_time import interpret, offset_timezone
 from .migrations import migrate
+from .weather import Site
 
 if TYPE_CHECKING:
     from .rules import SafetyPolicy
@@ -52,6 +54,10 @@ SEED_LESSONS = [
 ]
 
 
+def canonical_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -78,10 +84,33 @@ class VersionConflict(Exception):
         self.current_version = current_version
 
 
+class ConditionsGate(Exception):
+    """A task start stopped by the working-conditions check (block, or a finding that needs acknowledgement)."""
+
+    def __init__(self, reason: str, check: s.WorkingConditionsCheck | None, task: s.AssignedTask):
+        super().__init__(reason)
+        self.reason, self.check, self.task = reason, check, task
+
+
 class InvalidTransition(Exception):
-    def __init__(self, current_status: str, message: str):
+    def __init__(self, current_status: str, message: str, missing: list[str] | None = None):
         super().__init__(message)
         self.current_status = current_status
+        self.missing = missing or []
+
+
+@dataclass(frozen=True)
+class OccurrenceTime:
+    """How a report's occurrence time was established (see incident_time.py and schemas.OccurredBasis)."""
+
+    occurred_at: datetime | None
+    basis: str
+    expression: str | None
+    reference_at: datetime | None
+
+    @staticmethod
+    def of_report(reference: datetime, expression: str | None = None) -> "OccurrenceTime":
+        return OccurrenceTime(reference, "time_of_report", expression, reference)
 
 
 @dataclass(frozen=True)
@@ -93,6 +122,41 @@ class NewSessionBinding:
     site_id: str | None = None
     shift_id: str | None = None
     context_source: str | None = None
+
+
+@dataclass(frozen=True)
+class RuleOutcome:
+    """One evaluation of a C-family rule for the current sample: held True (condition present), False (observed
+    absent) or None (cannot be evaluated: missing, stale or not applicable input; neither opens nor clears).
+    `details` is the family-specific evidence saved once when the episode opens."""
+
+    rule_id: str
+    family: str
+    alert_type: str
+    severity: str
+    message: str
+    reason: str
+    recommended_action: str
+    start_speech: str
+    clear_speech: str | None
+    policy_version: str
+    source_status: str
+    held: bool | None
+    explanation: str
+    details: dict[str, Any]
+    subject_key: str = ""
+    priority: str = "high"
+    level: str | None = None  # graded episodes: a higher level later is an update of the same episode
+    escalate_speech: str | None = None  # announced (once per episode) when the level rises
+    clear_reason: str = "observed_clear"
+    instant: bool = False  # a one-off event: opened and closed by the same observation
+    touch: bool = False  # record this observation as the latest sighting (proximity tracks)
+    on_open: Callable[[sqlite3.Connection, str], dict[str, Any]] | None = None  # links created with the episode
+
+
+LEVEL_RANK = {"warning": 1, "danger": 2, "advisory": 1, "acknowledge": 2, "block": 3}
+# A supervisor-review request expires if nobody decides it in time (then it can no longer be approved or applied).
+ESCALATION_TTL = timedelta(hours=24)
 
 
 @dataclass
@@ -358,12 +422,24 @@ class Store:
                         marks = ", ".join("?" * len(values))
                         c.execute(f"INSERT INTO {table}({cols}) VALUES ({marks})", values)
                         inserted += 1
-                    elif tuple(existing)[:n] != tuple(values)[:n]:
+                    elif tuple(existing)[:n] != tuple(values)[:n] and not self._replanned(c, table, existing, values, n):
                         raise Conflict(f"{table} row {values[0]} already exists with different content")
                     else:
                         reused += 1
                 report["inserted"][table], report["reused"][table] = inserted, reused
         return report
+
+    @staticmethod
+    def _replanned(c: sqlite3.Connection, table: str, existing: sqlite3.Row, values: tuple, n: int) -> bool:
+        """A seeded task whose ONLY differences are its order and start time, in a shift whose schedule was changed
+        by an approved re-plan (schedule_version > 1), is the same record: re-seeding keeps the approved schedule."""
+        if table != "task_assignments":
+            return False
+        moved = {i for i in range(n) if tuple(existing)[i] != values[i]}
+        if not moved <= {5, 6}:  # scheduled_order, scheduled_start_at
+            return False
+        row = c.execute("SELECT schedule_version FROM shifts WHERE shift_id = ?", (values[1],)).fetchone()
+        return row is not None and row[0] > 1
 
     def get_shift(self, shift_id: str) -> s.ShiftInfo | None:
         row = self._one("SELECT sh.*, si.name AS site_name, si.timezone, si.utc_offset FROM shifts sh"
@@ -416,9 +492,101 @@ class Store:
             return result, False
 
     @staticmethod
-    def task_transition(session: s.Session, kind: str, task_id: str | None,
-                        expected_version: int | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
-        """Mutation for task.start / task.complete, scoped to the session's trusted shift."""
+    def save_condition_check(c: sqlite3.Connection, session: s.Session, check: s.WorkingConditionsCheck, purpose: str) -> str:
+        """Persist a check and the exact weather values it used (the snapshot row is written once)."""
+        check_id = "CHK-" + uuid.uuid4().hex[:12]
+        check = check.model_copy(update={"check_id": check_id})
+        record_id = None
+        if check.weather is not None:
+            record_id = check.weather.record_id
+            c.execute("INSERT OR IGNORE INTO weather_records(record_id, site_id, provider, kind, record_json,"
+                      " retrieved_at) VALUES (?, ?, ?, ?, ?, ?)",
+                      (record_id, check.weather.site_id, check.weather.provider, check.weather.kind,
+                       check.weather.model_dump_json(), iso(check.weather.retrieved_at)))
+        c.execute("INSERT INTO condition_checks(check_id, session_id, task_id, purpose, level, coverage, check_json,"
+                  " weather_record_id, policy_version, data_time, acknowledged, created_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (check_id, session.session_id, check.task_id, purpose, check.level, check.coverage,
+                   check.model_dump_json(), record_id, check.policy_version, iso(check.data_time),
+                   int(check.acknowledged), iso(utcnow())))
+        return check_id
+
+    @staticmethod
+    def save_estimate(c: sqlite3.Connection, task_id: str, result: dict[str, Any]) -> s.TaskDurationEstimate:
+        """Save an estimate once per task + estimator config + input snapshot; return the saved one."""
+        row = c.execute("SELECT result_json FROM task_estimates WHERE task_id = ? AND config_sha256 = ? AND"
+                        " inputs_sha256 = ?", (task_id, result["config_sha256"], result["inputs_sha256"])).fetchone()
+        if row is not None:
+            return s.TaskDurationEstimate.model_validate_json(row["result_json"])
+        est = s.TaskDurationEstimate(
+            estimate_id="EST-" + uuid.uuid4().hex[:12], task_id=task_id, created_at=utcnow(),
+            **{k: v for k, v in result.items() if k in s.TaskDurationEstimate.model_fields and k != "inputs_sha256"})
+        c.execute("INSERT INTO task_estimates(estimate_id, task_id, estimator_version, config_sha256, inputs_sha256,"
+                  " method, predicted_minutes, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (est.estimate_id, task_id, est.estimator_version, est.config_sha256, result["inputs_sha256"],
+                   est.method, est.predicted_minutes, est.model_dump_json(), iso(est.created_at)))
+        return est
+
+    def estimate_for_task(self, task_id: str, result: dict[str, Any]) -> s.TaskDurationEstimate:
+        with self._tx() as c:
+            return Store.save_estimate(c, task_id, result)
+
+    def fill_task_ground(self, task_id: str, ground: str) -> bool:
+        """Fixture extension: fill the ground condition once; a different stored value is never overwritten."""
+        with self._tx() as c:
+            row = c.execute("SELECT ground_condition FROM task_assignments WHERE task_id = ?", (task_id,)).fetchone()
+            if row is None or row["ground_condition"] is not None:
+                return False
+            c.execute("UPDATE task_assignments SET ground_condition = ? WHERE task_id = ?", (ground, task_id))
+            return True
+
+    def get_site(self, site_id: str | None) -> "Site | None":
+        if not site_id:
+            return None
+        row = self._one("SELECT site_id, utc_offset, latitude, longitude FROM sites WHERE site_id = ?", (site_id,))
+        return Site(row["site_id"], row["utc_offset"], row["latitude"], row["longitude"]) if row else None
+
+    def located_sites(self) -> "list[Site]":
+        return [Site(r["site_id"], r["utc_offset"], r["latitude"], r["longitude"])
+                for r in self._all("SELECT * FROM sites WHERE latitude IS NOT NULL AND longitude IS NOT NULL")]
+
+    def set_site_location(self, site_id: str, latitude: float, longitude: float, basis: str) -> bool:
+        """Fill the trusted coordinates once (never overwrites a different stored location)."""
+        with self._tx() as c:
+            row = c.execute("SELECT latitude, longitude FROM sites WHERE site_id = ?", (site_id,)).fetchone()
+            if row is None:
+                return False
+            if row["latitude"] is None:
+                c.execute("UPDATE sites SET latitude = ?, longitude = ?, location_basis = ? WHERE site_id = ?",
+                          (latitude, longitude, basis, site_id))
+                return True
+            if (row["latitude"], row["longitude"]) != (latitude, longitude):
+                raise Conflict(f"site {site_id} already has a different trusted location")
+            return False
+
+    def in_progress_task(self, shift_id: str | None) -> s.AssignedTask | None:
+        if not shift_id:
+            return None
+        row = self._one(_TASK_SQL + " WHERE t.shift_id = ? AND t.status = 'in_progress' ORDER BY t.scheduled_order"
+                        " LIMIT 1", (shift_id,))
+        return _assigned_task(row) if row else None
+
+    def data_clock(self, session_id: str) -> datetime | None:
+        """The session's data time: the newest applied observation (None before any telemetry)."""
+        row = self._one("SELECT observed_at FROM machine_state WHERE session_id = ?", (session_id,))
+        return parse_dt(row["observed_at"]) if row else None
+
+    @staticmethod
+    def task_transition(session: s.Session, kind: str, task_id: str | None, expected_version: int | None,
+                        check_for: "Callable[[s.AssignedTask], tuple[s.WorkingConditionsCheck | None, str]] | None" = None,
+                        acknowledged: bool = False,
+                        estimate_for: "Callable[[s.AssignedTask], dict[str, Any]] | None" = None,
+                        ) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for task.start / task.complete, scoped to the session's trusted shift.
+
+        task.start runs the working-conditions gate on the task actually selected (`check_for` returns the check and
+        proceed/acknowledge/block): a block refuses, an unacknowledged finding refuses (ConditionsGate), otherwise the
+        check is saved with the start in this transaction and never rewritten later."""
         needed = {"task.start": "scheduled", "task.complete": "in_progress"}[kind]
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
@@ -437,16 +605,32 @@ class Store:
             if row["status"] != needed:
                 raise InvalidTransition(row["status"], f"task is {row['status']}; {kind} needs a {needed} task")
             now = iso(utcnow())
+            check_id = None
+            if kind == "task.start" and check_for is not None:
+                check, gate = check_for(_assigned_task(row))
+                if gate == "block" or (gate == "acknowledge" and not acknowledged):
+                    raise ConditionsGate("conditions_block" if gate == "block" else "conditions_need_acknowledgement",
+                                         check, _assigned_task(row))
+                if check is not None:
+                    check_id = Store.save_condition_check(
+                        c, session, check.model_copy(update={"acknowledged": gate == "acknowledge"}), "task_start")
+            estimate_id = None
+            if kind == "task.start" and estimate_for is not None:  # the estimate in force at the start, kept for good
+                estimate_id = Store.save_estimate(c, row["task_id"], estimate_for(_assigned_task(row))).estimate_id
             if kind == "task.start":
                 c.execute("UPDATE task_assignments SET status = 'in_progress', version = version + 1, started_at = ?,"
-                          " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
+                          " updated_at = ?, start_check_id = ?, start_estimate_id = ? WHERE task_id = ?",
+                          (now, now, check_id, estimate_id, row["task_id"]))
             else:
                 c.execute("UPDATE task_assignments SET status = 'completed', version = version + 1, completed_at = ?,"
                           " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
             task = _assigned_task(c.execute(_TASK_SQL + " WHERE t.task_id = ?", (row["task_id"],)).fetchone())
             verb = "Started" if kind == "task.start" else "Completed"
-            return {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
-                    "task": task.model_dump(mode="json")}
+            out = {"record_type": "task", "record_id": task.task_id, "summary": f"{verb} {task.title}.",
+                   "task": task.model_dump(mode="json")}
+            if task.start_check is not None and kind == "task.start":
+                out["conditions"] = task.start_check.model_dump(mode="json")
+            return out
 
         return mutate
 
@@ -485,31 +669,67 @@ class Store:
 
     @staticmethod
     def incident_report(session: s.Session, turn_id: str, description: str, severity: str | None,
-                        location_text: str | None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
-        """Mutation for an operator's report: a new confirmed incident per turn (matching text never merges two
-        intentional reports). Identity comes from the session; "where" is the stated place, else the active task's
-        zone, each with its basis; "when" is the time of the report unless stated otherwise; severity only if stated."""
+                        location_text: str | None, *, severity_basis: str | None = None,
+                        when: OccurrenceTime | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's complete report: a new confirmed incident per turn (matching text never merges
+        two intentional reports). Identity comes from the session; "where" is the stated place, else the active
+        task's zone, each with its basis; "when" is the interpreted phrase, else the (labelled) time of the report;
+        severity only as stated (a level, or explicitly unknown)."""
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
             row = c.execute("SELECT * FROM incidents WHERE session_id = ? AND source_turn_id = ?",
                             (session.session_id, turn_id)).fetchone()
             reused = row is not None  # written before the command log existed (pre-v5 retry)
             if row is None:
-                now = iso(utcnow())
+                now = utcnow()
+                t = when or OccurrenceTime.of_report(now)
                 zone, zone_basis = _resolve_zone(c, session, location_text)
+                basis = severity_basis or ("reported" if severity else None)
                 number = c.execute(
                     "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
                     " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text,"
-                    " occurred_at, occurred_basis, confirmed_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, 'time_of_report', ?)",
-                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, now, severity,
-                     "reported" if severity else None, session.site_id, zone, zone_basis, location_text, now, now),
+                    " occurred_at, occurred_basis, occurred_expression, occurred_reference_at, confirmed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 'operator_reported', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, turn_id, iso(now),
+                     severity, basis, session.site_id, zone, zone_basis, location_text, iso(t.occurred_at), t.basis,
+                     t.expression, iso(t.reference_at), iso(now)),
                 ).lastrowid
                 c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (f"INC-{number:04d}", number))
                 row = c.execute("SELECT * FROM incidents WHERE incident_number = ?", (number,)).fetchone()
             inc = _incident(row)
             return {"record_type": "incident", "record_id": inc.incident_id, "reused": reused,
                     "summary": f"Logged incident {inc.incident_number}.", "incident": inc.model_dump(mode="json")}
+
+        return mutate
+
+    @staticmethod
+    def operator_draft(session: s.Session, turn_id: str, description: str, severity: str | None,
+                       severity_basis: str | None, location_text: str | None, when: OccurrenceTime,
+                       notify_supervisor: bool) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+        """Mutation for an operator's report that still misses a fact: it is saved as a draft (own DRF numbering, no
+        incident ID yet) so nothing is lost while the operator is asked. One draft per reporting turn."""
+
+        def mutate(c: sqlite3.Connection) -> dict[str, Any]:
+            row = c.execute("SELECT * FROM incident_drafts WHERE session_id = ? AND source_turn_id = ?",
+                            (session.session_id, turn_id)).fetchone()
+            if row is None:
+                zone, zone_basis = _resolve_zone(c, session, location_text)
+                number = c.execute(
+                    "INSERT INTO incident_drafts(session_id, operator_id, machine_id, origin, description, severity,"
+                    " severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at, occurred_basis,"
+                    " occurred_expression, occurred_reference_at, source_turn_id, notify_supervisor, created_at)"
+                    " VALUES (?, ?, ?, 'operator_report', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (session.session_id, session.operator_id, session.machine_id, description, severity,
+                     severity_basis, session.site_id, zone, zone_basis, location_text, iso(when.occurred_at),
+                     when.basis, when.expression, iso(when.reference_at), turn_id, int(notify_supervisor),
+                     iso(utcnow())),
+                ).lastrowid
+                c.execute("UPDATE incident_drafts SET draft_id = ? WHERE draft_number = ?", (f"DRF-{number:04d}", number))
+                row = c.execute("SELECT * FROM incident_drafts WHERE draft_number = ?", (number,)).fetchone()
+            draft = _draft(row)
+            return {"record_type": "incident_draft", "record_id": draft.draft_id,
+                    "summary": f"Saved report as draft {draft.draft_number} (missing: {', '.join(draft.missing)}).",
+                    "draft": draft.model_dump(mode="json")}
 
         return mutate
 
@@ -536,7 +756,13 @@ class Store:
     def incident_transition(session: s.Session, kind: str, draft_id: str, expected_version: int | None,
                             edits: dict[str, Any] | None = None) -> Callable[[sqlite3.Connection], dict[str, Any]]:
         """Mutation for incident.edit / incident.confirm / incident.dismiss on this session's open drafts. Confirming
-        allocates the incident (and its real ID) exactly once; a confirmed or dismissed draft is final."""
+        allocates the incident (and its real ID) exactly once and needs every fact stated (severity as a level or
+        explicitly unknown, a usable occurrence time); a confirmed or dismissed draft is final. A draft saved with
+        `notify_supervisor` gets its pending supervisor-review request in the same transaction as the confirmation.
+
+        Edits: description, severity, severity_unknown, location_text, and the occurrence time as `when` (already
+        interpreted by the graph), `occurred_expression` (interpreted here against this first execution's time and
+        the trusted site offset) or an exact `occurred_at`."""
 
         def mutate(c: sqlite3.Connection) -> dict[str, Any]:
             row = c.execute("SELECT * FROM incident_drafts WHERE draft_id = ? AND session_id = ?",
@@ -548,15 +774,20 @@ class Store:
             if row["status"] != "draft":
                 raise InvalidTransition(row["status"], f"draft is {row['status']}; {kind} needs an open draft")
             now = iso(utcnow())
-            incident = None
+            incident = approval = None
             if kind == "incident.confirm":
+                missing = _draft_missing(row)
+                if missing:
+                    raise InvalidTransition("draft", f"the draft still needs: {', '.join(missing)}", missing)
                 number = c.execute(
                     "INSERT INTO incidents(session_id, operator_id, machine_id, description, source_turn_id, created_at,"
                     " origin, severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
-                    " occurred_basis, episode_id, draft_id, confirmed_at)"
-                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?, origin,"
+                    " occurred_basis, occurred_expression, occurred_reference_at, episode_id, draft_id, confirmed_at)"
+                    " SELECT session_id, operator_id, machine_id, description, 'draft:' || draft_id, ?,"
+                    " CASE origin WHEN 'operator_report' THEN 'operator_reported' ELSE origin END,"
                     " severity, severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at,"
-                    " occurred_basis, episode_id, draft_id, ? FROM incident_drafts WHERE draft_id = ?",
+                    " occurred_basis, occurred_expression, occurred_reference_at, episode_id, draft_id, ?"
+                    " FROM incident_drafts WHERE draft_id = ?",
                     (now, now, draft_id)).lastrowid
                 incident_id = f"INC-{number:04d}"
                 c.execute("UPDATE incidents SET incident_id = ? WHERE incident_number = ?", (incident_id, number))
@@ -565,26 +796,15 @@ class Store:
                 incident = _incident(c.execute("SELECT * FROM incidents WHERE incident_number = ?",
                                                (number,)).fetchone())
                 summary = f"Confirmed draft {row['draft_number']} as incident {number}."
+                if row["notify_supervisor"]:
+                    approval = Store.escalation_request(session, incident_id)(c)["approval"]
+                    summary += " Supervisor review requested (pending)."
             elif kind == "incident.dismiss":
                 c.execute("UPDATE incident_drafts SET status = 'dismissed', dismissed_at = ?, version = version + 1"
                           " WHERE draft_id = ?", (now, draft_id))
                 summary = f"Dismissed draft {row['draft_number']}."
             else:
-                e = edits or {}
-                sets, args = [], []
-                if e.get("description"):
-                    sets.append("description = ?")
-                    args.append(e["description"])
-                if e.get("severity"):
-                    sets += ["severity = ?", "severity_basis = 'reported'"]
-                    args.append(e["severity"])
-                if e.get("location_text"):
-                    zone, basis = _resolve_zone(c, session, e["location_text"])
-                    sets.append("location_text = ?")
-                    args.append(e["location_text"])
-                    if basis == "reported":
-                        sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
-                        args.append(zone)
+                sets, args = _draft_edits(c, session, edits or {})
                 if not sets:
                     raise InvalidTransition(row["status"], "incident.edit needs at least one field to change")
                 c.execute(f"UPDATE incident_drafts SET {', '.join(sets)}, version = version + 1 WHERE draft_id = ?",
@@ -596,6 +816,8 @@ class Store:
                    "draft": draft.model_dump(mode="json")}
             if incident is not None:
                 out["incident"] = incident.model_dump(mode="json")
+            if approval is not None:
+                out["approval"] = approval
             return out
 
         return mutate
@@ -608,10 +830,11 @@ class Store:
             row = c.execute("SELECT * FROM approval_requests WHERE kind = 'incident_escalation' AND incident_id = ?",
                             (incident_id,)).fetchone()
             if row is None:
-                approval_id = "APR-" + uuid.uuid4().hex[:12]
-                c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id,"
-                          " created_at) VALUES (?, ?, ?, 'incident_escalation', ?, ?)",
-                          (approval_id, session.session_id, session.operator_id, incident_id, iso(utcnow())))
+                approval_id = Store.insert_approval(
+                    c, session, kind="incident_escalation", action_type="notify_supervisor",
+                    payload={"kind": "incident_escalation", "incident_id": incident_id, "alert_id": None,
+                             "details": None}, proposer=f"operator:{session.operator_id}", ttl=ESCALATION_TTL,
+                    incident_id=incident_id, evidence_refs={"incident_id": incident_id})
                 row = c.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
             approval = _approval(row)
             return {"record_type": "approval_request", "record_id": approval.approval_id,
@@ -619,6 +842,33 @@ class Store:
                     "approval": approval.model_dump(mode="json")}
 
         return mutate
+
+    @staticmethod
+    def insert_approval(c: sqlite3.Connection, session: s.Session, *, kind: str, action_type: str,
+                        payload: dict[str, Any], proposer: str, ttl: timedelta | None, incident_id: str | None = None,
+                        alert_id: str | None = None, details: dict[str, Any] | None = None,
+                        dedup_key: str | None = None, resource_versions: dict[str, Any] | None = None,
+                        evidence_refs: dict[str, Any] | None = None, now: datetime | None = None) -> str:
+        """Create one pending request with its immutable payload (canonical JSON; its SHA-256 is what a decision
+        must name). The trusted site comes only from the session's trusted binding; without one the request is
+        `ineligible_no_site`: visible to no supervisor and never approvable."""
+        now = now or utcnow()
+        approval_id = "APR-" + uuid.uuid4().hex[:12]
+        site_id = session.site_id if session.binding_status == "catalog_verified" \
+            and session.context_status == "trusted_binding" else None
+        c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id, status,"
+                  " created_at, alert_id, details_json, site_id, eligibility, proposer, action_type, payload_json,"
+                  " resource_versions_json, evidence_refs_json, dedup_key, expires_at, updated_at)"
+                  " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (approval_id, session.session_id, session.operator_id, kind, incident_id, iso(now), alert_id,
+                   json.dumps(details) if details is not None else None, site_id,
+                   "eligible" if site_id else "ineligible_no_site", proposer, action_type, canonical_json(payload),
+                   json.dumps(resource_versions) if resource_versions else None,
+                   json.dumps(evidence_refs) if evidence_refs else None, dedup_key,
+                   iso(now + ttl) if ttl else None, iso(now)))
+        if site_id:
+            Store.feed_event(c, site_id, "approval.changed", "approval", approval_id, now)
+        return approval_id
 
     # ------------------------------------------------------------------ training
 
@@ -736,6 +986,32 @@ class Store:
                           (revoked_at, reason, token_id))
             return _token_meta(c.execute(_TOKEN_META_SQL + " WHERE t.token_id = ?", (token_id,)).fetchone()), changed
 
+    def grant_site(self, principal_id: str, site_id: str, granted_by: str, now: str) -> bool:
+        """Trusted supervisor scope (admin CLI only). Returns False when the grant is already active."""
+        with self._tx() as c:
+            p = c.execute("SELECT kind FROM principals WHERE principal_id = ?", (principal_id,)).fetchone()
+            if p is None or p["kind"] != "supervisor":
+                raise NotFound("no supervisor principal with this principal_id")
+            if c.execute("SELECT 1 FROM sites WHERE site_id = ?", (site_id,)).fetchone() is None:
+                raise NotFound("no such site (seed the demo site first)")
+            row = c.execute("SELECT revoked_at FROM principal_site_grants WHERE principal_id = ? AND site_id = ?",
+                            (principal_id, site_id)).fetchone()
+            if row is not None and row["revoked_at"] is None:
+                return False
+            c.execute("INSERT INTO principal_site_grants(principal_id, site_id, granted_at, granted_by) VALUES"
+                      " (?, ?, ?, ?) ON CONFLICT(principal_id, site_id) DO UPDATE SET granted_at = excluded.granted_at,"
+                      " granted_by = excluded.granted_by, revoked_at = NULL", (principal_id, site_id, now, granted_by))
+            return True
+
+    def revoke_site(self, principal_id: str, site_id: str, now: str) -> bool:
+        with self._tx() as c:
+            return c.execute("UPDATE principal_site_grants SET revoked_at = ? WHERE principal_id = ? AND site_id = ?"
+                             " AND revoked_at IS NULL", (now, principal_id, site_id)).rowcount == 1
+
+    def granted_sites(self, principal_id: str) -> list[str]:
+        return [r[0] for r in self._all("SELECT site_id FROM principal_site_grants WHERE principal_id = ? AND"
+                                        " revoked_at IS NULL ORDER BY site_id", (principal_id,))]
+
     def owned_verified_sessions(self, operator_id: str) -> list[s.Session]:
         rows = self._all("SELECT * FROM sessions WHERE binding_status = 'catalog_verified' AND operator_id = ?"
                          " ORDER BY created_at", (operator_id,))
@@ -745,21 +1021,66 @@ class Store:
 
     def active_alerts(self, session_id: str) -> list[s.Alert]:
         rows = self._all("SELECT * FROM alerts WHERE session_id = ? AND status = 'active' ORDER BY started_at", (session_id,))
-        return [_alert(r) for r in rows]
+        return self._with_updates([_alert(r) for r in rows])
 
     def latest_alert(self, session_id: str) -> s.Alert | None:
         row = self._one(
             "SELECT * FROM alerts WHERE session_id = ? ORDER BY (status = 'active') DESC, started_at DESC LIMIT 1",
             (session_id,),
         )
-        return _alert(row) if row else None
+        return self._with_updates([_alert(row)])[0] if row else None
+
+    def _with_updates(self, alerts: list[s.Alert]) -> list[s.Alert]:
+        """Attach each episode's later updates (level changes with their own evidence)."""
+        if not alerts:
+            return alerts
+        marks = ", ".join("?" * len(alerts))
+        rows = self._all(f"SELECT * FROM alert_updates WHERE alert_id IN ({marks}) ORDER BY observed_at",
+                         tuple(a.alert_id for a in alerts))
+        by_alert: dict[str, list[s.AlertUpdate]] = {}
+        for r in rows:
+            by_alert.setdefault(r["alert_id"], []).append(s.AlertUpdate(
+                update_id=r["update_id"], level=r["level"], previous_level=r["previous_level"],
+                observed_at=parse_dt(r["observed_at"]), event_id=r["event_id"], details=json.loads(r["details_json"]),
+                announcement_event_id=r["announcement_event_id"]))
+        return [a.model_copy(update={"updates": by_alert.get(a.alert_id, [])}) for a in alerts]
+
+    def rule_coverage(self, session_id: str) -> list[s.RuleCoverage]:
+        row = self._one("SELECT rule_state_json FROM machine_state WHERE session_id = ?", (session_id,))
+        if row is None or not row["rule_state_json"]:
+            return []
+        return [s.RuleCoverage(**c) for c in json.loads(row["rule_state_json"]).get("coverage", [])]
 
     def announced_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
         """Alerts that were announced, with the announcement's event_id and time, newest announcement first."""
         rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
                          " JOIN announcements n ON n.alert_id = a.alert_id AND n.type = 'alert_started'"
                          " WHERE a.session_id = ? ORDER BY n.sequence DESC", (session_id,))
+        alerts = self._with_updates([_alert(r) for r in rows])
+        return [(a, r["ann_event_id"], parse_dt(r["ann_created_at"])) for a, r in zip(alerts, rows)]
+
+    def linked_alerts(self, session_id: str) -> list[tuple[s.Alert, str, datetime]]:
+        """Correlated (combined-condition) episodes that were not announced themselves, paired with the announcement
+        of the parent episode that covered them, newest first."""
+        rows = self._all("SELECT a.*, n.event_id AS ann_event_id, n.created_at AS ann_created_at FROM alerts a"
+                         " JOIN announcements n ON n.alert_id = a.correlated_alert_id AND n.type = 'alert_started'"
+                         " WHERE a.session_id = ? AND a.announced = 0 ORDER BY a.started_at DESC", (session_id,))
         return [(_alert(r), r["ann_event_id"], parse_dt(r["ann_created_at"])) for r in rows]
+
+    def related_alerts(self, alert_id: str) -> list[s.Alert]:
+        """Episodes linked to this one: its correlated children, and the parent if it is itself a child."""
+        rows = self._all("SELECT * FROM alerts WHERE correlated_alert_id = ? OR alert_id ="
+                         " (SELECT correlated_alert_id FROM alerts WHERE alert_id = ?) ORDER BY started_at",
+                         (alert_id, alert_id))
+        return [_alert(r) for r in rows if r["alert_id"] != alert_id]
+
+    def get_draft(self, session_id: str, draft_id: str) -> s.IncidentDraft | None:
+        row = self._one("SELECT * FROM incident_drafts WHERE session_id = ? AND draft_id = ?", (session_id, draft_id))
+        return _draft(row) if row else None
+
+    def site_offset(self, session: s.Session) -> timezone | None:
+        with self._lock:
+            return session_offset(self._conn, session)
 
     def deliveries(self, event_id: str) -> list[s.DeliveryRecord]:
         return [_delivery(d) for d in self._all("SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id",
@@ -838,7 +1159,13 @@ class Store:
 
     def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
                           machine_category: str | None, announcement_ttl: timedelta,
-                          requires_engine_on: bool) -> dict[str, Any]:
+                          requires_engine_on: bool, outcomes: "list[RuleOutcome] | None" = None,
+                          in_task_check: "s.WorkingConditionsCheck | None" = None,
+                          evaluate_in_tx: "Callable[[sqlite3.Connection, dict], tuple[list[RuleOutcome], dict]] | None"
+                          = None,
+                          repeat_in_tx: "Callable[[sqlite3.Connection], list[RuleOutcome]] | None" = None,
+                          coaching_in_tx: "Callable[[sqlite3.Connection], list[tuple[str, str]]] | None" = None,
+                          ) -> dict[str, Any]:
         """Record one sample and apply every rule's episode transition, the linked automatic draft and the
         announcement in ONE short transaction (no model call inside).
 
@@ -851,6 +1178,7 @@ class Store:
         session_id = session.session_id
         opened: list[str] = []
         cleared: list[str] = []
+        updated: list[str] = []
         announced: list[str] = []
         drafts: list[str] = []
         readings_json = req.readings.model_dump_json()
@@ -933,8 +1261,36 @@ class Store:
                             announced.append(self._announce(c, session_id, active["alert_id"], "alert_cleared", "low",
                                                             rule.clear_speech, now, announcement_ttl))
                         changed = True
+                rule_state = json.loads(prev["rule_state_json"]) if prev is not None and "rule_state_json" in \
+                    prev.keys() and prev["rule_state_json"] else {}
+                extra = list(outcomes or ())
+                if evaluate_in_tx is not None:
+                    more, rule_state = evaluate_in_tx(c, rule_state)
+                    extra += more
+                    c.execute("UPDATE machine_state SET rule_state_json = ? WHERE session_id = ?",
+                              (json.dumps(rule_state, default=str), session_id))
+
+                def apply(items: list[RuleOutcome]) -> bool:
+                    moved = False
+                    for o in items:
+                        for kind, alert_id, event_id in self._rule_outcome(c, session, req, o, now, announcement_ttl,
+                                                                           in_task_check):
+                            {"opened": opened, "cleared": cleared, "updated": updated}[kind].append(alert_id)
+                            if event_id:
+                                announced.append(event_id)
+                            moved = True
+                    return moved
+
+                changed = apply(extra) or changed
+                if repeat_in_tx is not None:  # counts the episodes this very sample may have opened
+                    changed = apply(repeat_in_tx(c)) or changed
+                for assignment_id, speech in coaching_in_tx(c) if coaching_in_tx is not None else ():
+                    announced.append(self._coach(c, session_id, assignment_id, speech, now, announcement_ttl))
+                    changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
+            if (opened or cleared or updated) and session.site_id and session.binding_status == "catalog_verified":
+                Store.feed_event(c, session.site_id, "alerts.changed", "session", session_id, now)
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
             result = {
                 "session_id": session_id,
@@ -943,6 +1299,7 @@ class Store:
                 "ignored_reason": ignored,
                 "alerts_opened": opened,
                 "alerts_cleared": cleared,
+                "alerts_updated": updated,
                 "announcements_created": announced,
                 "drafts_created": drafts,
                 "state_version": version,
@@ -955,12 +1312,90 @@ class Store:
             )
             return result
 
+    def _rule_outcome(self, c: sqlite3.Connection, session: s.Session, req: s.TelemetryRequest, o: RuleOutcome,
+                      now: datetime, ttl: timedelta,
+                      in_task_check: "s.WorkingConditionsCheck | None") -> list[tuple[str, str, str | None]]:
+        """Open, update or close one C-family episode inside the observation transaction. The opening evidence is
+        saved once; a later level change is an `alert_updates` row with its own evidence (announced once per episode
+        when it rises); a close records why it closed."""
+        sid = session.session_id
+        at = iso(req.observed_at)
+        active = c.execute("SELECT * FROM alerts WHERE session_id = ? AND rule_id = ? AND subject_key = ?"
+                           " AND status = 'active'", (sid, o.rule_id, o.subject_key)).fetchone()
+        if o.held and active is None:
+            alert_id = "ALR-" + uuid.uuid4().hex[:12]
+            details = dict(o.details)
+            if o.family == "working_conditions" and in_task_check is not None:
+                details["check_id"] = Store.save_condition_check(c, session, in_task_check, "in_task")
+            evidence = s.AlertEvidence(event_id=req.event_id, observed_at=req.observed_at, readings=req.readings)
+            c.execute(
+                "INSERT INTO alerts(alert_id, session_id, rule_id, alert_type, severity, status, message, explanation,"
+                " trigger_readings_json, opened_by_event_id, started_at, policy_version, source_status, reason,"
+                " recommended_action, evidence_json, announced, details_json, subject_key, level, last_seen_at)"
+                " VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                (alert_id, sid, o.rule_id, o.alert_type, o.severity, o.message, o.explanation,
+                 req.readings.model_dump_json(), req.event_id, at, o.policy_version, o.source_status, o.reason,
+                 o.recommended_action, evidence.model_dump_json(), json.dumps(details, default=str), o.subject_key,
+                 o.level, at))
+            if o.on_open is not None:
+                details.update(o.on_open(c, alert_id))
+                c.execute("UPDATE alerts SET details_json = ? WHERE alert_id = ?",
+                          (json.dumps(details, default=str), alert_id))
+            event_id = self._announce(c, sid, alert_id, "alert_started", o.priority, o.start_speech, now, ttl)
+            steps = [("opened", alert_id, event_id)]
+            if o.instant:
+                c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?,"
+                          " cleared_reason = 'instant_event' WHERE alert_id = ?", (at, req.event_id, alert_id))
+            return steps
+        if o.held and active is not None:
+            if o.touch:
+                c.execute("UPDATE alerts SET last_seen_at = ? WHERE alert_id = ?", (at, active["alert_id"]))
+            if not o.level or o.level == active["level"]:
+                return []
+            rising = LEVEL_RANK.get(o.level, 0) > LEVEL_RANK.get(active["level"] or "", 0)
+            update_id = "UPD-" + uuid.uuid4().hex[:12]
+            event_id = None
+            already = c.execute("SELECT 1 FROM announcements WHERE alert_id = ? AND type = 'alert_escalated'",
+                                (active["alert_id"],)).fetchone()
+            if rising and o.escalate_speech and already is None:
+                event_id = self._announce(c, sid, active["alert_id"], "alert_escalated", "critical" if
+                                          o.severity == "critical" else "high", o.escalate_speech, now, ttl)
+            c.execute("INSERT INTO alert_updates(update_id, alert_id, level, previous_level, observed_at, event_id,"
+                      " details_json, announcement_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (update_id, active["alert_id"], o.level, active["level"], at, req.event_id,
+                       json.dumps(o.details, default=str), event_id, iso(now)))
+            c.execute("UPDATE alerts SET level = ?, severity = CASE WHEN ? THEN ? ELSE severity END WHERE alert_id = ?",
+                      (o.level, int(rising), o.severity, active["alert_id"]))
+            return [("updated", active["alert_id"], event_id)]
+        if o.held is False and active is not None:
+            c.execute("UPDATE alerts SET status = 'cleared', cleared_at = ?, cleared_by_event_id = ?, cleared_reason = ?"
+                      " WHERE alert_id = ?", (at, req.event_id, o.clear_reason, active["alert_id"]))
+            event_id = None
+            if o.clear_speech:
+                event_id = self._announce(c, sid, active["alert_id"], "alert_cleared", "low", o.clear_speech, now, ttl)
+            return [("cleared", active["alert_id"], event_id)]
+        return []
+
+    @staticmethod
+    def _coach(c: sqlite3.Connection, session_id: str, assignment_id: str, speech: str, now: datetime,
+               ttl: timedelta) -> str:
+        """One low-priority coaching prompt per episode-linked assignment (never repeated after a restart)."""
+        seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
+                        (session_id,)).fetchone()[0]
+        event_id = f"ann_coach_{assignment_id}"
+        c.execute("INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id,"
+                  " created_at, expires_at) VALUES (?, ?, ?, 'coaching_prompt', 'low', ?, NULL, ?, ?)",
+                  (event_id, session_id, seq, speech, iso(now), iso(now + ttl)))
+        c.execute("UPDATE training_assignments SET coaching_prompted_at = ? WHERE assignment_id = ?",
+                  (iso(now), assignment_id))
+        return event_id
+
     @staticmethod
     def _announce(c: sqlite3.Connection, session_id: str, alert_id: str, kind: str, priority: str, speech: str,
                   now: datetime, ttl: timedelta) -> str:
         seq = c.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM announcements WHERE session_id = ?",
                         (session_id,)).fetchone()[0]
-        event_id = f"ann_{alert_id}_{'start' if kind == 'alert_started' else 'clear'}"
+        event_id = f"ann_{alert_id}_{ {'alert_started': 'start', 'alert_escalated': 'escalated'}.get(kind, 'clear')}"
         c.execute(
             "INSERT INTO announcements(event_id, session_id, sequence, type, priority, speech, alert_id, created_at,"
             " expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -968,9 +1403,19 @@ class Store:
         )
         return event_id
 
+    @staticmethod
+    def feed_event(c: sqlite3.Connection, site_id: str, kind: str, ref_type: str, ref_id: str, now: datetime) -> str:
+        """Supervisor change-feed outbox row, committed with the change it reports. It holds a reference only; the
+        payload is projected at read time under the reader's current scope and the operator's current consent."""
+        event_id = "sfe_" + uuid.uuid4().hex[:16]
+        c.execute("INSERT INTO supervisor_feed(event_id, site_id, type, ref_type, ref_id, created_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?)", (event_id, site_id, kind, ref_type, ref_id, iso(now)))
+        return event_id
+
     # ------------------------------------------------------------------ announcements
 
     def list_events(self, session_id: str, after: int, limit: int) -> tuple[list[s.Announcement], bool]:
+        now = utcnow()
         rows = self._all(
             "SELECT * FROM announcements WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
             (session_id, after, limit + 1),
@@ -980,10 +1425,17 @@ class Store:
         for r in rows[:limit]:
             deliveries = [_delivery(d) for d in self._all(
                 "SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id", (r["event_id"],))]
+            shown = [s.PresentationView(presentation_id=p["presentation_id"], event_id=p["event_id"],
+                                        consumer_id=p["consumer_id"], channel=p["channel"], status=p["status"],
+                                        presented_at=parse_dt(p["presented_at"]), received_at=parse_dt(p["received_at"]))
+                     for p in self._all("SELECT * FROM presentations WHERE event_id = ? ORDER BY received_at,"
+                                        " presentation_id", (r["event_id"],))]
+            expires = parse_dt(r["expires_at"])
             events.append(s.Announcement(
                 event_id=r["event_id"], sequence=r["sequence"], type=r["type"], priority=r["priority"],
                 speech=r["speech"], alert_id=r["alert_id"], created_at=parse_dt(r["created_at"]),
-                expires_at=parse_dt(r["expires_at"]), deliveries=deliveries,
+                expires_at=expires, deliveries=deliveries, presentations=shown,
+                expired=expires is not None and expires <= now,
             ))
         return events, has_more
 
@@ -1005,9 +1457,12 @@ class Store:
 
 # ---------------------------------------------------------------------- row mappers
 
-_TASK_SQL = ("SELECT t.*, z.name AS zone_name, si.utc_offset FROM task_assignments t"
+_TASK_SQL = ("SELECT t.*, z.name AS zone_name, z.outdoor AS zone_outdoor, si.utc_offset, cc.check_json AS start_check_json,"
+             " te.result_json AS start_estimate_json FROM task_assignments t"
              " JOIN site_zones z ON z.site_zone_id = t.site_zone_id"
-             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id")
+             " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id"
+             " LEFT JOIN condition_checks cc ON cc.check_id = t.start_check_id"
+             " LEFT JOIN task_estimates te ON te.estimate_id = t.start_estimate_id")
 
 
 def _local_hhmm(when: datetime, utc_offset: str) -> str:
@@ -1029,6 +1484,11 @@ def _assigned_task(r: sqlite3.Row) -> s.AssignedTask:
         weather=s.TaskConditions(source=weather["source"], summary=weather.get("summary"),
                                  temperature_c=weather.get("temperature_c")),
         duration=s.TaskDuration(minutes=r["duration_minutes"], source=r["duration_source"]),
+        outdoor=bool(r["zone_outdoor"]),
+        start_check=s.WorkingConditionsCheck.model_validate_json(r["start_check_json"]) if r["start_check_json"] else None,
+        ground_condition=r["ground_condition"],
+        start_estimate=s.TaskDurationEstimate.model_validate_json(r["start_estimate_json"]) if r["start_estimate_json"]
+        else None,
     )
 
 
@@ -1078,14 +1538,16 @@ def _task(r: sqlite3.Row) -> s.Task:
 
 
 _INCIDENT_V5 = ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
-                "occurred_basis", "episode_id", "draft_id")
+                "occurred_basis", "episode_id", "draft_id", "occurred_expression")
 
 
 def _incident(r: sqlite3.Row) -> s.Incident:
-    # Rows read before migration 5 (only during an upgrade) lack the structured columns: model defaults apply.
+    # Rows read before migration 5/8 (only during an upgrade) lack the structured columns: model defaults apply.
     extra = {k: r[k] for k in _INCIDENT_V5 if k in r.keys()}
     if "occurred_at" in r.keys():
         extra.update(occurred_at=parse_dt(r["occurred_at"]), confirmed_at=parse_dt(r["confirmed_at"]))
+    if "occurred_reference_at" in r.keys():
+        extra["occurred_reference_at"] = parse_dt(r["occurred_reference_at"])
     return s.Incident(
         incident_id=r["incident_id"], incident_number=r["incident_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], description=r["description"],
@@ -1094,6 +1556,15 @@ def _incident(r: sqlite3.Row) -> s.Incident:
 
 
 def _draft(r: sqlite3.Row) -> s.IncidentDraft:
+    keys = r.keys()
+    extra = {}
+    if "notify_supervisor" in keys:  # absent only while reading a pre-v8 row during an upgrade
+        extra = dict(occurred_expression=r["occurred_expression"],
+                     occurred_reference_at=parse_dt(r["occurred_reference_at"]),
+                     notify_supervisor=bool(r["notify_supervisor"]))
+    if "capture_mode" in keys:  # v16
+        extra.update(client_draft_id=r["client_draft_id"], captured_at=parse_dt(r["captured_at"]),
+                     capture_mode=r["capture_mode"])
     return s.IncidentDraft(
         draft_id=r["draft_id"], draft_number=r["draft_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], origin=r["origin"], status=r["status"],
@@ -1102,12 +1573,80 @@ def _draft(r: sqlite3.Row) -> s.IncidentDraft:
         occurred_at=parse_dt(r["occurred_at"]), occurred_basis=r["occurred_basis"], episode_id=r["episode_id"],
         version=r["version"], incident_id=r["incident_id"], created_at=parse_dt(r["created_at"]),
         confirmed_at=parse_dt(r["confirmed_at"]), dismissed_at=parse_dt(r["dismissed_at"]),
+        missing=_draft_missing(r) if r["status"] == "draft" else [], **extra,
     )
+
+
+def _draft_missing(r: sqlite3.Row) -> list[str]:
+    """Facts a draft still needs before it can be confirmed (a rule default or 'unknown' counts as stated)."""
+    missing = []
+    if r["severity_basis"] is None:
+        missing.append("severity")
+    if r["occurred_at"] is None or r["occurred_basis"] in (None, "unresolved"):
+        missing.append("occurred_time")
+    return missing
+
+
+class InvalidInput(Exception):
+    """A request value that is well-formed but cannot be used (e.g. an uninterpretable time phrase). Changes nothing."""
+
+    def __init__(self, field: str, issue: str):
+        super().__init__(f"{field}: {issue}")
+        self.field, self.issue = field, issue
+
+
+def session_offset(c: sqlite3.Connection, session: s.Session) -> timezone | None:
+    """Trusted site UTC offset of the session's seeded shift (None when unbound)."""
+    if not session.shift_id:
+        return None
+    row = c.execute("SELECT si.utc_offset FROM shifts sh JOIN sites si USING (site_id) WHERE sh.shift_id = ?",
+                    (session.shift_id,)).fetchone()
+    return offset_timezone(row["utc_offset"]) if row else None
+
+
+def _draft_edits(c: sqlite3.Connection, session: s.Session, e: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    sets: list[str] = []
+    args: list[Any] = []
+    if e.get("description"):
+        sets.append("description = ?")
+        args.append(e["description"])
+    if e.get("severity") and e.get("severity_unknown"):
+        raise InvalidInput("payload.severity", "give a severity level or severity_unknown, not both")
+    if e.get("severity"):
+        sets += ["severity = ?", "severity_basis = 'reported'"]
+        args.append(e["severity"])
+    elif e.get("severity_unknown"):
+        sets += ["severity = NULL", "severity_basis = 'stated_unknown'"]
+    if e.get("location_text"):
+        zone, basis = _resolve_zone(c, session, e["location_text"])
+        sets.append("location_text = ?")
+        args.append(e["location_text"])
+        if basis == "reported":
+            sets += ["site_zone_id = ?", "zone_basis = 'reported'"]
+            args.append(zone)
+    when: OccurrenceTime | None = e.get("when")
+    if when is None and e.get("occurred_at") is not None:
+        at = e["occurred_at"]
+        now = utcnow()
+        if at > now + timedelta(minutes=5):
+            raise InvalidInput("payload.occurred_at", "is in the future")
+        when = OccurrenceTime(at.astimezone(timezone.utc), "operator_entered", None, now)
+    elif when is None and e.get("occurred_expression"):
+        now = utcnow()
+        got = interpret(e["occurred_expression"], now, session_offset(c, session))
+        if got.status != "resolved":
+            raise InvalidInput("payload.occurred_expression", got.reason or "not a supported time expression")
+        when = OccurrenceTime(got.occurred_at, got.basis, got.expression, now)
+    if when is not None:
+        sets += ["occurred_at = ?", "occurred_basis = ?", "occurred_expression = ?", "occurred_reference_at = ?"]
+        args += [iso(when.occurred_at), when.basis, when.expression, iso(when.reference_at)]
+    return sets, args
 
 
 def _approval(r: sqlite3.Row) -> s.ApprovalRequest:
     return s.ApprovalRequest(approval_id=r["approval_id"], kind=r["kind"], incident_id=r["incident_id"],
-                             status=r["status"], created_at=parse_dt(r["created_at"]))
+                             status=r["status"], created_at=parse_dt(r["created_at"]),
+                             alert_id=r["alert_id"] if "alert_id" in r.keys() else None)
 
 
 _ZONE_STOPWORDS = {"to", "the", "of", "road", "access", "north", "south", "east", "west", "yard", "strip"}
@@ -1134,10 +1673,13 @@ def _resolve_zone(c: sqlite3.Connection, session: s.Session,
 
 
 def _assignment(r: sqlite3.Row) -> s.TrainingAssignment:
+    keys = r.keys()
     return s.TrainingAssignment(
         assignment_id=r["assignment_id"], lesson_id=r["lesson_id"], lesson_title=r["lesson_title"],
         operator_id=r["operator_id"], status=r["status"], assigned_at=parse_dt(r["assigned_at"]),
-        source_episode_id=r["source_episode_id"] if "source_episode_id" in r.keys() else None,
+        source_episode_id=r["source_episode_id"] if "source_episode_id" in keys else None,
+        completed_at=parse_dt(r["completed_at"]) if "completed_at" in keys else None,
+        deferred_until=parse_dt(r["deferred_until"]) if "deferred_until" in keys else None,
     )
 
 
@@ -1153,7 +1695,10 @@ def _alert(r: sqlite3.Row) -> s.Alert:
                      recommended_action=r["recommended_action"], correlated_alert_id=r["correlated_alert_id"],
                      draft_incident_id=r["draft_incident_id"], announced=bool(r["announced"]),
                      training_assignment_id=r["training_assignment_id"] if "training_assignment_id" in keys else None,
-                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None)
+                     evidence=s.AlertEvidence.model_validate_json(r["evidence_json"]) if r["evidence_json"] else None,
+                     details=json.loads(r["details_json"]) if "details_json" in keys and r["details_json"] else None)
+    if "subject_key" in keys:
+        extra.update(subject_key=r["subject_key"], level=r["level"], cleared_reason=r["cleared_reason"])
     return s.Alert(
         alert_id=r["alert_id"], rule_id=r["rule_id"], alert_type=r["alert_type"], severity=r["severity"],
         status=r["status"], message=r["message"], explanation=r["explanation"], simulated=True,

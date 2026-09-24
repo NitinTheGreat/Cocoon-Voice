@@ -1,0 +1,20 @@
+{
+  "schema": "cocoon.weather-fixture.v1",
+  "fixture_version": "1",
+  "site_id": "SITE_DEMO_NORTH",
+  "provenance": "synthetic_demo_fixture: invented site-local weather periods for the Cocoon demo. Not an observation, not a forecast and not provider output. Periods repeat for every service date and are matched to the session's data clock in the site's time zone.",
+  "units": {"temperature_c": "degC", "relative_humidity_pct": "%", "precipitation_mm": "mm over the period hour",
+            "precipitation_rate_mm_h": "mm/h", "wind_speed_ms": "m/s", "wind_gust_ms": "m/s", "visibility_m": "m"},
+  "periods": [
+    {"from_local": "00:00", "to_local": "09:00", "temperature_c": 27.0, "relative_humidity_pct": 72, "precipitation_rate_mm_h": 0.0,
+     "wind_speed_ms": 2.5, "wind_gust_ms": 5.0, "visibility_m": 14000, "weather_code": 1, "summary": "clear and calm"},
+    {"from_local": "09:00", "to_local": "11:00", "temperature_c": 33.0, "relative_humidity_pct": 55, "precipitation_rate_mm_h": 0.0,
+     "wind_speed_ms": 5.0, "wind_gust_ms": 8.5, "visibility_m": 12000, "weather_code": 2, "summary": "hot and dry"},
+    {"from_local": "11:00", "to_local": "12:00", "temperature_c": 36.5, "relative_humidity_pct": 48, "precipitation_rate_mm_h": 0.0,
+     "wind_speed_ms": 9.5, "wind_gust_ms": 14.0, "visibility_m": 9000, "weather_code": 3, "summary": "very hot with strong gusts"},
+    {"from_local": "12:00", "to_local": "13:00", "temperature_c": 29.0, "relative_humidity_pct": 88, "precipitation_rate_mm_h": 7.0,
+     "wind_speed_ms": 13.0, "wind_gust_ms": 21.0, "visibility_m": 400, "weather_code": 95, "summary": "thunderstorm with heavy rain"},
+    {"from_local": "13:00", "to_local": "24:00", "temperature_c": 30.0, "relative_humidity_pct": 64, "precipitation_rate_mm_h": 0.2,
+     "wind_speed_ms": 4.0, "wind_gust_ms": 7.0, "visibility_m": 13000, "weather_code": 61, "summary": "light showers"}
+  ]
+}

@@ -63,6 +63,41 @@ class Settings(BaseSettings):
     # Machine state counts as stale when no sample was RECEIVED (server clock) for this long.
     telemetry_stale_seconds: int = Field(default=30, alias="COCOON_TELEMETRY_STALE_SECONDS", ge=1)
 
+    # Site weather, independent of the LLM mode: fixture (synthetic, aligned to the data clock), live (Open-Meteo for
+    # the site's trusted coordinates, cached and refreshed in the background) or off.
+    weather_mode: Literal["fixture", "live", "off"] = Field(default="fixture", alias="COCOON_WEATHER_MODE")
+    weather_fixture_path: Path | None = Field(default=None, alias="COCOON_WEATHER_FIXTURE_PATH")
+    weather_timeout_seconds: float = Field(default=5.0, alias="COCOON_WEATHER_TIMEOUT_SECONDS", gt=0, le=30)
+    weather_refresh_seconds: int = Field(default=600, alias="COCOON_WEATHER_REFRESH_SECONDS", ge=60)
+    weather_fresh_seconds: int = Field(default=900, alias="COCOON_WEATHER_FRESH_SECONDS", ge=60)
+    weather_stale_limit_seconds: int = Field(default=3600, alias="COCOON_WEATHER_STALE_LIMIT_SECONDS", ge=60)
+    weather_misalign_seconds: int = Field(default=5400, alias="COCOON_WEATHER_MISALIGN_SECONDS", ge=600)
+    conditions_policy_path: Path | None = Field(default=None, alias="COCOON_CONDITIONS_POLICY_PATH")
+    # Versioned hazard rules (proximity, sudden motion, slope, fuel per cycle, repeats). Unset = policies/hazard_rules_v1.json.
+    hazard_policy_path: Path | None = Field(default=None, alias="COCOON_HAZARD_POLICY_PATH")
+    # Frozen duration-estimator configuration. Unset = estimation/estimator_v1.json.
+    estimator_config_path: Path | None = Field(default=None, alias="COCOON_ESTIMATOR_CONFIG_PATH")
+    # Versioned curriculum (lessons, quizzes, scenario, media catalog, level criteria). Unset = content/curriculum_v1.json.
+    curriculum_path: Path | None = Field(default=None, alias="COCOON_CURRICULUM_PATH")
+    # Wellbeing rule policy and the consent notices a grant must name. Unset = policies/wellbeing_v1.json and
+    # policies/consent_notices_v1.json.
+    wellbeing_policy_path: Path | None = Field(default=None, alias="COCOON_WELLBEING_POLICY_PATH")
+    consent_notices_path: Path | None = Field(default=None, alias="COCOON_CONSENT_NOTICES_PATH")
+    # Background worker (approval expiry/application, feed and sample retention, SOS deadlines): one loop per process.
+    worker_interval_seconds: float = Field(default=2.0, alias="COCOON_WORKER_INTERVAL_SECONDS", gt=0, le=60)
+    # Supervisor change feed (SSE): heartbeat, maximum connection lifetime, concurrent subscribers, poll interval,
+    # and how long feed references are kept for replay.
+    feed_heartbeat_seconds: float = Field(default=15.0, alias="COCOON_FEED_HEARTBEAT_SECONDS", gt=0, le=120)
+    feed_max_stream_seconds: float = Field(default=300.0, alias="COCOON_FEED_MAX_STREAM_SECONDS", gt=0, le=3600)
+    feed_max_subscribers: int = Field(default=8, alias="COCOON_FEED_MAX_SUBSCRIBERS", ge=1, le=64)
+    feed_poll_seconds: float = Field(default=0.5, alias="COCOON_FEED_POLL_SECONDS", gt=0, le=10)
+    feed_retention_hours: float = Field(default=24.0, alias="COCOON_FEED_RETENTION_HOURS", gt=0)
+    # SOS: versioned site emergency policy (unset = policies/emergency_notification_v1.json) and the timer profile of
+    # THIS process. `accelerated_demo` is for isolated demo/test backends only; it never changes the standard values.
+    emergency_policy_path: Path | None = Field(default=None, alias="COCOON_EMERGENCY_POLICY_PATH")
+    sos_timer_profile: Literal["standard", "accelerated_demo"] = Field(default="standard",
+                                                                       alias="COCOON_SOS_TIMER_PROFILE")
+
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
                                          pattern=r"^[0-9a-f]{64}$")
@@ -85,6 +120,11 @@ class Settings(BaseSettings):
             self.data_dir = SERVICE_DIR / self.data_dir
         if not self.dataset_root.is_absolute():
             self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
+        for name in ("weather_fixture_path", "conditions_policy_path", "hazard_policy_path", "estimator_config_path",
+                     "curriculum_path", "wellbeing_policy_path", "consent_notices_path", "emergency_policy_path"):
+            value = getattr(self, name)
+            if value is not None and not value.is_absolute():
+                setattr(self, name, (SERVICE_DIR / value).resolve())
         if self.safety_policy_path is not None and not self.safety_policy_path.is_absolute():
             self.safety_policy_path = (SERVICE_DIR / self.safety_policy_path).resolve()
         if self.session_bindings_path is not None and not self.session_bindings_path.is_absolute():

@@ -1,0 +1,17 @@
+{
+  "schema": "cocoon.emergency-policy.v1",
+  "policy_id": "preauthorised_emergency_in_app.v1",
+  "policy_version": "demo-emergency-2026-09-24.1",
+  "note": "Synthetic demo configuration. Authorises an URGENT IN-APP notification (an application record and feed event, nothing else) to the supervisors granted the site when an operator asks for help, does not answer an offered check-in, or cannot be offered one. No email, SMS, phone call or emergency-service dispatch exists. A real site needs its own reviewed policy, recipients and timers before any use.",
+  "sites": {
+    "SITE_DEMO_NORTH": {"enabled": true, "recipients": "granted_site_supervisors", "basis": "synthetic_demo_site_configuration"}
+  },
+  "impact": {"min_peak_accel_g": 2.5, "max_age_seconds": 300, "future_skew_seconds": 30,
+             "basis": "synthetic_demo_assumption: not a validated fall or man-down threshold"},
+  "timer_profiles": {
+    "standard": {"offer_wait_seconds": 60, "response_window_seconds": 90,
+                 "basis": "synthetic_demo_assumption"},
+    "accelerated_demo": {"offer_wait_seconds": 4, "response_window_seconds": 5,
+                         "basis": "isolated demo/test profile selected per process with COCOON_SOS_TIMER_PROFILE"}
+  }
+}

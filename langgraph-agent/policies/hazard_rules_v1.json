@@ -1,0 +1,73 @@
+{
+  "schema": "cocoon.hazard-policy.v1",
+  "policy_version": "demo-hazards-2026-09-24.1",
+  "note": "Prototype rules on simulated data. Every numeric setting below is a synthetic demo assumption chosen so the demo scenarios exercise each rule; none is a published Caterpillar, OEM or site limit. General safety guidance (e.g. keep people out of the swing area, follow the Operation and Maintenance Manual) supports the kind of rule, not these numbers. Use the machine's manual and site rules for real limits.",
+  "sources": [
+    {"id": "cat-safety-tips", "title": "Caterpillar: heavy-equipment safety tips (general operator guidance)",
+     "url": "https://www.cat.com/en_US/articles/for-owners/heavy-equipment-safety-tips.html",
+     "supports": "general practices (stay aware of people near the machine, refer to the Operation and Maintenance Manual); not a numeric limit"}
+  ],
+  "proximity": {
+    "rule_id": "demo.proximity.v1",
+    "entity_types": ["person", "vehicle"],
+    "warning_distance_m": 10.0,
+    "danger_distance_m": 5.0,
+    "clear_distance_m": 12.0,
+    "track_lost_seconds": 10,
+    "expire_without_detection_seconds": 60,
+    "category_overrides": {
+      "hydraulic_excavator": {"warning_distance_m": 12.0, "danger_distance_m": 6.0, "clear_distance_m": 14.0},
+      "mining_truck": {"warning_distance_m": 20.0, "danger_distance_m": 10.0, "clear_distance_m": 24.0}
+    },
+    "basis": "synthetic_demo_assumption",
+    "notes": "Opening uses any detection quality (conservative); clearing and de-escalation need a good or degraded detection beyond clear_distance_m. A missing detection never clears: the episode is 'lost' after track_lost_seconds and ends only as expired_without_detection."
+  },
+  "sudden_motion": {
+    "start_rule_id": "demo.sudden_start.v1",
+    "stop_rule_id": "demo.sudden_stop.v1",
+    "min_samples": 3,
+    "max_gap_ms": 500,
+    "start_accel_mps2": 2.5,
+    "stop_decel_mps2": 3.0,
+    "basis": "synthetic_demo_assumption",
+    "notes": "Acceleration is derived between consecutive timestamped speed samples; any non-positive time step or gap above max_gap_ms makes the window unknown. Samples already evaluated are never counted twice."
+  },
+  "slope": {
+    "rule_id": "demo.steep_slope.v1",
+    "operating_states": ["working", "travel"],
+    "clear_margin_deg": 2.0,
+    "limits_by_category": {
+      "hydraulic_excavator": {"pitch_deg": 15.0, "roll_deg": 10.0},
+      "bulldozer": {"pitch_deg": 20.0, "roll_deg": 12.0},
+      "wheel_loader": {"pitch_deg": 12.0, "roll_deg": 8.0}
+    },
+    "basis": "synthetic_demo_assumption",
+    "notes": "No limit is configured for mining_truck or backhoe_loader: those machines report not_configured (unknown), never a borrowed limit. grade_pct is converted to degrees with atan(grade/100) only when pitch_deg is absent."
+  },
+  "fuel_per_cycle": {
+    "rule_id": "demo.fuel_per_cycle.v1",
+    "min_window_seconds": 600,
+    "max_gap_seconds": 120,
+    "min_coverage": 0.8,
+    "min_cycles": 5,
+    "abnormal_ratio": 1.5,
+    "clear_ratio": 1.2,
+    "baselines": [
+      {"category": "hydraulic_excavator", "task_type": "earth_excavation", "litres_per_cycle": 0.45},
+      {"category": "hydraulic_excavator", "task_type": "trenching", "litres_per_cycle": 0.40},
+      {"category": "wheel_loader", "task_type": "material_loading", "litres_per_cycle": 0.60}
+    ],
+    "basis": "synthetic_demo_assumption",
+    "notes": "Windows follow the in-progress task only (a task change resets the window). A meter that goes backwards is a reset and discards the window. Zero cycles is idle fuel, handled by the idle rules, never a ratio. A machine/task without a baseline is not_applicable."
+  },
+  "repeated_violations": {
+    "rule_id": "demo.repeated_violations.v1",
+    "families": ["seatbelt_engine_on", "proximity", "sudden_start", "sudden_stop", "steep_slope"],
+    "window_seconds": 3600,
+    "threshold": 3,
+    "lesson_by_family": {"seatbelt_engine_on": "L1", "proximity": "L6", "sudden_start": "L7", "sudden_stop": "L7",
+                         "steep_slope": "L7"},
+    "basis": "synthetic_demo_assumption",
+    "notes": "Counts distinct episodes of one family whose start falls in the observation-time window; overlapping episodes of the same family (e.g. two people detected together) count once; linked combined episodes are not counted. Each trigger opens one repeat episode with one pending supervisor review and one coaching assignment."
+  }
+}

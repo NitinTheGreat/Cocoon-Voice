@@ -90,7 +90,8 @@ def test_voice_task_lifecycle_and_same_turn_retry(tmp_path):
     with TestClient(create_app(settings)) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
         nxt = say(c, sid, "t1", "what's my next task")
-        assert nxt["speech"] == "Your next task is Excavate the north pit bench in North pit, scheduled for 07:30."
+        assert nxt["speech"] == ("Your next task is Excavate the north pit bench in North pit, scheduled for 07:30, "
+                                 "about 64 minutes.")  # C3: the saved configured estimate is spoken
         started = say(c, sid, "t2", "start the next task")
         action = started["actions"][0]
         assert action["type"] == "task_started" and action["task"]["version"] == 2 and action["created"] is True
@@ -100,7 +101,7 @@ def test_voice_task_lifecycle_and_same_turn_retry(tmp_path):
         assert done["type"] == "task_completed" and done["task"]["status"] == "completed"
         again = say(c, sid, "t5", "I finished the task")["actions"][0]
         assert again == {"type": "task_rejected", "for_action": "task.complete", "reason": "no_eligible_task",
-                         "current_status": None}
+                         "current_status": None, "conditions": None, "task_id": None, "task_title": None}
         conn = sqlite3.connect(settings.db_path)
         assert conn.execute("SELECT COUNT(*) FROM command_log WHERE session_id = ?", (sid,)).fetchone()[0] == 2
         conn.close()

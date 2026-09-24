@@ -1,16 +1,17 @@
 """FastAPI application exposing the v1 contract."""
 
+import asyncio
 import logging
 import re
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -19,10 +20,21 @@ from .. import __version__
 from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
+from ..approvals import Approvals
+from ..channels import Channels
+from ..conditions import Conditions
+from ..estimation import load_estimator
+from ..lms import load_lms
+from ..planning import Planner
+from ..replanning import Replanner
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
+from ..sos import Sos, load_emergency_policy
 from ..store import Store
+from ..supervision import Supervision
+from ..weather import OpenMeteoWeather, WeatherService, load_conditions_policy
+from ..wellbeing import Wellbeing, load_consent_notices, load_wellbeing_policy
 from . import schemas as s
 
 log = logging.getLogger("cocoon_agent.api")
@@ -58,11 +70,13 @@ def _error_response(status: int, code: str, message: str, retryable: bool, reque
 
 
 def create_app(settings: Settings | None = None, brain: Brain | None = None,
-               clock: Callable[[], datetime] | None = None) -> FastAPI:
+               clock: Callable[[], datetime] | None = None, weather: WeatherService | None = None) -> FastAPI:
     """`brain` overrides the configured router/composer (tests inject slow or failing brains).
-    `clock` overrides the wall clock used for token expiry (tests); it is never the data/replay clock."""
+    `clock` overrides the wall clock used for token expiry (tests); it is never the data/replay clock.
+    `weather` overrides the configured weather source (tests inject a live adapter with a fake transport)."""
     settings = settings or get_settings()
     injected_brain = brain
+    injected_weather = weather
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -88,10 +102,53 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
             catalog_issue = exc.issue
             log.error("catalog NOT loaded (issue=%s): %s; new sessions will be refused", exc.issue, exc.message)
         brain = injected_brain or build_brain(settings)
+        live = None
+        if settings.weather_mode == "live":
+            live = OpenMeteoWeather(timeout=settings.weather_timeout_seconds,
+                                    fresh_seconds=settings.weather_fresh_seconds,
+                                    stale_limit_seconds=settings.weather_stale_limit_seconds,
+                                    misalign_seconds=settings.weather_misalign_seconds)
+        weather = injected_weather or WeatherService(settings.weather_mode, fixture_path=settings.weather_fixture_path,
+                                                     live=live)
+        conditions = Conditions(store, weather, load_conditions_policy(settings.conditions_policy_path))
+        planner = Planner(store, conditions, load_estimator(settings.estimator_config_path), catalog)
+        lms = load_lms(settings.curriculum_path)
+        lms.seed(store)  # lesson rows and pinned lesson versions (idempotent; never overwrites authored content)
+        wellbeing = Wellbeing(store, load_wellbeing_policy(settings.wellbeing_policy_path),
+                              load_consent_notices(settings.consent_notices_path), weather=weather)
+        replanner = Replanner(store, conditions, planner)
+        approvals = Approvals(store, replanner)
+        supervision = Supervision(store, wellbeing, feed_retention=timedelta(hours=settings.feed_retention_hours))
+        sos = Sos(store, load_emergency_policy(settings.emergency_policy_path), settings.sos_timer_profile)
+        supervision.sos = sos
+        channels = Channels(store, sos, clock=lambda: sos.clock())
+        refresher = None
+        if weather.live is not None:  # bounded background refresh; lookups never wait for it
+            refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
+                                                              utcnow))
+        log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
-            graph = build_graph(store, brain).compile(checkpointer=saver)
-            app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
-                                              catalog_issue=catalog_issue)
+            graph = build_graph(store, brain, conditions=conditions, planner=planner,
+                                lms=lms, wellbeing=wellbeing, sos=sos).compile(checkpointer=saver)
+            service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
+                                    catalog_issue=catalog_issue, conditions=conditions, planner=planner, lms=lms,
+                                    wellbeing=wellbeing, approvals=approvals, supervision=supervision,
+                                    replanner=replanner, sos=sos, channels=channels)
+            app.state.service = service
+            # Startup recovery before serving: expired requests, approved-but-unapplied changes, retention.
+            recovered = service.run_due_work()
+            if recovered.get("applied") or recovered.get("expired"):
+                log.info("startup recovery: %s", recovered)
+
+            async def worker() -> None:
+                while True:
+                    await asyncio.sleep(settings.worker_interval_seconds)
+                    try:
+                        service.run_due_work()
+                    except Exception:  # keep the loop alive; the next pass retries
+                        log.exception("background worker pass failed")
+
+            worker_task = asyncio.create_task(worker())
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -99,6 +156,9 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
             try:
                 yield
             finally:
+                worker_task.cancel()
+                if refresher is not None:
+                    refresher.cancel()
                 if hasattr(brain, "aclose"):
                     await brain.aclose()
                 store.close()
@@ -126,7 +186,8 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request), exc.details)
+        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request), exc.details,
+                               headers={"Retry-After": "5"} if exc.status == 429 else None)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
@@ -280,6 +341,185 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
     async def get_command(session_id: str, command_id: str, service: Service, principal: Caller,
                           session: Annotated[s.Session, OwnedSession]) -> s.SessionCommandResult:
         return service.get_command(principal, session, command_id)
+
+    # ------------------------------------------------------------------ lessons and content (C4)
+
+    @app.get("/v1/sessions/{session_id}/lessons", response_model=s.LearnerView, tags=["learning"],
+             **v1({404: {"model": s.ErrorResponse, "description": "Unknown session, or not a catalog-verified "
+                                                                   "operator session (no learning record)"}},
+                  access=OwnedSession))
+    async def get_learning(session_id: str, service: Service,
+                           session: Annotated[s.Session, OwnedSession]) -> s.LearnerView:
+        view = service.learner(session)
+        if view is None:
+            raise ApiError(404, "not_found", "no learning record for this session")
+        return view
+
+    @app.get("/v1/sessions/{session_id}/lessons/{lesson_id}", response_model=s.LessonView, tags=["learning"],
+             **v1(access=OwnedSession))
+    async def get_lesson(session_id: str, lesson_id: str, service: Service,
+                         session: Annotated[s.Session, OwnedSession]) -> s.LessonView:
+        return service.lesson(session, lesson_id)
+
+    @app.get("/v1/content/{asset_id}", response_model=s.LessonMediaAsset, tags=["learning"], **v1())
+    async def get_content(asset_id: str, service: Service) -> s.LessonMediaAsset:
+        return service.media(asset_id)
+
+    @app.get("/v1/content/{asset_id}/file", tags=["learning"], response_class=FileResponse,
+             responses={200: {"description": "The catalog media file (e.g. video/mp4)",
+                              "content": {"video/mp4": {}}}, **ERRORS}, dependencies=[Depends(authenticate)])
+    async def get_content_file(asset_id: str, service: Service) -> FileResponse:
+        path, media_type, digest = service.media_file(asset_id)
+        return FileResponse(path, media_type=media_type, headers={"ETag": f'"{digest}"', "Cache-Control": "private"})
+
+    @app.get("/v1/content/{asset_id}/captions", tags=["learning"], response_class=FileResponse,
+             responses={200: {"description": "WebVTT captions", "content": {"text/vtt": {}}}, **ERRORS},
+             dependencies=[Depends(authenticate)])
+    async def get_content_captions(asset_id: str, service: Service) -> FileResponse:
+        path, media_type, _ = service.media_file(asset_id, captions=True)
+        return FileResponse(path, media_type=media_type)
+
+    # ------------------------------------------------------------------ consent and wellbeing (D1)
+
+    @app.get("/v1/operators/{operator_id}/consents", response_model=s.OperatorConsentState, tags=["consent"],
+             **v1({403: {"model": s.ErrorResponse, "description": "forbidden: supervisors cannot read consent"},
+                   404: {"model": s.ErrorResponse, "description": "Unknown operator, or another operator's record"}}))
+    async def get_consents(operator_id: str, principal: Caller, service: Service,
+                           response: Response) -> s.OperatorConsentState:
+        response.headers["Cache-Control"] = "no-store"
+        return service.consents(principal, operator_id)
+
+    @app.post("/v1/operators/{operator_id}/consents", response_model=s.OperatorConsentChangeResult, tags=["consent"],
+              **v1({403: {"model": s.ErrorResponse, "description": (
+                  "forbidden: only the operator's own actor token may change consent (not the service credential, "
+                  "not a supervisor)")},
+                    404: {"model": s.ErrorResponse, "description": "Another operator's record"},
+                    409: {"model": s.ErrorResponse, "description": (
+                        "idempotency_conflict (change_id reused with another body), version_conflict (stale "
+                        "expected_version; details give the current version) or invalid_transition (sharing needs "
+                        "vitals_processing granted)")},
+                    422: {"model": s.ErrorResponse, "description": "Malformed request or an outdated notice_version"}}))
+    async def change_consent(operator_id: str, body: s.OperatorConsentChange, principal: Caller, service: Service,
+                             response: Response) -> s.OperatorConsentChangeResult:
+        response.headers["Cache-Control"] = "no-store"
+        return service.change_consent(principal, operator_id, body)
+
+    @app.post("/v1/sessions/{session_id}/wellbeing/samples", response_model=s.WellbeingSampleResult,
+              tags=["wellbeing"],
+              **v1({404: {"model": s.ErrorResponse, "description": "Unknown session, not the caller's, or not a "
+                                                                   "catalog-verified operator session"},
+                    409: {"model": s.ErrorResponse, "description": "sample_id reused with a different sample"},
+                    422: {"model": s.ErrorResponse, "description": (
+                        "Out-of-range, non-finite or unit-less values (values are never echoed in the error)")}},
+                   access=OwnedSession))
+    async def submit_wellbeing(session_id: str, body: s.WellbeingSampleRequest, service: Service,
+                               session: Annotated[s.Session, OwnedSession],
+                               response: Response) -> s.WellbeingSampleResult:
+        response.headers["Cache-Control"] = "no-store"
+        return service.wellbeing_sample(session, body)
+
+    @app.get("/v1/sessions/{session_id}/wellbeing", response_model=s.WellbeingView, tags=["wellbeing"],
+             **v1(access=OwnedSession))
+    async def get_wellbeing(session_id: str, service: Service, session: Annotated[s.Session, OwnedSession],
+                            response: Response) -> s.WellbeingView:
+        response.headers["Cache-Control"] = "no-store"
+        return service.wellbeing_view(session)
+
+    # ------------------------------------------------------------------ SOS, presence and presentation (D3)
+
+    @app.post("/v1/sessions/{session_id}/impacts", response_model=s.ImpactResult, tags=["sos"],
+              **v1({409: {"model": s.ErrorResponse, "description": "source_event_id reused with a different candidate"},
+                    422: {"model": s.ErrorResponse, "description": "Malformed candidate or a future capture time"}},
+                   access=OwnedSession))
+    async def submit_impact(session_id: str, body: s.HumanImpactCandidate, service: Service,
+                            session: Annotated[s.Session, OwnedSession]) -> s.ImpactResult:
+        return service.impact(session, body)
+
+    @app.post("/v1/sessions/{session_id}/presence", response_model=s.PresenceResult, tags=["presence"],
+              **v1({409: {"model": s.ErrorResponse, "description": "report_id reused with a different report"}},
+                   access=OwnedSession))
+    async def report_presence(session_id: str, body: s.ConsumerPresenceReport, service: Service,
+                              session: Annotated[s.Session, OwnedSession]) -> s.PresenceResult:
+        return service.presence(session, body)
+
+    @app.post("/v1/sessions/{session_id}/events/{event_id}/presentation", response_model=s.PresentationView,
+              tags=["announcements"],
+              **v1({409: {"model": s.ErrorResponse, "description": "presentation_id reused with a different report"}},
+                   access=OwnedSession))
+    async def report_presentation(session_id: str, event_id: str, body: s.PresentationReceipt, service: Service,
+                                  session: Annotated[s.Session, OwnedSession]) -> s.PresentationView:
+        return service.presentation(session, event_id, body)
+
+    # ------------------------------------------------------------------ supervisor views, feed and approvals (D2)
+
+    SiteQuery = Annotated[str, Query(min_length=1, max_length=128, description="A site granted to the caller")]
+
+    @app.get("/v1/supervisor/overview", response_model=s.SupervisorSiteOverview, tags=["supervisor"],
+             **v1({403: {"model": s.ErrorResponse, "description": "Not a supervisor, a token without `supervise`, or "
+                                                                   "no grant for this site"}}))
+    async def supervisor_overview(site_id: SiteQuery, principal: Caller, service: Service,
+                                  response: Response) -> s.SupervisorSiteOverview:
+        response.headers["Cache-Control"] = "no-store"
+        return service.overview(principal, site_id)
+
+    @app.get("/v1/supervisor/events/stream", tags=["supervisor"], response_class=StreamingResponse,
+             responses={200: {"description": "text/event-stream of cocoon.supervisor-feed.v1 events (`id` = feed "
+                                             "sequence); `: heartbeat` comments; `stream_closed` on revocation, "
+                                             "expiry or max duration",
+                              "content": {"text/event-stream": {"schema": {"type": "string"}, "x-sse-framing": (
+                                  "UTF-8 SSE. One event = `id:` (feed sequence), `event:` (type), one `data:` line "
+                                  "with one JSON envelope (schema_version, site_id, event_id, sequence, type, "
+                                  "created_at, data), then a blank line. Comment lines are heartbeats. The data is "
+                                  "projected when sent, under the reader's current scope and the operator's current "
+                                  "consent.")}}},
+                        **ERRORS,
+                        403: {"model": s.ErrorResponse, "description": "No grant for this site"},
+                        410: {"model": s.ErrorResponse, "description": "replay_expired: reload the overview"},
+                        422: {"model": s.ErrorResponse, "description": "invalid_cursor"},
+                        429: {"model": s.ErrorResponse, "description": "rate_limited: too many open streams"}},
+             dependencies=[Depends(authenticate)])
+    async def supervisor_stream(request: Request, site_id: SiteQuery, principal: Caller, service: Service,
+                                after: Annotated[int | None, Query(ge=0, description="Exclusive feed cursor")] = None,
+                                last_event_id: Annotated[str | None, Header(alias="Last-Event-ID",
+                                                                            max_length=160)] = None):
+        cursor = service.feed_start(principal, site_id, after, last_event_id)
+        return StreamingResponse(service.feed_stream(principal, site_id, cursor, request.is_disconnected),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @app.post("/v1/supervisor/notifications/{notification_id}/receipt", response_model=s.SupervisorNotificationItem,
+              tags=["supervisor"], **v1({409: {"model": s.ErrorResponse,
+                                               "description": "invalid_transition: status never goes backwards"}}))
+    async def notification_receipt(notification_id: str, body: s.NotificationReceipt, principal: Caller,
+                                   service: Service) -> s.SupervisorNotificationItem:
+        return service.notification_receipt(principal, notification_id, body)
+
+    @app.get("/v1/approvals", response_model=s.ApprovalPageView, tags=["approvals"], **v1())
+    async def list_approvals(
+        principal: Caller, service: Service,
+        status: Annotated[str | None, Query(pattern="^(pending|approved|rejected|expired|cancelled)$")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        cursor: Annotated[str | None, Query(max_length=16, description="Opaque page cursor")] = None,
+    ) -> s.ApprovalPageView:
+        return service.list_approvals(principal, status, limit, cursor)
+
+    @app.get("/v1/approvals/{approval_id}", response_model=s.ApprovalView, tags=["approvals"], **v1())
+    async def get_approval(approval_id: str, principal: Caller, service: Service) -> s.ApprovalView:
+        return service.get_approval(principal, approval_id)
+
+    @app.post("/v1/approvals/{approval_id}/decision", response_model=s.ApprovalDecisionResult, tags=["approvals"],
+              **v1({409: {"model": s.ErrorResponse, "description": (
+                  "decision_conflict (already decided, or decision_id reused with another body), version_conflict "
+                  "(stale expected_version or payload_sha256), approval_expired, invalid_transition (ineligible)")}}))
+    async def decide(approval_id: str, body: s.ApprovalDecisionRequest, principal: Caller,
+                     service: Service) -> s.ApprovalDecisionResult:
+        return service.decide(principal, approval_id, body)
+
+    @app.post("/v1/shifts/{shift_id}/schedule-proposals", response_model=s.ScheduleProposalResult, tags=["approvals"],
+              **v1(access=ServiceCaller))
+    async def propose_schedule(shift_id: str, body: s.ScheduleProposalRequest,
+                               service: Service) -> s.ScheduleProposalResult:
+        return service.propose_schedule(shift_id)
 
     # ------------------------------------------------------------------ state
 

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cocoon_agent.catalog import CatalogError, load_catalog  # noqa: E402
 from cocoon_agent.config import get_settings  # noqa: E402
-from cocoon_agent.demo_site import FixtureError, load_fixture, seed, site_today  # noqa: E402
+from cocoon_agent.demo_site import STAND_IN_ORIGIN, FixtureError, load_fixture, seed, site_today  # noqa: E402
 from cocoon_agent.store import Conflict, Store  # noqa: E402
 
 
@@ -27,6 +27,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--service-date", help="site-local date YYYY-MM-DD (default: today at the site)")
     ap.add_argument("--bindings-out", type=Path, help="trusted binding file (default: <data dir>/demo/session_bindings.json)")
+    ap.add_argument("--allow-stand-in-catalog", action="store_true",
+                    help="accept the labelled synthetic stand-in catalog written by the demo when the dataset is absent")
     args = ap.parse_args()
     settings = get_settings()
     doc = load_fixture()
@@ -37,6 +39,10 @@ def main() -> int:
     except CatalogError as exc:
         print(f"refused: catalog unavailable ({exc.issue})", file=sys.stderr)
         return 1
+    if args.allow_stand_in_catalog and catalog.dataset_origin == STAND_IN_ORIGIN:
+        print(f"NOTE: seeding against the synthetic stand-in catalog {catalog.manifest_sha256[:12]}... "
+              "(Cocoon_Dataset_v1 is not present)", file=sys.stderr)
+        doc["catalog_manifest_sha256"] = catalog.manifest_sha256
     store = Store(settings.db_path)
     try:
         store.init_schema()

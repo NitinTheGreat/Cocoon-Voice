@@ -1,0 +1,15 @@
+{
+  "schema": "cocoon.consent-notices.v1",
+  "notices": {
+    "vitals_processing": {
+      "notice_version": "wellbeing-notice-2026-09-24.1",
+      "summary": "Cocoon may receive your heart rate and skin temperature from your own device to give you wellbeing advice. Raw samples are kept for at most the configured retention period (24 hours by default) and are never shown to supervisors. You can revoke this at any time; revoking stops further processing and deletes retained raw samples held by the backend.",
+      "status": "synthetic_demo_notice: written for the prototype, not reviewed by a privacy officer"
+    },
+    "risk_sharing_supervisor": {
+      "notice_version": "risk-sharing-notice-2026-09-24.1",
+      "summary": "Cocoon may share a derived wellbeing risk level (no advisory, advisory, high or unavailable) with supervisors of your site. Never raw heart rate, skin temperature, sleep or explanations. Requires vitals processing. Revoking removes the risk from subsequent supervisor views; information already seen cannot be recalled.",
+      "status": "synthetic_demo_notice: written for the prototype, not reviewed by a privacy officer"
+    }
+  }
+}

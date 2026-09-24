@@ -1,0 +1,23 @@
+{
+  "schema": "cocoon.provided-benchmark.v1",
+  "benchmark_version": "provided-5-2026-09-24",
+  "provenance": "provided_unverified: the five task rows supplied with the problem statement (transcribed in BACKEND_IMPLEMENTATION_PLAN.md section 3 and the Batch C assignment; source file data/raw/problem_statement_task_samples.csv in the untracked Cocoon_Dataset_v1). Real-world collection provenance is unverified; these are not independently observed hardware data.",
+  "fields_not_available_here": "work_quantity, work_unit, ground_condition and a machine link are absent from the rows (DG-14). Weather, operator skill and machine age columns of the source CSV are not available in this checkout (the dataset is not present), so they are recorded as null here instead of being guessed.",
+  "rows": [
+    {"task_id": "T001", "task_type": "earth_excavation", "provided_estimate_min": 60, "provided_actual_min": 58,
+     "work_quantity": null, "work_unit": null, "ground_condition": null, "weather": null, "operator_skill": null,
+     "machine_age_years": null},
+    {"task_id": "T002", "task_type": "trenching", "provided_estimate_min": 45, "provided_actual_min": 52,
+     "work_quantity": null, "work_unit": null, "ground_condition": null, "weather": null, "operator_skill": null,
+     "machine_age_years": null},
+    {"task_id": "T003", "task_type": "material_loading", "provided_estimate_min": 30, "provided_actual_min": 42,
+     "work_quantity": null, "work_unit": null, "ground_condition": null, "weather": null, "operator_skill": null,
+     "machine_age_years": null},
+    {"task_id": "T004", "task_type": "grading", "provided_estimate_min": 35, "provided_actual_min": 33,
+     "work_quantity": null, "work_unit": null, "ground_condition": null, "weather": null, "operator_skill": null,
+     "machine_age_years": null},
+    {"task_id": "T005", "task_type": "demolition", "provided_estimate_min": 90, "provided_actual_min": 105,
+     "work_quantity": null, "work_unit": null, "ground_condition": null, "weather": null, "operator_skill": null,
+     "machine_age_years": null}
+  ]
+}

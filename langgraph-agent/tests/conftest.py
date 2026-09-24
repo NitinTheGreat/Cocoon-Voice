@@ -29,6 +29,8 @@ def make_settings(data_dir: Path, **overrides) -> Settings:
         "COCOON_DATA_DIR": str(data_dir),
         "COCOON_LLM_MODE": "mock",
         "COCOON_TURN_POLL_AFTER_MS": 50,
+        # Tests are independent of the wall-clock hour: weather is off unless a test selects the fixture/live source.
+        "COCOON_WEATHER_MODE": "off",
         "DATASET_ROOT": str(FIXTURE_CATALOG),
         "DATASET_MANIFEST_SHA256": FIXTURE_MANIFEST_SHA256,
         **overrides,
@@ -120,7 +122,8 @@ DEMO_OPERATORS = ("OP_DEMO_1_1", "OP_DEMO_2_1", "OP_DEMO_3_1", "OP_DEMO_4_1", "O
 DEMO_PAIRS = dict(zip(MACHINES, DEMO_OPERATORS))
 
 
-def seeded_demo(tmp_path: Path, service_date: str | None = None, **overrides):
+def seeded_demo(tmp_path: Path, service_date: str | None = None, *, machines: str | None = None,
+                operators: str | None = None, **overrides):
     """A disposable catalog (fixture machines + the five demo operators), seeded with demo/demo_site_v1.json.
 
     Returns (settings, report). Test-only: the fixture's pinned manifest hash is replaced by this catalog's hash."""
@@ -129,8 +132,8 @@ def seeded_demo(tmp_path: Path, service_date: str | None = None, **overrides):
     from cocoon_agent.store import Store
 
     root = tmp_path / "demo_catalog"
-    ops = "operator_id\n" + "".join(f"{o}\n" for o in DEMO_OPERATORS)
-    digest = write_catalog(root, operators=ops)
+    ops = operators or "operator_id\n" + "".join(f"{o}\n" for o in DEMO_OPERATORS)
+    digest = write_catalog(root, machines=machines, operators=ops)
     settings = make_settings(tmp_path, DATASET_ROOT=str(root), DATASET_MANIFEST_SHA256=digest,
                              SESSION_BINDINGS_PATH=str(tmp_path / "bindings.json"), **overrides)
     doc = load_fixture()

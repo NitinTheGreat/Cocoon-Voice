@@ -16,7 +16,7 @@ import hashlib
 import io
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -28,6 +28,7 @@ SUPPORTED_MANIFEST_VERSIONS = frozenset({"1.0"})
 MACHINE_COLUMNS = ("machine_id", "model", "category")
 OPERATOR_COLUMNS = ("operator_id",)
 BINDINGS_SCHEMA = "cocoon.session-bindings.v1"
+SKILL_LEVELS = ("beginner", "intermediate", "expert")  # dataset operator_skill values (not LMS learning levels)
 
 _ID = re.compile(ID_PATTERN)
 _BASENAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}$")
@@ -58,6 +59,9 @@ class Catalog:
     machines: Mapping[str, MachineEntry]
     operators: frozenset[str]
     file_sha256: Mapping[str, str]
+    # Optional estimator inputs, only when the verified files carry them (never defaulted or guessed).
+    operator_skill: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    machine_age_years: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
 
     def has_machine(self, machine_id: str) -> bool:
         return machine_id in self.machines
@@ -156,7 +160,18 @@ def load_catalog(dataset_root: Path, expected_manifest_sha256: str) -> Catalog:
                                    for r in machine_rows}),
         operators=frozenset(r["operator_id"] for r in operator_rows),
         file_sha256=MappingProxyType({n: digests[n] for n in verified}),
+        operator_skill=MappingProxyType({r["operator_id"]: r["operator_skill"].strip().lower() for r in operator_rows
+                                         if (r.get("operator_skill") or "").strip().lower() in SKILL_LEVELS}),
+        machine_age_years=MappingProxyType({r["machine_id"]: float(r["machine_age_years"]) for r in machine_rows
+                                            if _number(r.get("machine_age_years"))}),
     )
+
+
+def _number(value: str | None) -> bool:
+    try:
+        return value is not None and float(value) >= 0
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------------- trusted session bindings

@@ -408,6 +408,578 @@ OPERATOR_CONTEXT: tuple[str, ...] = (
 )
 
 
+_DRAFT_V5_COLUMNS = ("draft_number, draft_id, session_id, operator_id, machine_id, origin, status, description, severity,"
+                     " severity_basis, site_id, site_zone_id, zone_basis, location_text, occurred_at, occurred_basis,"
+                     " episode_id, version, incident_id, created_at, confirmed_at, dismissed_at")
+
+INCIDENT_CAPTURE: tuple[str, ...] = (
+    # How the occurrence time was derived: the operator's original phrase and the persisted reference instant it was
+    # interpreted against (so a retry can never move it). Existing rows keep NULL (their basis is unchanged).
+    "ALTER TABLE incidents ADD COLUMN occurred_expression TEXT",
+    "ALTER TABLE incidents ADD COLUMN occurred_reference_at TEXT",
+    # An operator's report that still misses a fact (severity or time) is kept as a draft while it is clarified.
+    # SQLite cannot widen a CHECK constraint in place, so the draft table is rebuilt: every row is copied with its
+    # original draft_number (explicit values keep the AUTOINCREMENT sequence), nothing is renumbered.
+    """CREATE TABLE incident_drafts_v8 (
+    draft_number INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id TEXT UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('auto_draft', 'operator_report')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'dismissed')),
+    description TEXT NOT NULL,
+    severity TEXT CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    severity_basis TEXT,
+    site_id TEXT,
+    site_zone_id TEXT,
+    zone_basis TEXT,
+    location_text TEXT,
+    occurred_at TEXT,
+    occurred_basis TEXT,
+    episode_id TEXT UNIQUE,
+    version INTEGER NOT NULL DEFAULT 1,
+    incident_id TEXT,
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    dismissed_at TEXT,
+    occurred_expression TEXT,
+    occurred_reference_at TEXT,
+    source_turn_id TEXT,
+    notify_supervisor INTEGER NOT NULL DEFAULT 0 CHECK (notify_supervisor IN (0, 1))
+)""",
+    f"INSERT INTO incident_drafts_v8({_DRAFT_V5_COLUMNS}) SELECT {_DRAFT_V5_COLUMNS} FROM incident_drafts",
+    # Carry the old AUTOINCREMENT high-water mark too, so a number is never handed out twice.
+    "INSERT INTO sqlite_sequence(name, seq) SELECT 'incident_drafts_v8', seq FROM sqlite_sequence"
+    " WHERE name = 'incident_drafts' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'incident_drafts_v8')",
+    "UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'incident_drafts'))"
+    " WHERE name = 'incident_drafts_v8' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'incident_drafts')",
+    "DROP TABLE incident_drafts",
+    "ALTER TABLE incident_drafts_v8 RENAME TO incident_drafts",
+    # One operator draft per reporting turn (the command log already makes the write exactly-once).
+    "CREATE UNIQUE INDEX one_draft_per_report_turn ON incident_drafts(session_id, source_turn_id)"
+    " WHERE source_turn_id IS NOT NULL",
+)
+
+
+SITE_CONDITIONS: tuple[str, ...] = (
+    # Trusted site coordinates for weather lookups (server fixture only; never from a request). NULL = no location.
+    "ALTER TABLE sites ADD COLUMN latitude REAL",
+    "ALTER TABLE sites ADD COLUMN longitude REAL",
+    "ALTER TABLE sites ADD COLUMN location_basis TEXT",
+    # A weather value set exactly as used by a saved check or episode (evidence never changes afterwards).
+    """CREATE TABLE weather_records (
+    record_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK (provider IN ('open_meteo', 'fixture')),
+    kind TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL
+)""",
+    # One working-conditions check (task start, or an in-task re-check) with its findings and weather evidence.
+    """CREATE TABLE condition_checks (
+    check_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    task_id TEXT,
+    purpose TEXT NOT NULL CHECK (purpose IN ('task_start', 'in_task')),
+    level TEXT NOT NULL,
+    coverage TEXT NOT NULL,
+    check_json TEXT NOT NULL,
+    weather_record_id TEXT,
+    policy_version TEXT NOT NULL,
+    data_time TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+    created_at TEXT NOT NULL
+)""",
+    # The check that let a task start (kept even if the weather or policy changes later).
+    "ALTER TABLE task_assignments ADD COLUMN start_check_id TEXT",
+    # Family-specific evidence of an episode (e.g. the condition check behind a working-conditions warning), saved
+    # once when it opens. NULL for belt/idle episodes, whose evidence is in evidence_json.
+    "ALTER TABLE alerts ADD COLUMN details_json TEXT",
+)
+
+
+HAZARD_RULES: tuple[str, ...] = (
+    # One active episode per rule AND subject (e.g. one proximity episode per detected entity). Existing rows get the
+    # empty subject, so the old one-per-rule behaviour of belt/idle episodes is unchanged.
+    "ALTER TABLE alerts ADD COLUMN subject_key TEXT NOT NULL DEFAULT ''",
+    "DROP INDEX one_active_episode_per_rule",
+    "CREATE UNIQUE INDEX one_active_episode_per_subject ON alerts(session_id, rule_id, subject_key)"
+    " WHERE status = 'active'",
+    # Current level of a graded episode (warning/danger, acknowledge/block) and why it ended.
+    "ALTER TABLE alerts ADD COLUMN level TEXT",
+    "ALTER TABLE alerts ADD COLUMN last_seen_at TEXT",
+    "ALTER TABLE alerts ADD COLUMN cleared_reason TEXT",
+    # Later changes of a published episode get their own evidence and identity; the opening evidence never changes.
+    """CREATE TABLE alert_updates (
+    update_id TEXT PRIMARY KEY,
+    alert_id TEXT NOT NULL REFERENCES alerts(alert_id),
+    level TEXT NOT NULL,
+    previous_level TEXT,
+    observed_at TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    announcement_event_id TEXT,
+    created_at TEXT NOT NULL
+)""",
+    "CREATE INDEX alert_updates_by_alert ON alert_updates(alert_id, observed_at)",
+    # Rule state carried between observations (fuel window accumulator, last evaluated motion sample, coverage).
+    "ALTER TABLE machine_state ADD COLUMN rule_state_json TEXT",
+    # A repeat-violation trigger creates a pending supervisor review linked to its episode (no incident involved), so
+    # the review table is rebuilt to widen its kind and make incident_id optional. Rows are copied unchanged.
+    """CREATE TABLE approval_requests_v10 (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('incident_escalation', 'repeated_violations')),
+    incident_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+    created_at TEXT NOT NULL,
+    alert_id TEXT,
+    details_json TEXT,
+    UNIQUE (kind, incident_id),
+    UNIQUE (kind, alert_id),
+    CHECK (incident_id IS NOT NULL OR alert_id IS NOT NULL)
+)""",
+    "INSERT INTO approval_requests_v10(approval_id, session_id, operator_id, kind, incident_id, status, created_at)"
+    " SELECT approval_id, session_id, operator_id, kind, incident_id, status, created_at FROM approval_requests",
+    "DROP TABLE approval_requests",
+    "ALTER TABLE approval_requests_v10 RENAME TO approval_requests",
+)
+
+
+TASK_ESTIMATES: tuple[str, ...] = (
+    # Versioned duration estimates, saved once per task + estimator version + input snapshot.
+    """CREATE TABLE task_estimates (
+    estimate_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    estimator_version TEXT NOT NULL,
+    config_sha256 TEXT NOT NULL,
+    inputs_sha256 TEXT NOT NULL,
+    method TEXT NOT NULL,
+    predicted_minutes REAL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (task_id, config_sha256, inputs_sha256)
+)""",
+    # The estimate in force when a task started (kept when weather or the estimator changes later).
+    "ALTER TABLE task_assignments ADD COLUMN start_estimate_id TEXT",
+    # Synthetic fixture ground condition (estimator input); NULL = not stated.
+    "ALTER TABLE task_assignments ADD COLUMN ground_condition TEXT",
+)
+
+
+CORE_LMS: tuple[str, ...] = (
+    # One pinned copy of each lesson version (text steps, assessment and answer key), so progress and attempts keep
+    # the exact version they started on.
+    """CREATE TABLE lesson_versions (
+    lesson_id TEXT NOT NULL REFERENCES lessons(lesson_id),
+    version TEXT NOT NULL,
+    curriculum_version TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    review_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (lesson_id, version)
+)""",
+    # Per learner (catalog operator of a verified session) and lesson version.
+    """CREATE TABLE lesson_progress (
+    learner_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    lesson_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('in_progress', 'paused', 'deferred', 'awaiting_assessment', 'completed')),
+    current_step INTEGER NOT NULL DEFAULT 0,
+    steps_seen INTEGER NOT NULL DEFAULT 0,
+    deferred_until TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    last_session_id TEXT,
+    PRIMARY KEY (learner_id, lesson_id, lesson_version),
+    FOREIGN KEY (lesson_id, lesson_version) REFERENCES lesson_versions(lesson_id, version)
+)""",
+    """CREATE TABLE quiz_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    lesson_id TEXT NOT NULL,
+    lesson_version TEXT NOT NULL,
+    quiz_id TEXT NOT NULL,
+    quiz_version INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('quiz', 'scenario')),
+    attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'passed', 'failed')),
+    current_index INTEGER NOT NULL DEFAULT 0,
+    current_node TEXT,
+    correct INTEGER NOT NULL DEFAULT 0,
+    answered INTEGER NOT NULL DEFAULT 0,
+    total INTEGER,
+    score REAL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    session_id TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (learner_id, lesson_id, lesson_version, attempt_number),
+    FOREIGN KEY (lesson_id, lesson_version) REFERENCES lesson_versions(lesson_id, version)
+)""",
+    "CREATE UNIQUE INDEX one_active_attempt_per_lesson ON quiz_attempts(learner_id, lesson_id) WHERE status = 'active'",
+    """CREATE TABLE quiz_answers (
+    attempt_id TEXT NOT NULL REFERENCES quiz_attempts(attempt_id),
+    question_id TEXT NOT NULL,
+    choice_id TEXT NOT NULL,
+    correct INTEGER NOT NULL CHECK (correct IN (0, 1)),
+    answered_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (attempt_id, question_id)
+)""",
+    """CREATE TABLE learner_levels (
+    learner_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL CHECK (level IN ('beginner', 'intermediate', 'expert')),
+    criteria_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)""",
+    """CREATE TABLE level_history (
+    entry_id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    level TEXT NOT NULL,
+    previous_level TEXT,
+    criteria_version TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    achieved_at TEXT NOT NULL
+)""",
+    # Assignment lifecycle beyond "assigned": completion (by a passed assessment only), deferral and the one-time
+    # coaching prompt for an episode-linked lesson.
+    "ALTER TABLE training_assignments ADD COLUMN completed_at TEXT",
+    "ALTER TABLE training_assignments ADD COLUMN deferred_until TEXT",
+    "ALTER TABLE training_assignments ADD COLUMN coaching_prompted_at TEXT",
+)
+
+
+CONSENT_WELLBEING: tuple[str, ...] = (
+    # Purpose-specific consent owned by the operator. Current state per purpose plus an append-only change log.
+    """CREATE TABLE consent_state (
+    operator_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 0
+)""",
+    """CREATE TABLE consent_current (
+    operator_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('vitals_processing', 'risk_sharing_supervisor')),
+    status TEXT NOT NULL CHECK (status IN ('granted', 'revoked')),
+    notice_version TEXT NOT NULL,
+    effective_at TEXT,
+    revoked_at TEXT,
+    is_synthetic INTEGER NOT NULL CHECK (is_synthetic IN (0, 1)),
+    provenance TEXT NOT NULL,
+    PRIMARY KEY (operator_id, purpose)
+)""",
+    """CREATE TABLE consent_changes (
+    operator_id TEXT NOT NULL,
+    change_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
+    notice_version TEXT NOT NULL,
+    expected_version INTEGER NOT NULL,
+    resulting_version INTEGER NOT NULL,
+    cascaded TEXT NOT NULL DEFAULT '',
+    provenance TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, change_id)
+)""",
+    # Raw private samples, kept only under an effective processing grant and only until expires_at (bounded
+    # retention, purged by the maintenance worker and on revocation).
+    """CREATE TABLE wellbeing_samples (
+    operator_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    observed_at TEXT NOT NULL,
+    heart_rate_bpm REAL,
+    skin_temp_c REAL,
+    window_seconds INTEGER NOT NULL,
+    quality TEXT NOT NULL,
+    source TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, sample_id)
+)""",
+    "CREATE INDEX wellbeing_samples_by_time ON wellbeing_samples(operator_id, observed_at)",
+    # Outcome of every sample request, WITHOUT values (idempotency and audit never retain raw inputs).
+    """CREATE TABLE wellbeing_sample_outcomes (
+    operator_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, sample_id)
+)""",
+    # Operator-private advice episodes with their saved derived evidence and explanation.
+    """CREATE TABLE wellbeing_advice (
+    advice_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    rule_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    level TEXT NOT NULL CHECK (level IN ('advisory', 'high')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'cleared', 'withdrawn')),
+    evidence_json TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ended_at TEXT,
+    end_reason TEXT,
+    announcement_event_id TEXT
+)""",
+    "CREATE UNIQUE INDEX one_active_advice_per_rule ON wellbeing_advice(operator_id, rule_id) WHERE status = 'active'",
+    # Explicit breaks (engine-off, waiting or telemetry silence are never a break).
+    """CREATE TABLE break_records (
+    break_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    shift_id TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1
+)""",
+    "CREATE UNIQUE INDEX one_open_break ON break_records(operator_id) WHERE ended_at IS NULL",
+    # Supervisor change-feed outbox: references only (projected at read time under current scope and consent).
+    """CREATE TABLE supervisor_feed (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    site_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    ref_type TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)""",
+    "CREATE INDEX supervisor_feed_by_site ON supervisor_feed(site_id, sequence)",
+)
+
+
+SUPERVISION_APPROVALS: tuple[str, ...] = (
+    # Trusted supervisor scope, granted only by the local admin CLI (never inferred from speech, query or metadata).
+    """CREATE TABLE principal_site_grants (
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    granted_at TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY (principal_id, site_id)
+)""",
+    # approval_requests is rebuilt (like v10) to add schedule proposals and the cancelled state. Existing rows are
+    # copied unchanged; their trusted site comes ONLY from their session's trusted binding (else they are
+    # ineligible, never globally visible); their immutable payload is derived from the stored references.
+    """CREATE TABLE approval_requests_v14 (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('incident_escalation', 'repeated_violations', 'schedule_change')),
+    incident_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'cancelled')),
+    created_at TEXT NOT NULL,
+    alert_id TEXT,
+    details_json TEXT,
+    site_id TEXT,
+    eligibility TEXT NOT NULL DEFAULT 'eligible' CHECK (eligibility IN ('eligible', 'ineligible_no_site')),
+    proposer TEXT NOT NULL DEFAULT 'legacy_request',
+    action_type TEXT NOT NULL DEFAULT 'notify_supervisor'
+        CHECK (action_type IN ('notify_supervisor', 'escalate_repeat_violation', 'apply_schedule_change')),
+    payload_json TEXT,
+    resource_versions_json TEXT,
+    evidence_refs_json TEXT,
+    dedup_key TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT,
+    decision_id TEXT,
+    decision TEXT CHECK (decision IS NULL OR decision IN ('approve', 'reject')),
+    decision_hash TEXT,
+    decided_by TEXT,
+    decided_at TEXT,
+    decision_reason TEXT,
+    application_status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (application_status IN ('not_started', 'pending', 'applied', 'failed_stale_inputs', 'failed',
+                                      'not_applicable')),
+    application_reason TEXT,
+    applied_at TEXT,
+    updated_at TEXT,
+    UNIQUE (kind, incident_id),
+    UNIQUE (kind, alert_id),
+    CHECK (incident_id IS NOT NULL OR alert_id IS NOT NULL OR kind = 'schedule_change')
+)""",
+    "INSERT INTO approval_requests_v14(approval_id, session_id, operator_id, kind, incident_id, status, created_at,"
+    " alert_id, details_json) SELECT approval_id, session_id, operator_id, kind, incident_id, status, created_at,"
+    " alert_id, details_json FROM approval_requests",
+    "DROP TABLE approval_requests",
+    "ALTER TABLE approval_requests_v14 RENAME TO approval_requests",
+    """UPDATE approval_requests SET
+    site_id = (SELECT s.site_id FROM sessions s WHERE s.session_id = approval_requests.session_id
+               AND s.binding_status = 'catalog_verified' AND s.context_status = 'trusted_binding'),
+    action_type = CASE kind WHEN 'repeated_violations' THEN 'escalate_repeat_violation' ELSE 'notify_supervisor' END,
+    payload_json = json_object('kind', kind, 'incident_id', incident_id, 'alert_id', alert_id,
+                               'details', json(COALESCE(details_json, 'null'))),
+    updated_at = created_at""",
+    "UPDATE approval_requests SET eligibility = 'ineligible_no_site' WHERE site_id IS NULL",
+    "CREATE UNIQUE INDEX one_pending_proposal ON approval_requests(dedup_key)"
+    " WHERE status = 'pending' AND dedup_key IS NOT NULL",
+    "CREATE INDEX approval_requests_by_site ON approval_requests(site_id, status, created_at)",
+    """CREATE TRIGGER approval_payload_immutable BEFORE UPDATE OF payload_json, kind, action_type, site_id,
+    operator_id, session_id ON approval_requests WHEN OLD.payload_json IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'an approval request payload and scope are immutable'); END""",
+    # In-app supervisor notifications: application records only (no email/SMS/phone/dispatch). One per source.
+    """CREATE TABLE supervisor_notifications (
+    notification_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    operator_id TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'urgent')),
+    policy_id TEXT,
+    summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'presented', 'acknowledged')),
+    created_at TEXT NOT NULL,
+    presented_at TEXT,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT,
+    UNIQUE (kind, source_id)
+)""",
+    "CREATE INDEX supervisor_notifications_by_site ON supervisor_notifications(site_id, created_at)",
+    # Weather re-planning: the schedule of a shift is versioned as a whole.
+    "ALTER TABLE shifts ADD COLUMN schedule_version INTEGER NOT NULL DEFAULT 1",
+    # How far the supervisor feed was pruned (replay below this cursor is 410 replay_expired).
+    "CREATE TABLE feed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+)
+
+
+SOS_PRESENCE: tuple[str, ...] = (
+    # Human-impact candidates (person-worn, simulated in this prototype). Every candidate is kept with its capture
+    # time and disposition; duplicates are refused by the key, stale ones never become a current emergency.
+    """CREATE TABLE human_impacts (
+    operator_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    site_id TEXT,
+    device_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    peak_accel_g REAL NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    orientation_after TEXT NOT NULL,
+    quality TEXT NOT NULL,
+    provenance TEXT NOT NULL CHECK (provenance IN ('simulated', 'device')),
+    disposition TEXT NOT NULL CHECK (disposition IN ('opened', 'merged', 'historical', 'below_threshold')),
+    episode_id TEXT,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (operator_id, source_event_id)
+)""",
+    # One check-in state machine per episode. Deadlines are server-clock values fixed when set; they are never
+    # moved by later reports. Transitions use the version column as an atomic claim.
+    """CREATE TABLE sos_episodes (
+    episode_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    site_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'offered', 'okay', 'help_requested', 'unresolved_no_response',
+                                         'unreachable')),
+    version INTEGER NOT NULL DEFAULT 1,
+    provenance TEXT NOT NULL,
+    timer_profile TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    first_impact_at TEXT NOT NULL,
+    last_impact_at TEXT NOT NULL,
+    impact_count INTEGER NOT NULL DEFAULT 1,
+    checkin_event_id TEXT NOT NULL,
+    offer_deadline_at TEXT NOT NULL,
+    offered_at TEXT,
+    offer_channel TEXT CHECK (offer_channel IS NULL OR offer_channel IN ('voice', 'screen')),
+    offer_evidence TEXT,
+    response_deadline_at TEXT,
+    response TEXT CHECK (response IS NULL OR response IN ('okay', 'help')),
+    responded_at TEXT,
+    outcome_reason TEXT,
+    notify_status TEXT NOT NULL DEFAULT 'none'
+        CHECK (notify_status IN ('none', 'notified', 'blocked_no_policy', 'blocked_no_recipient')),
+    late_response TEXT CHECK (late_response IS NULL OR late_response IN ('okay', 'help')),
+    late_response_at TEXT,
+    closed_at TEXT,
+    updated_at TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX one_open_sos_episode ON sos_episodes(operator_id) WHERE state IN ('queued', 'offered')",
+    "CREATE INDEX sos_due ON sos_episodes(state, offer_deadline_at, response_deadline_at)",
+    # Ordered audit of every transition with the server time and the rule that decided it.
+    """CREATE TABLE sos_transitions (
+    episode_id TEXT NOT NULL REFERENCES sos_episodes(episode_id),
+    seq INTEGER NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    at TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    PRIMARY KEY (episode_id, seq)
+)""",
+    # Last-known presence per consumer (liveness from server receipt time + ttl) and its idempotency log.
+    """CREATE TABLE presence (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    consumer_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    connection TEXT NOT NULL,
+    voice_available INTEGER NOT NULL,
+    screen_available INTEGER NOT NULL,
+    reported_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, consumer_id)
+)""",
+    """CREATE TABLE presence_reports (
+    session_id TEXT NOT NULL,
+    report_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, report_id)
+)""",
+    # Screen/vibration presentation reports, independent from audio `deliveries`.
+    """CREATE TABLE presentations (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    presentation_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES announcements(event_id),
+    consumer_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('screen', 'vibration')),
+    status TEXT NOT NULL CHECK (status IN ('presented', 'failed', 'unknown')),
+    presented_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    PRIMARY KEY (session_id, presentation_id)
+)""",
+    "CREATE INDEX presentations_by_event ON presentations(event_id)",
+)
+
+
+OFFLINE_SYNC: tuple[str, ...] = (
+    # Operator-wide identity of drafts captured offline: one row per (operator, client_draft_id), whatever session or
+    # transport retry uploads it. The original binding and a content digest are kept for comparison.
+    """CREATE TABLE offline_drafts (
+    operator_id TEXT NOT NULL,
+    client_draft_id TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    binding_sha256 TEXT NOT NULL,
+    binding_json TEXT NOT NULL,
+    draft_id TEXT NOT NULL REFERENCES incident_drafts(draft_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    command_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, client_draft_id)
+)""",
+    "ALTER TABLE incident_drafts ADD COLUMN client_draft_id TEXT",
+    "ALTER TABLE incident_drafts ADD COLUMN captured_at TEXT",
+    "ALTER TABLE incident_drafts ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'online'"
+    " CHECK (capture_mode IN ('online', 'offline_sync'))",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -423,6 +995,15 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "structured_incidents", STRUCTURED_INCIDENTS),
     Migration(6, "machine_episodes", MACHINE_EPISODES),
     Migration(7, "operator_context", OPERATOR_CONTEXT),
+    Migration(8, "incident_capture", INCIDENT_CAPTURE),
+    Migration(9, "site_conditions", SITE_CONDITIONS),
+    Migration(10, "hazard_rules", HAZARD_RULES),
+    Migration(11, "task_estimates", TASK_ESTIMATES),
+    Migration(12, "core_lms", CORE_LMS),
+    Migration(13, "consent_wellbeing", CONSENT_WELLBEING),
+    Migration(14, "supervision_approvals", SUPERVISION_APPROVALS),
+    Migration(15, "sos_presence", SOS_PRESENCE),
+    Migration(16, "offline_sync", OFFLINE_SYNC),
 )
 
 

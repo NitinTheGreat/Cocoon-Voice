@@ -1,0 +1,21 @@
+{
+  "schema": "cocoon.wellbeing-policy.v1",
+  "policy_version": "demo-wellbeing-2026-09-24.1",
+  "note": "Contextual advice only: no diagnosis of heat illness, no fitness-to-work certification, no treatment. Vital-sign and break thresholds are synthetic demo assumptions. Heat-index category boundaries follow the NOAA/NWS heat-index chart (caution 80 F, extreme caution 90 F, danger 103 F); heat index is an environmental screening input computed from air temperature and relative humidity, distinct from apparent temperature, WBGT, skin temperature and core body temperature, and it ignores sun, radiant heat from machinery and workload.",
+  "sources": [
+    {"id": "nws-heat-index", "url": "https://www.weather.gov/tbw/heatindex",
+     "used_for": "heat-index formula (simple formula, Rothfusz regression and its two adjustments, Fahrenheit/RH units) and category boundaries"},
+    {"id": "niosh-heat-app", "url": "https://www.cdc.gov/niosh/heat-stress/communication-resources/app.html",
+     "used_for": "limitation statement: heat index is a screening input; occupational exposure assessment uses WBGT, workload and radiant heat"}
+  ],
+  "retention_hours": 24,
+  "rules": {
+    "heat_index": {"rule_id": "demo.wellbeing.heat_index.v1", "advisory_c": 32.2, "high_c": 39.4, "clear_margin_c": 1.0,
+                   "basis": "published_guidance (NWS category boundaries); the advice itself is a demo assumption"},
+    "break_due": {"rule_id": "demo.wellbeing.break_due.v1", "advisory_minutes": 120, "basis": "synthetic_demo_assumption"},
+    "vitals_strain": {"rule_id": "demo.wellbeing.vitals_strain.v1", "window_seconds": 300, "min_samples": 3,
+                      "stale_seconds": 300, "advisory_mean_hr_bpm": 120, "high_mean_hr_bpm": 140,
+                      "high_with_heat_mean_hr_bpm": 120, "skin_temp_high_c": 36.0, "clear_mean_hr_bpm": 110,
+                      "min_quality": ["good", "degraded"], "basis": "synthetic_demo_assumption"}
+  }
+}

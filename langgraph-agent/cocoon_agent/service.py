@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -27,8 +28,12 @@ from .config import Settings
 from .graph.brain import Brain, LLMUnavailable
 from .graph.builder import turn_input
 from .rules import SafetyPolicy, load_policy
+from .conditions import Conditions, conditions_sentence
+from .hazards import HazardEngine, load_hazard_policy
+from .lms import coaching_prompts
 from .store import (
-    Conflict, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict, utcnow,
+    ConditionsGate, Conflict, InvalidInput, InvalidTransition, NewSessionBinding, NotFound, Store, VersionConflict,
+    utcnow,
 )
 
 log = logging.getLogger("cocoon_agent.service")
@@ -46,13 +51,60 @@ def payload_hash(obj: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# Optional request fields added after B. They are left out of an idempotency digest while unset, so a request saved
+# before the upgrade still matches its own retry byte-for-byte (a digest never changes because the model grew).
+ADDED_READINGS = ("proximity", "motion", "pitch_deg", "roll_deg", "grade_pct", "fuel_meter_l", "load_cycles_total")
+ADDED_PAYLOAD = ("severity_unknown", "occurred_expression", "occurred_at", "acknowledge_conditions", "checkin_id",
+                 "response")
+# Task commands captured longer ago than this (device clock vs server receipt) must be re-confirmed: a queued start or
+# condition acknowledgement from a disconnected period never stands in for a current pre-task check.
+OFFLINE_TASK_MAX_AGE = timedelta(seconds=120)
+
+
+def _without_unset(data: dict[str, Any], added: tuple[str, ...]) -> dict[str, Any]:
+    return {k: v for k, v in data.items() if not (k in added and v is None)}
+
+
+@contextmanager
+def domain_errors(noun: str):
+    """Map store-level refusals to the shared API errors (one mapping for taps, consent and wellbeing)."""
+    try:
+        yield
+    except Conflict as exc:
+        raise ApiError(409, "idempotency_conflict", str(exc)) from exc
+    except NotFound as exc:
+        raise ApiError(404, "not_found", str(exc)) from exc
+    except VersionConflict as exc:
+        raise ApiError(409, "version_conflict", str(exc), details=[
+            {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
+    except InvalidTransition as exc:
+        details = [{"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]
+        details += [{"field": f"draft.{m}", "issue": "not stated yet"} for m in exc.missing]
+        raise ApiError(409, "invalid_transition", str(exc), details=details) from exc
+    except InvalidInput as exc:
+        raise ApiError(422, "validation_error", str(exc), details=[
+            {"field": f"body.{exc.field}", "issue": exc.issue}]) from exc
+    except ConditionsGate as exc:
+        check = exc.check
+        details = [{"field": "conditions.level", "issue": check.level if check else "unknown"}]
+        details += [{"field": f"conditions.{f.variable}", "issue": f"{f.level}: {f.value} {f.unit}"}
+                    for f in (check.findings if check else []) if f.level in ("acknowledge", "block")]
+        if exc.reason == "conditions_need_acknowledgement":
+            details.append({"field": "body.payload.acknowledge_conditions",
+                            "issue": "required to start despite these findings"})
+        raise ApiError(409, "invalid_transition", f"task start stopped by working conditions ({exc.reason})",
+                       details=details) from exc
+
+
 def thread_config(session_id: str) -> RunnableConfig:
     return {"configurable": {"thread_id": session_id}}
 
 
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
-                 bindings: SessionBindings | None = None, catalog_issue: str | None = None):
+                 bindings: SessionBindings | None = None, catalog_issue: str | None = None,
+                 conditions: Conditions | None = None, planner=None, lms=None, wellbeing=None,
+                 approvals=None, supervision=None, replanner=None, sos=None, channels=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -61,6 +113,17 @@ class CocoonService:
         self.bindings = bindings
         self.catalog_issue = catalog_issue
         self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
+        self.conditions = conditions
+        self.planner = planner  # cocoon_agent.planning.Planner (conditions + saved estimates per task)
+        self.lms = lms  # cocoon_agent.lms.LMS (curriculum; None = no LMS)
+        self.wellbeing = wellbeing  # cocoon_agent.wellbeing.Wellbeing (consent, private samples, advice, breaks)
+        self.approvals = approvals  # cocoon_agent.approvals.Approvals (decisions and application)
+        self.supervision = supervision  # cocoon_agent.supervision.Supervision (site scope, overview, feed)
+        self.replanner = replanner  # cocoon_agent.replanning.Replanner (weather reorder proposals)
+        self._feed_subscribers = 0
+        self.sos = sos  # cocoon_agent.sos.Sos (impact check-ins, deadlines, emergency notifications)
+        self.channels = channels  # cocoon_agent.channels.Channels (presence and presentation receipts)
+        self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
         self._telemetry_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -89,11 +152,17 @@ class CocoonService:
         parts = [f"Shift briefing for the {machine.model if machine else session.machine_id} at {shift.site_name}, "
                  f"{start:%H:%M} to {end:%H:%M}."]
         if tasks:
-            first = tasks[0]
-            est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
+            first = self.planner.enrich(session, tasks[0]) if self.planner is not None else tasks[0]
+            if first.estimate is not None and first.estimate.predicted_minutes is not None:
+                est = f", about {first.estimate.predicted_minutes:.0f} minutes by the configured demo estimate"
+            else:
+                est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
             parts.append(f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}. First: {first.title} in "
                          f"{first.zone_name} at {first.scheduled_start_local}{est}.")
-            if first.weather.summary:
+            if self.conditions is not None:
+                check = self.conditions.check(session, first)
+                parts.append(_briefing_conditions(check))
+            elif first.weather.summary:
                 parts.append(f"Conditions (synthetic demo value, not a forecast): {first.weather.summary}.")
         else:
             parts.append("You have no open tasks on this shift.")
@@ -162,41 +231,358 @@ class CocoonService:
     def execute_command(self, principal: Principal, session: s.Session,
                         req: s.SessionCommand) -> s.SessionCommandResult:
         """Tap path. The same domain mutation as the graph tools; identity is scoped to the calling principal."""
-        fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
-                                    "payload": req.payload.model_dump(mode="json"),
-                                    "expected_version": req.expected_version})
-        if req.kind.startswith("task."):
-            mutate, noun = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version), "task"
+        body = {"session_id": session.session_id, "kind": req.kind,
+                "payload": _without_unset(req.payload.model_dump(mode="json"), ADDED_PAYLOAD),
+                "expected_version": req.expected_version}
+        if req.original_binding is not None or req.client_draft_id is not None:  # D4 fields only when used
+            body.update(original_binding=req.original_binding.model_dump(mode="json") if req.original_binding
+                        else None, client_draft_id=req.client_draft_id)
+        record_session = session
+        if req.original_binding is not None:
+            record_session = self._original_session(session, req.original_binding)
+            if req.kind != "incident.submit_draft" and record_session.session_id != session.session_id:
+                raise ApiError(409, "binding_mismatch", "only offline incident drafts may target another session; "
+                                                        "task, lesson and check-in commands act on this session",
+                               details=[{"field": "body.original_binding.session_id",
+                                         "issue": "not the current session"}])
+        if req.kind == "incident.submit_draft":
+            from .sync import submit_draft_mutation
+
+            body.pop("session_id")  # the same upload retried from a replacement session is the same command
+            body["captured_at"] = req.captured_at.isoformat()
+        elif req.kind.startswith("task.") and req.captured_at is not None \
+                and utcnow() - req.captured_at > OFFLINE_TASK_MAX_AGE:
+            raise ApiError(409, "invalid_transition", "this task command was captured too long ago; check the current "
+                                                      "task and conditions and confirm again",
+                           details=[{"field": "body.captured_at",
+                                     "issue": f"older than {int(OFFLINE_TASK_MAX_AGE.total_seconds())} s"}])
+        fingerprint = payload_hash(body)
+        if req.kind == "incident.submit_draft":
+            mutate, noun = submit_draft_mutation(record_session, req), "incident"
+        elif req.kind.startswith(("lesson.", "quiz.")):
+            mutate, noun = self._lms_mutation(session, req), "lesson"
+        elif req.kind == "sos.respond":
+            if self.sos is None:
+                raise ApiError(404, "not_found", "SOS check-ins are not enabled")
+            mutate = self.sos.respond_mutation(session, req.payload.checkin_id, req.payload.response)
+            noun = "check-in"
+        elif req.kind.startswith("break."):
+            if self.wellbeing is None:
+                raise ApiError(404, "not_found", "break records are not enabled")
+            at = self.conditions.data_time(session) if self.conditions is not None else utcnow()
+            mutate, noun = self.wellbeing.break_mutation(session, req.kind, req.expected_version, at), "break"
+        elif req.kind.startswith("task."):
+            gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
+                else None
+            mutate = Store.task_transition(
+                session, req.kind, req.payload.task_id, req.expected_version, gate,
+                acknowledged=bool(req.payload.acknowledge_conditions),
+                estimate_for=self.planner.estimate_fn(session) if self.planner is not None and req.kind == "task.start"
+                else None)
+            noun = "task"
         else:
-            edits = req.payload.model_dump(include={"description", "severity", "location_text"}, exclude_none=True)
+            edits = req.payload.model_dump(include={"description", "severity", "severity_unknown", "location_text",
+                                                    "occurred_expression"}, exclude_none=True)
+            if req.payload.occurred_at is not None:
+                edits["occurred_at"] = req.payload.occurred_at
             mutate = Store.incident_transition(session, req.kind, req.payload.incident_id, req.expected_version, edits)
             noun = "incident"
-        result, duplicate = self.run_domain_command(
-            scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind, fingerprint=fingerprint,
-            session=session, mutate=mutate, noun=noun)
+        from .sync import DraftConflict
+
+        try:
+            result, duplicate = self.run_domain_command(
+                scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind,
+                fingerprint=fingerprint, session=record_session, mutate=mutate, noun=noun)
+        except DraftConflict as exc:  # raised inside the mutation, before domain_errors maps Conflict
+            raise ApiError(409, "binding_mismatch" if exc.reason == "binding" else "idempotency_conflict", str(exc),
+                           details=[{"field": "body.client_draft_id", "issue": f"stored as {exc.draft_id}"}]) from exc
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
                                       status="completed", duplicate=duplicate)
 
+    def _lms_mutation(self, session: s.Session, req: s.SessionCommand):
+        from . import lms as lms_ops
+
+        if self.lms is None:
+            raise ApiError(404, "not_found", "no curriculum is loaded")
+        p = req.payload
+        machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+        if req.kind == "lesson.start":
+            return lms_ops.start_lesson(self.lms, session, p.lesson_id, machine.category if machine else None)
+        if req.kind == "quiz.start":
+            return lms_ops.start_quiz(self.lms, session, p.lesson_id)
+        if req.kind == "quiz.answer":
+            return lms_ops.answer(self.lms, session, p.attempt_id, p.question_id, p.choice_id, "tap")
+        action = req.kind.split(".", 1)[1]
+        until = None
+        if action == "defer":
+            until = (self.store.data_clock(session.session_id) or utcnow()) + timedelta(minutes=p.defer_minutes or 30)
+        return lms_ops.lesson_step(self.lms, session, p.lesson_id, action, p.expected_step, until)
+
+    def learner(self, session: s.Session) -> s.LearnerView | None:
+        from .lms import learner_view
+
+        if self.lms is None:
+            return None
+        return learner_view(self.store, self.lms, session,
+                            self.catalog.operator_skill.get(session.operator_id) if self.catalog else None)
+
+    def lesson(self, session: s.Session, lesson_id: str) -> s.LessonView:
+        if self.lms is None or lesson_id not in self.lms.lessons:
+            raise ApiError(404, "not_found", "lesson not found")
+        return self.lms.lesson_view(self.lms.lessons[lesson_id])
+
+    def media(self, asset_id: str) -> s.LessonMediaAsset:
+        if self.lms is None or asset_id not in self.lms.media:
+            raise ApiError(404, "not_found", "content not found")
+        return self.lms.media_view(asset_id)
+
+    def media_file(self, asset_id: str, captions: bool = False):
+        view = self.media(asset_id)
+        path = self.lms.media_path(asset_id, captions=captions)
+        if view.availability != "available" or path is None or not path.is_file():
+            raise ApiError(404, "not_found", "content file not available")
+        return path, ("text/vtt" if captions else view.mime_type), view.checksum_sha256
+
     def run_domain_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
                            mutate, noun: str) -> tuple[dict, bool]:
-        try:
+        with domain_errors(noun):
             return self.store.run_command(
                 scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
                 turn_id=None, mutate=mutate)
-        except Conflict as exc:
-            raise ApiError(409, "idempotency_conflict", str(exc)) from exc
-        except NotFound as exc:
-            raise ApiError(404, "not_found", str(exc)) from exc
-        except VersionConflict as exc:
+
+    # ------------------------------------------------------------------ supervision and approvals (D2)
+
+    def supervisor_sites(self, principal: Principal) -> set[str]:
+        return self.supervision.sites(principal) if self.supervision is not None else set()
+
+    def require_site(self, principal: Principal, site_id: str) -> None:
+        """The named site must be one of the supervisor's CLI grants (the query parameter grants nothing)."""
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "only a supervisor with a site grant may use this route")
+        if site_id not in self.supervisor_sites(principal):
+            raise ApiError(403, "forbidden", "no grant for this site")
+
+    def overview(self, principal: Principal, site_id: str) -> s.SupervisorSiteOverview:
+        self.require_site(principal, site_id)
+        self.approvals.expire_due()
+        return self.supervision.overview(site_id)
+
+    def _approval_reader(self, principal: Principal) -> set[str]:
+        if principal.kind == "supervisor" and principal.has_scope("supervise"):
+            return self.supervisor_sites(principal)
+        if principal.kind == "operator" and principal.has_scope("sessions:own"):
+            return set()
+        raise ApiError(403, "forbidden", "approvals are read by supervisors and the operator concerned")
+
+    def list_approvals(self, principal: Principal, status: str | None, limit: int,
+                       cursor: str | None) -> s.ApprovalPageView:
+        return self.approvals.list(principal, self._approval_reader(principal), status, limit, cursor)
+
+    def get_approval(self, principal: Principal, approval_id: str) -> s.ApprovalView:
+        with domain_errors("approval"):
+            return self.approvals.get(principal, self._approval_reader(principal), approval_id)
+
+    def decide(self, principal: Principal, approval_id: str,
+               req: s.ApprovalDecisionRequest) -> s.ApprovalDecisionResult:
+        from .approvals import ApprovalExpired, DecisionConflict, PayloadMismatch
+
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "only a scoped supervisor may decide")
+        try:
+            with domain_errors("approval"):
+                result = self.approvals.decide(principal, self.supervisor_sites(principal), approval_id, req)
+        except DecisionConflict as exc:
+            raise ApiError(409, "decision_conflict", str(exc)) from exc
+        except ApprovalExpired as exc:
+            raise ApiError(409, "approval_expired", str(exc)) from exc
+        except PayloadMismatch as exc:
             raise ApiError(409, "version_conflict", str(exc), details=[
-                {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
-        except InvalidTransition as exc:
-            raise ApiError(409, "invalid_transition", str(exc), details=[
-                {"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]) from exc
+                {"field": "body.payload_sha256", "issue": f"current payload hash is {exc.current}"}]) from exc
+        log.info("approval decision approval=%s decision=%s recorded=%s application=%s", approval_id, req.decision,
+                 result.decision_recorded, result.approval.application.status)
+        return result
+
+    def notification_receipt(self, principal: Principal, notification_id: str,
+                             req: s.NotificationReceipt) -> s.SupervisorNotificationItem:
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "notifications are reported by the supervisor client")
+        with domain_errors("notification"):
+            return self.approvals.notification_receipt(self.supervisor_sites(principal), notification_id,
+                                                       req.status, principal.subject_id)
+
+    def propose_schedule(self, shift_id: str) -> s.ScheduleProposalResult:
+        if self.replanner is None:
+            raise ApiError(404, "not_found", "re-planning is not enabled")
+        if self.store.get_shift(shift_id) is None:
+            raise ApiError(404, "not_found", "shift not found")
+        result = self.replanner.propose(shift_id)
+        log.info("schedule proposal shift=%s status=%s", shift_id, result.status)
+        return result
+
+    def feed_start(self, principal: Principal, site_id: str, after: int | None, last_event_id: str | None) -> int:
+        """Validate scope and cursor before the stream opens (errors are plain JSON responses)."""
+        self.require_site(principal, site_id)
+        cursor = after
+        if last_event_id is not None:
+            if not last_event_id.isdigit() or (after is not None and int(last_event_id) != after):
+                raise ApiError(422, "invalid_cursor", "Last-Event-ID must be a feed sequence equal to `after`")
+            cursor = int(last_event_id)
+        floor, newest = self.supervision.feed_bounds()
+        if cursor is None:
+            cursor = newest
+        if cursor > newest:
+            raise ApiError(422, "invalid_cursor", "cursor is beyond the newest feed event")
+        if cursor < floor:
+            raise ApiError(410, "replay_expired", "events after this cursor are no longer retained; reload the "
+                                                  "overview and continue from its feed_cursor")
+        if self._feed_subscribers >= self.settings.feed_max_subscribers:
+            raise ApiError(429, "rate_limited", "too many open supervisor streams", retryable=True)
+        self._feed_subscribers += 1
+        return cursor
+
+    def _still_allowed(self, principal: Principal, site_id: str) -> bool:
+        """Revocation and grant removal apply to an open stream at its next poll."""
+        meta = self.store.get_actor_token(principal.token_id) if principal.token_id else None
+        if meta is None or meta["revoked_at"] is not None or meta["expires_at"] <= utcnow():
+            return False
+        return site_id in self.supervisor_sites(principal)
+
+    async def feed_stream(self, principal: Principal, site_id: str, cursor: int, is_disconnected):
+        """SSE: replay after the cursor, then tail; heartbeat comments; bounded lifetime; closes on revocation."""
+        loop = asyncio.get_running_loop()
+        started = last_beat = loop.time()
+        try:
+            yield f"retry: 2000\n: cocoon supervisor feed, cursor {cursor}\n\n"
+            while True:
+                if await is_disconnected():
+                    return
+                if not self._still_allowed(principal, site_id):
+                    yield "event: stream_closed\ndata: {\"reason\": \"access_revoked\"}\n\n"
+                    return
+                floor, _ = self.supervision.feed_bounds()
+                if cursor < floor:
+                    yield "event: stream_closed\ndata: {\"reason\": \"replay_expired\"}\n\n"
+                    return
+                events, cursor = self.supervision.feed_page(site_id, cursor)
+                for e in events:
+                    yield f"id: {e['sequence']}\nevent: {e['type']}\ndata: {json.dumps(e, separators=(',', ':'))}\n\n"
+                if events:
+                    continue
+                now = loop.time()
+                if now - started >= self.settings.feed_max_stream_seconds:
+                    yield f"event: stream_closed\ndata: {{\"reason\": \"max_duration\", \"cursor\": {cursor}}}\n\n"
+                    return
+                if now - last_beat >= self.settings.feed_heartbeat_seconds:
+                    last_beat = now
+                    yield f": heartbeat {cursor}\n\n"
+                await asyncio.sleep(self.settings.feed_poll_seconds)
+        finally:
+            self._feed_subscribers -= 1
+
+    def run_due_work(self) -> dict[str, Any]:
+        """One pass of the background worker: short transactions only, no model call, no network."""
+        out: dict[str, Any] = {}
+        if self.approvals is not None:
+            out["expired"] = self.approvals.expire_due()
+            out["applied"] = self.approvals.apply_pending()
+        if self.supervision is not None:
+            out["feed_pruned"] = self.supervision.prune_feed()
+        if self.wellbeing is not None:
+            out["samples_purged"] = self.wellbeing.purge_expired()
+        if self.sos is not None:
+            out["sos_deadlines"] = self.sos.run_due()
+        return out
+
+    # ------------------------------------------------------------------ SOS, presence, presentation (D3)
+
+    def impact(self, session: s.Session, req: s.HumanImpactCandidate) -> s.ImpactResult:
+        if self.sos is None:
+            raise ApiError(404, "not_found", "SOS check-ins are not enabled")
+        with domain_errors("impact"):
+            result = self.sos.ingest(session, req)
+        log.info("impact candidate session=%s source=%s status=%s episode=%s", session.session_id,
+                 req.source_event_id, result.status, result.episode.episode_id if result.episode else None)
+        return result
+
+    def presence(self, session: s.Session, req: s.ConsumerPresenceReport) -> s.PresenceResult:
+        with domain_errors("presence"):
+            return self.channels.report_presence(session, req)
+
+    def presentation(self, session: s.Session, event_id: str, req: s.PresentationReceipt) -> s.PresentationView:
+        with domain_errors("presentation"):
+            return self.channels.report_presentation(session, event_id, req)
+
+    # ------------------------------------------------------------------ consent and wellbeing (D1)
+
+    def _need_wellbeing(self):
+        if self.wellbeing is None:
+            raise ApiError(404, "not_found", "wellbeing is not enabled")
+        return self.wellbeing
+
+    def _consent_subject(self, principal: Principal, operator_id: str, write: bool) -> None:
+        """Consent belongs to the operator. Reads: the operator themself, or the trusted voice service. Writes: only
+        the operator's own actor token (a service or supervisor credential is not proof of consent)."""
+        if principal.kind == "operator":
+            if principal.operator_id != operator_id or not principal.has_scope("sessions:own"):
+                raise ApiError(404, "not_found", "operator not found")
+            return
+        if principal.kind == "service" and not write:
+            if self.catalog is None or not self.catalog.has_operator(operator_id):
+                raise ApiError(404, "not_found", "operator not found")
+            return
+        raise ApiError(403, "forbidden", "only the operator can change their own consent" if write
+                       else "this principal cannot read operator consent")
+
+    def consents(self, principal: Principal, operator_id: str) -> s.OperatorConsentState:
+        self._consent_subject(principal, operator_id, write=False)
+        return self._need_wellbeing().consent_state(operator_id)
+
+    def change_consent(self, principal: Principal, operator_id: str,
+                       req: s.OperatorConsentChange) -> s.OperatorConsentChangeResult:
+        self._consent_subject(principal, operator_id, write=True)
+        with domain_errors("consent"):
+            result = self._need_wellbeing().change_consent(operator_id, principal.subject_id, req)
+        log.info("consent change operator=%s change=%s purpose=%s action=%s applied=%s", operator_id, req.change_id,
+                 req.purpose, req.action, result.applied)
+        return result
+
+    def wellbeing_sample(self, session: s.Session, req: s.WellbeingSampleRequest) -> s.WellbeingSampleResult:
+        with domain_errors("wellbeing"):
+            result = self._need_wellbeing().ingest(session, req,
+                                                   timedelta(seconds=self.settings.announcement_ttl_seconds))
+        # never log values: only identifiers and the outcome
+        log.info("wellbeing sample session=%s sample=%s status=%s advice_opened=%s", session.session_id,
+                 req.sample_id, result.status, result.advice_opened)
+        return result
+
+    def wellbeing_view(self, session: s.Session) -> s.WellbeingView:
+        if session.binding_status != "catalog_verified":
+            raise ApiError(404, "not_found", "no wellbeing record for this session")
+        return self._need_wellbeing().view(session)
+
+    def _original_session(self, current: s.Session, binding: s.OriginalBinding) -> s.Session:
+        """Resolve an offline command's original association against the server's own record."""
+        original = self.store.get_session(binding.session_id)
+        if original is None or original.binding_status != "catalog_verified" \
+                or original.operator_id != current.operator_id or binding.operator_id != current.operator_id:
+            raise ApiError(404, "not_found", "original session not found")
+        wrong = [f for f in ("machine_id", "site_id", "shift_id")
+                 if getattr(binding, f) is not None and getattr(binding, f) != getattr(original, f)]
+        if wrong:
+            raise ApiError(409, "binding_mismatch", "original_binding does not match the stored session",
+                           details=[{"field": f"body.original_binding.{f}", "issue": "differs from the stored session"}
+                                    for f in wrong])
+        return original
 
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
+        """Status after a lost response. Never executes. Visible from any verified session of the same operator (an
+        offline draft may be looked up from a replacement session)."""
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
-        if row is None or row["session_id"] != session.session_id:
+        owner = self.store.get_session(row["session_id"]) if row is not None else None
+        same = owner is not None and (owner.session_id == session.session_id or (
+            owner.operator_id == session.operator_id and owner.binding_status == "catalog_verified"
+            and session.binding_status == "catalog_verified"))
+        if row is None or not same:
             raise ApiError(404, "not_found", "command not found")
         result = json.loads(row["result_json"])
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
@@ -260,7 +646,8 @@ class CocoonService:
             ]
         return s.MeResponse(
             subject_id=principal.subject_id, principal_kind=principal.kind, operator_id=principal.operator_id,
-            display_name=principal.display_name, site_ids=[], allowed_associations=associations,
+            display_name=principal.display_name, site_ids=sorted(self.supervisor_sites(principal)),
+            allowed_associations=associations,
             scopes=sorted(principal.scopes), token_id=principal.token_id, token_expires_at=principal.expires_at,
         )
 
@@ -400,11 +787,45 @@ class CocoonService:
             latest_alert=self.store.latest_alert(session_id),
             pending_question=s.PendingQuestion.model_validate(pending) if pending else None,
             shift=self.store.get_shift(session.shift_id) if session.shift_id else None,
-            assigned_tasks=self.store.list_assigned_tasks(session.shift_id) if session.shift_id else [],
+            assigned_tasks=self.tasks_with_conditions(session),
+            site_conditions=self.conditions.check(session, None) if self.conditions and session.site_id else None,
             machine_state=self._machine_state(session_id),
             idle_reasons=self.store.list_idle_reasons(session_id),
+            rule_coverage=self.store.rule_coverage(session_id),
+            learning=self.learner(session),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
+            sos=self.sos.current(session.operator_id) if self.sos is not None
+            and session.binding_status == "catalog_verified" else None,
+            presence=self.channels.presence(session_id) if self.channels is not None else [],
+            snapshot=self._snapshot(session),
+            wellbeing=self.wellbeing.view(session) if self.wellbeing is not None
+            and session.binding_status == "catalog_verified" else None,
         )
+
+    def _snapshot(self, session: s.Session) -> s.SyncSnapshot:
+        now = utcnow()
+        machine = self._machine_state(session.session_id)
+        presence = self.channels.presence(session.session_id) if self.channels is not None else []
+        live = [p for p in presence if p.live and p.connection != "offline"]
+        shift = self.store._one("SELECT schedule_version FROM shifts WHERE shift_id = ?", (session.shift_id,)) \
+            if session.shift_id else None
+        tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []
+        return s.SyncSnapshot(
+            server_time=now, state_version=self.store.state_version(session.session_id),
+            schedule_version=shift[0] if shift else None, task_versions={t.task_id: t.version for t in tasks},
+            machine_data_time=machine.observed_at, machine_status=machine.status,
+            machine_data_age_seconds=int((now - machine.received_at).total_seconds()) if machine.received_at else None,
+            last_contact_at=max((p.received_at for p in presence), default=None),
+            voice_available=any(p.voice_available for p in live), screen_available=any(p.screen_available for p in live))
+
+    def tasks_with_conditions(self, session: s.Session) -> list[s.AssignedTask]:
+        tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []
+        if self.planner is not None:
+            return [self.planner.enrich(session, t) for t in tasks]
+        if self.conditions is None:
+            return tasks
+        return [t.model_copy(update={"conditions": self.conditions.check(session, t)}) if t.status != "completed"
+                else t for t in tasks]
 
     def _machine_state(self, session_id: str) -> s.MachineStateView:
         limit = self.settings.telemetry_stale_seconds
@@ -430,7 +851,9 @@ class CocoonService:
         """Rules run synchronously on the sample, in one short transaction, without any model call. The graph reads
         alerts from the database when a turn starts, so no checkpoint write (and no turn lock) is needed here."""
         session = self.require_session(session_id)
-        digest = payload_hash(req.model_dump(mode="json", exclude={"event_id"}))
+        body = req.model_dump(mode="json", exclude={"event_id"})
+        body["readings"] = _without_unset(body["readings"], ADDED_READINGS)
+        digest = payload_hash(body)
         async with self._telemetry_locks[session_id]:
             prior = self.store.get_telemetry(session_id, req.event_id)
             if prior is not None:
@@ -438,10 +861,21 @@ class CocoonService:
                     raise ApiError(409, "idempotency_conflict", "event_id was already used with a different payload")
                 return self._telemetry_result(session_id, prior[1], duplicate=True)
             machine = self.catalog.machines.get(session.machine_id) if self.catalog is not None else None
+            outcomes, in_task_check = [], None
+            if self.conditions is not None:
+                worse, in_task_check = self.conditions.worsening(session, req.observed_at)
+                if worse is not None:
+                    outcomes.append(worse)
+            category = machine.category if machine else None
+            task = self.store.in_progress_task(session.shift_id)
             outcome = self.store.apply_observation(
-                session, req, digest, self.policy, machine.category if machine else None,
+                session, req, digest, self.policy, category,
                 timedelta(seconds=self.settings.announcement_ttl_seconds),
                 requires_engine_on=self.settings.seatbelt_rule_requires_engine_on,
+                outcomes=outcomes, in_task_check=in_task_check,
+                evaluate_in_tx=lambda c, state: self.hazards.evaluate(c, session, req, category, task, state),
+                repeat_in_tx=lambda c: self.hazards.repeat_outcomes(c, session, req),
+                coaching_in_tx=lambda c: coaching_prompts(c, session, req),
             )
             if outcome["alerts_opened"] or outcome["alerts_cleared"]:
                 log.info("alert transition session=%s opened=%s cleared=%s drafts=%s", session_id,
@@ -467,6 +901,16 @@ class CocoonService:
         if not self.store.announcement_exists(session_id, event_id):
             raise ApiError(404, "not_found", "announcement not found")
         record = self.store.record_delivery(event_id, report)
+        if report.status == "played" and self.sos is not None:  # reported voice playback of a check-in = an offer
+            self.sos.offer_after_report(event_id, "voice", f"delivery:{report.consumer_id}")
         log.info("delivery session=%s event=%s consumer=%s status=%s", session_id, event_id, report.consumer_id,
                  report.status)
         return record
+
+
+
+def _briefing_conditions(check: s.WorkingConditionsCheck) -> str:
+    sentence = conditions_sentence(check)
+    if sentence.lower().startswith("conditions"):
+        return sentence[0].upper() + sentence[1:]
+    return "Conditions: " + sentence[0].lower() + sentence[1:]

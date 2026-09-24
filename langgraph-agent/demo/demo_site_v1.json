@@ -1,19 +1,22 @@
 {
   "schema": "cocoon.demo-site.v1",
-  "fixture_version": "1",
+  "fixture_version": "1.1",
   "provenance": "synthetic_demo_fixture: invented site, zones, shifts and task schedule for the Cocoon backend demo. Not dataset data, not a real site, not a calibrated plan. Task types and work units follow Cocoon_Dataset_v1 task_history for each machine category.",
   "catalog_manifest_sha256": "5d7de31c1856daf4179110a653d175891a102a53263356843792dd383f40e42d",
   "units": {
     "work_quantity": "per task work_unit: m3 (cubic metres), m (metres), m2 (square metres), t (tonnes), t_km (tonne-kilometres)",
     "temperature_c": "degrees Celsius",
-    "duration_minutes": "minutes; a supplied demo estimate, NOT a calibrated prediction (estimator is Batch C)",
+    "duration_minutes": "minutes; a supplied demo figure, NOT a calibrated prediction (the C3 estimator reports its own estimate)",
+    "ground_condition": "synthetic label per task (fixture 1.1): firm, dry, soft, wet, rocky; an estimator input",
     "times": "shift and task times are site-local wall-clock offsets, stored as UTC after seeding for the chosen service date"
   },
   "site": {
     "site_id": "SITE_DEMO_NORTH",
     "name": "North quarry (synthetic demo site)",
     "timezone": "Asia/Kolkata",
-    "utc_offset": "+05:30"
+    "utc_offset": "+05:30",
+    "location": {"latitude": 12.9692, "longitude": 79.1559,
+                 "basis": "synthetic_demo_location: coordinates near Vellore chosen only so live weather has a place to look up; not a real quarry"}
   },
   "zones": [
     {"site_zone_id": "ZONE_N_PIT", "name": "North pit", "zone_type": "excavation", "outdoor": true},
@@ -26,42 +29,42 @@
   "synthetic_conditions": {"source": "synthetic_demo_fixture", "summary": "clear and dry", "temperature_c": 31},
   "assignments": [
     {"operator_id": "OP_DEMO_1_1", "machine_id": "EXC_DEMO_001", "tasks": [
-      {"order": 1, "start_local": "07:30", "task_type": "earth_excavation", "zone": "ZONE_N_PIT",
+      {"order": 1, "start_local": "07:30", "task_type": "earth_excavation", "ground_condition": "firm", "zone": "ZONE_N_PIT",
        "title": "Excavate the north pit bench", "details": "Dig the marked bench in the north pit to grade stakes and load spoil to the truck.",
        "work_quantity": 90, "work_unit": "m3", "duration_minutes": 70},
-      {"order": 2, "start_local": "09:15", "task_type": "trenching", "zone": "ZONE_N_TRENCH",
+      {"order": 2, "start_local": "09:15", "task_type": "trenching", "ground_condition": "soft", "zone": "ZONE_N_TRENCH",
        "title": "Open the east drainage trench", "details": "Trench along the east drainage line to the marked depth; keep spoil one metre back from the edge.",
        "work_quantity": 25, "work_unit": "m", "duration_minutes": 55},
-      {"order": 3, "start_local": "11:00", "task_type": "demolition", "zone": "ZONE_N_PIT",
+      {"order": 3, "start_local": "11:00", "task_type": "demolition", "ground_condition": "rocky", "zone": "ZONE_N_PIT",
        "title": "Break out the old culvert headwall", "details": "Remove the old concrete headwall with the breaker and stockpile the rubble.",
        "work_quantity": 15, "work_unit": "m3", "duration_minutes": 45}
     ]},
     {"operator_id": "OP_DEMO_2_1", "machine_id": "DOZ_DEMO_001", "tasks": [
-      {"order": 1, "start_local": "07:30", "task_type": "grading", "zone": "ZONE_N_GRADE",
+      {"order": 1, "start_local": "07:30", "task_type": "grading", "ground_condition": "dry", "zone": "ZONE_N_GRADE",
        "title": "Grade the access road strip", "details": "Grade the access road strip to the survey stakes.",
        "work_quantity": 400, "work_unit": "m2", "duration_minutes": 60},
-      {"order": 2, "start_local": "09:00", "task_type": "material_pushing", "zone": "ZONE_N_STOCK",
+      {"order": 2, "start_local": "09:00", "task_type": "material_pushing", "ground_condition": "soft", "zone": "ZONE_N_STOCK",
        "title": "Push up the stockpile", "details": "Push loose material into the stockpile footprint.",
        "work_quantity": 80, "work_unit": "m3", "duration_minutes": 50}
     ]},
     {"operator_id": "OP_DEMO_3_1", "machine_id": "LDR_DEMO_001", "tasks": [
-      {"order": 1, "start_local": "07:30", "task_type": "material_loading", "zone": "ZONE_N_STOCK",
+      {"order": 1, "start_local": "07:30", "task_type": "material_loading", "ground_condition": "firm", "zone": "ZONE_N_STOCK",
        "title": "Load trucks from the stockpile", "details": "Load the haul trucks from the stockpile face.",
        "work_quantity": 150, "work_unit": "t", "duration_minutes": 75},
-      {"order": 2, "start_local": "09:30", "task_type": "stockpiling", "zone": "ZONE_N_STOCK",
+      {"order": 2, "start_local": "09:30", "task_type": "stockpiling", "ground_condition": "firm", "zone": "ZONE_N_STOCK",
        "title": "Rebuild the stockpile face", "details": "Tidy and rebuild the stockpile face after loading.",
        "work_quantity": 120, "work_unit": "m3", "duration_minutes": 50}
     ]},
     {"operator_id": "OP_DEMO_4_1", "machine_id": "TRK_DEMO_001", "tasks": [
-      {"order": 1, "start_local": "07:30", "task_type": "material_hauling", "zone": "ZONE_N_HAUL",
+      {"order": 1, "start_local": "07:30", "task_type": "material_hauling", "ground_condition": "dry", "zone": "ZONE_N_HAUL",
        "title": "Haul spoil to the crusher", "details": "Haul loaded spoil from the north pit to the crusher.",
        "work_quantity": 400, "work_unit": "t_km", "duration_minutes": 120}
     ]},
     {"operator_id": "OP_DEMO_5_1", "machine_id": "BHL_DEMO_001", "tasks": [
-      {"order": 1, "start_local": "07:30", "task_type": "utility_trenching", "zone": "ZONE_N_TRENCH",
+      {"order": 1, "start_local": "07:30", "task_type": "utility_trenching", "ground_condition": "wet", "zone": "ZONE_N_TRENCH",
        "title": "Dig the cable trench", "details": "Dig the cable trench to the marked depth.",
        "work_quantity": 30, "work_unit": "m", "duration_minutes": 50},
-      {"order": 2, "start_local": "09:00", "task_type": "backfilling", "zone": "ZONE_N_TRENCH",
+      {"order": 2, "start_local": "09:00", "task_type": "backfilling", "ground_condition": "soft", "zone": "ZONE_N_TRENCH",
        "title": "Backfill the cable trench", "details": "Backfill and compact the cable trench after inspection.",
        "work_quantity": 35, "work_unit": "m3", "duration_minutes": 40}
     ]}

@@ -84,7 +84,7 @@ async def test_failure_after_action_saved_is_retryable_without_duplicates(data_d
     brain = FlakyComposeBrain(failures=1)
     async with running_app(data_dir, brain) as client:
         sid = await _session(client)
-        body = {"turn_id": "t-flaky", "text": "Log an incident: bucket tooth missing", "source": "voice"}
+        body = {"turn_id": "t-flaky", "text": "Log an incident: bucket tooth missing, medium severity", "source": "voice"}
         failed = await client.post(f"/v1/sessions/{sid}/turns", json=body)
         assert failed.status_code == 503
         assert failed.json()["error"]["code"] == "llm_unavailable" and failed.json()["error"]["retryable"] is True
@@ -119,7 +119,7 @@ async def test_orphaned_processing_turn_is_rerun_after_restart(data_dir):
 def test_records_and_context_survive_restart(client_factory):
     with client_factory() as c:
         sid = new_session(c)
-        first = turn(c, sid, "t1", "Log an incident: fuel cap is missing").json()
+        first = turn(c, sid, "t1", "Log an incident: fuel cap is missing, low severity").json()
         turn(c, sid, "t2", "Report an incident")  # leaves a pending question in graph memory
         telemetry(c, sid, "s1", "2026-09-23T10:00:01Z", engine_on=True, seatbelt=False)
         version = c.get(f"/v1/sessions/{sid}/state", headers=AUTH).json()["state_version"]
@@ -130,9 +130,9 @@ def test_records_and_context_survive_restart(client_factory):
         assert state["state_version"] == version
         assert state["pending_question"]["kind"] == "incident_description"
         assert len(state["active_alerts"]) == 1
-        replay = turn(c, sid, "t1", "Log an incident: fuel cap is missing").json()
+        replay = turn(c, sid, "t1", "Log an incident: fuel cap is missing, low severity").json()
         assert replay == first  # completed turn replays from storage
-        answer = turn(c, sid, "t3", "Mirror bracket snapped off").json()
+        answer = turn(c, sid, "t3", "Mirror bracket snapped off, low severity").json()
         assert answer["actions"][0]["type"] == "incident_logged"
         why = turn(c, sid, "t4", "why?").json()
         assert why["actions"][0]["alert"]["status"] == "active"

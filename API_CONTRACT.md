@@ -144,6 +144,123 @@ Valid new-session request against the development catalog:
   A re-run returns the saved record with `created: false` instead of inserting another one.
 - **This is not exactly-once.** Suppose the backend dies after saving an incident but before storing the turn result. The next retry re-runs the graph, finds the incident by `turn_id` and reports it. The graph message IDs derive from `turn_id`, so the utterance is not duplicated in memory either. But if the model routes the re-run differently, the operator may hear different wording. A turn that `failed` in the wording step after an action was saved has still saved that action. That is why the worker never tells the operator an action failed or was cancelled when the outcome is unknown. It says it cannot confirm yet.
 - Updates for one session are processed in order: turns and telemetry share a per-session lock. This relies on running **one Uvicorn worker**.
+- **A failed turn is not "nothing saved".** `action_records` on the turn (and the error `details`) list every write that committed before the failure; a retry of the same `turn_id` reuses them.
+
+### Incident capture (C1)
+
+- A spoken report becomes an incident only with a description, a severity (a stated `low`/`medium`/`high`/`critical`, or explicitly unknown: `severity: null`, `severity_basis: "stated_unknown"`) and a usable time. Otherwise it is saved as an `IncidentDraft` with `origin: "operator_report"` and `missing: [...]`, and the turn asks one question (`information_requested`, `missing_field` `severity` or `occurred_time`, with the `draft`). The pending question (`kind` `incident_severity` / `incident_time`, `draft_id`) is in `/state`.
+- `occurred_basis`: `time_of_report` (no time stated; the report time is not claimed as the occurrence time), `observation_time`, `operator_relative`, `operator_clock_time`, `operator_entered`, `unresolved`. `occurred_expression` is the operator's phrase verbatim and `occurred_reference_at` the persisted instant it was interpreted against.
+- Taps: `incident.edit` accepts `severity_unknown`, `occurred_expression` (interpreted at the command's first receipt; 422 if it cannot be) and `occurred_at`. `incident.confirm` is 409 `invalid_transition` with details `draft.severity` / `draft.occurred_time` while a fact is missing, and returns the pending `approval` when the draft asked for supervisor review.
+
+### Working conditions (C2)
+
+- `task.start` (voice or `POST .../commands`) runs one working-conditions check (`ConditionCheck`) for outdoor tasks under the versioned policy `policies/working_conditions_v1.json`. `block` → 409 `invalid_transition` (details `conditions.*`), never overridable; `acknowledge` → 409 unless `payload.acknowledge_conditions: true` (voice: "start anyway"). The check that let a task start is saved and returned as `AssignedTask.start_check`; `AssignedTask.conditions` and `/state.site_conditions` are current, unsaved checks.
+- `ConditionCheck.coverage`: `fresh`, `stale` (labelled cached value), `unavailable`, `misaligned` (live weather cannot describe a replay's data time), `not_applicable`. `level: unknown` means no usable weather; it is never "clear".
+- `WeatherSnapshot` values are normalised (°C, %, mm/h, m/s, m). Open-Meteo values are model output for a grid cell with `issued_at: null` (no issue time is provided); fixture values are synthetic.
+- A `working_conditions` alert episode (with `details` = the saved check) is announced when conditions worsen during an outdoor task in progress.
+
+### Hazard rules (C2)
+
+- Simulated telemetry may carry `proximity` (a scan: omitted = no detector data; `[]` = no detections, still not proof nobody is near), `motion` (timestamped `speed_mps` samples, >= 3, strictly increasing, gaps <= 500 ms), `pitch_deg`/`roll_deg` (degrees) or `grade_pct` (percent), and cumulative `fuel_meter_l`/`load_cycles_total`. All values are synthetic; generated proximity is `source: synthetic_scenario`, never Cat Detect or BLE.
+- Episodes are per rule and `subject_key` (e.g. the proximity entity). A graded episode changes `level` in place: each change is an `Alert.updates[]` item with its own evidence; the first rise is announced once as `alert_escalated`. `cleared_reason` says how it ended (`observed_clear`, `expired_without_detection`, `instant_event`).
+- `/state.rule_coverage` reports, per rule, whether the latest observation could be evaluated (`evaluated`, `unknown`, `not_applicable`, `not_configured`). Unknown is never "safe".
+- A repeat-violation trigger creates one pending `ApprovalRequest` (`kind: repeated_violations`, `alert_id`) and one coaching assignment. Pending review is not a notification or a decision.
+
+### Duration estimates (C3)
+
+- `AssignedTask.estimate` (`TaskDurationEstimate`) is the saved estimate for the task's current inputs; `start_estimate` is the one in force when the task started and never changes afterwards; `elapsed_minutes` is wall-clock time since the start. `method`: `productivity_with_factors`, `provided_estimate_adjusted`, `typical_duration_fallback`, `not_estimable`. `calibration_status: uncalibrated_configured_prior` means nothing was fitted on historical outcomes.
+- Runtime component names `WorkingConditionsCheck`, `TaskDurationEstimate` and `TaskDurationFactor` are deliberately distinct from the proposed contract's `ConditionCheck`, `DurationEstimate` and `DurationFactor`, which stay as specified in `contracts/proposed/`.
+
+### Learning (C4)
+
+- `POST .../commands` accepts `lesson.start`, `lesson.next` (`expected_step` optional), `lesson.pause`, `lesson.resume`, `lesson.defer` (`defer_minutes`), `quiz.start` and `quiz.answer` (`attempt_id`, `question_id`, `choice_id`); the result's `learning` carries the step, question (never the answer key), feedback (the correct choice only after the answer is saved), result, progress and any level change. A stale step or question is 409 `version_conflict`; an unknown choice 422; missing prerequisites or unfinished steps 409 `invalid_transition`.
+- Completion requires every step presented plus a passed assessment. Media metadata or a media fetch never counts. Levels are demo learning levels with saved evidence, never certification.
+- Media: `GET /v1/content/{asset_id}` gives metadata; `content_ref` (`/file`) and `captions_ref` (`/captions`) are fetched with the same bearer token. Only catalog IDs resolve, and only when the file matches its catalog checksum.
+
+### Consent and wellbeing (D1)
+
+- Purposes: `vitals_processing` (use HR/skin temperature for advice) and `risk_sharing_supervisor` (share a derived risk category with the site's supervisors). Sharing needs processing; revoking processing revokes sharing too (`cascaded`). `not_set` behaves exactly like revoked; migration, startup and seeding never grant anything.
+- A change names the current `notice_version` (`policies/consent_notices_v1.json`; outdated → 422) and the `expected_version` last read (stale → 409 `version_conflict`), so an old offline grant cannot override a newer revocation. The same `change_id` with the same body returns `applied: false` and the current state; with another body 409 `idempotency_conflict`.
+- Voice can read the consent summary and record breaks; it never grants or revokes consent.
+- `POST .../wellbeing/samples` (service or the owning operator): `heart_rate_bpm` 20–250, `skin_temp_c` 20–45 (skin, not core), finite only, `window_seconds`, `quality`, `source`, `simulated`. The consent check and the write share one transaction. Result `status`: `accepted`, `duplicate`, `rejected_consent` (nothing kept, not even a digest), `ignored_late` (older than the newest retained sample), `expired` (deleted by retention or revocation). The result lists advice IDs and rule statuses, never values. Machine telemetry is processed regardless of wellbeing consent.
+- Retention: raw samples are kept `retention_hours` (24) after server receipt, then deleted at startup and on every sample request; revoking processing deletes them at once. Advice episodes keep derived evidence (means, heat index, minutes) as private operator records. Backups and anything a client already downloaded cannot be recalled.
+- Advice (`policies/wellbeing_v1.json`): factors `heat_index` (NWS heat index from site air temperature + humidity; category boundaries are published guidance, the advice is not), `break_due` and `vitals_strain` (synthetic demo assumptions). One episode per operator, announced once as `wellbeing_advice` (no values in the speech), once more if it rises, and cleared only when every contributing factor is observed clear. `unknown` is never normal. Break records come only from `break.start` / `break.end` commands (tap or voice); engine-off or silence is not a break.
+- Runtime names `OperatorConsentState`, `OperatorConsentChange(Result)`, `WellbeingSampleRequest` deliberately differ from the proposed `ConsentState`, `ConsentChangeRequest/Result` and `VitalsObservation`; the proposed contract generator now fails if a proposed model shares a name with a runtime component without being the same class.
+
+### Supervision and approvals (D2)
+
+- **Scope:** supervisor tokens issued from D2 carry `supervise`; a site is readable only after `python scripts/actor_tokens.py grant-site --principal-id <id> --site-id <site>` (revocable with `revoke-site`, listed with `sites`). Tokens issued before D2 lack `supervise` and stay limited to `/v1/me` even with a grant. A site named in a query must be granted (403); records of other sites are 404. `GET /v1/me.site_ids` lists the grants.
+- **Projections** are explicit models: alert type/severity/level/status/times, incident ID/origin/severity/zone/time (never the description), task order/status/version, approval fields, notification fields and `WellbeingRiskView`. No `/state`, evidence, explanation, speech or free text.
+- **Approvals:** C's `repeated_violations` and `incident_escalation` requests and D2 `schedule_change` proposals share one lifecycle (`pending` → `approved` | `rejected` | `expired` | `cancelled`). The payload is immutable (DB trigger); `payload_sha256` is the SHA-256 of its stored canonical JSON and must be named in the decision. Escalations expire after 24 h, proposals after 60 min. Approval is recorded first; the application (`application.status`: `pending` → `applied` | `failed_stale_inputs` | `failed`; `not_applicable` for rejections) runs in its own transaction and is resumed at startup and by the background worker. An approved escalation creates exactly one in-app notification (`escalation_approved`); nothing is sent outside the app.
+- **Re-planning:** movable (scheduled) tasks are permuted over the shift's existing start slots with trusted constraints (`demo/task_constraints_v1.json`) and every task interval is checked every 15 minutes against the cached forecast with C's conditions policy. A proposal is made only for a strictly better [blocks, acknowledgements, advisories] score; otherwise `no_proposal` explains why. Application revalidates schedule version, task versions/statuses and the forecast values (content hash) in the applying transaction; a change gives `failed_stale_inputs` and the schedule stays as it was.
+- **Feed:** `supervisor_feed` rows (type + reference) are committed with the change. Types: `risk.changed`, `approval.changed`, `notification.created`, `tasks.changed`, `alerts.changed` (D3 adds `sos.changed`). Cursors are feed sequences; other sites' events are skipped. Rows older than `COCOON_FEED_RETENTION_HOURS` (24) are pruned; a cursor below the pruned point is 410 (reload the overview and continue from its `feed_cursor`). A connected stream is not proof a person saw anything.
+
+### SOS check-ins (D3)
+
+- An impact candidate opens one episode per operator (`queued`) and a `sos_checkin` announcement (priority `critical`, "Are you okay? Say I'm okay, or I need help."). Impacts while it is open merge without moving its deadlines.
+- **Deadlines (server clock, fixed when set):** the offer wait starts at the candidate's receipt; the response window starts only at an eligible offer: a `played` delivery report or a screen `presented` report of the check-in event. Generation, feed/HTTP receipt, presence alone, failed/unknown playback and vibration never count. At the exact deadline the deadline wins.
+- **Outcomes:** `okay`; `help_requested` (urgent in-app notification at once); `unresolved_no_response` (`no_response_after_offer`); `unreachable` (`no_live_channel` when no live presence with voice or screen, else `offer_not_confirmed`). A late answer is recorded as `late_response` and, for "okay", a separate `sos_recovered` notification; the original alert is never removed.
+- **Answers:** voice ("I'm okay", "I need help") or the `sos.respond` command with `checkin_id` and `response`; a bare "yes" is asked again and resolves nothing.
+- **Notifications** follow `policies/emergency_notification_v1.json` (`preauthorised_emergency_in_app.v1`, synthetic demo site configuration). Without a policy or a granted supervisor the episode shows `notify_status` `blocked_no_policy` / `blocked_no_recipient`. They carry site/operator/machine/status and the trusted task zone only: no vitals, history or coordinates, and nothing is sent outside the app.
+- A background worker applies due deadlines without new input and after a restart. `COCOON_SOS_TIMER_PROFILE=accelerated_demo` (4 s / 5 s) is for isolated demo/test backends; the standard profile is 60 s / 90 s (demo assumptions).
+
+### Offline reconciliation and snapshots (D4)
+
+- `GET .../state` adds `snapshot` (`SyncSnapshot`: server time, state and schedule versions, per-task versions, machine data time/age/status, last application contact, live voice/screen availability) and `presence`. Sensor freshness, application contact and voice availability are separate facts; the backend cannot tell that a phone is offline or that the operator is unwell. Flutter owns its cache, upload queue, connection UI, screen and vibration.
+- `POST .../commands` gains optional `client_draft_id` and `original_binding` (session, operator, machine, site, shift) and the kind `incident.submit_draft` (needs `client_draft_id`, `captured_at`, `original_binding`, `payload.description`). The binding is checked against the stored session (other operator → 404; other machine/site/shift → 409 `binding_mismatch`) and the draft is attached to that original session, never to the current one. Identity is operator-wide: the same `client_draft_id` from a retry or a replacement session returns the stored draft (`duplicate_draft: true`); other content → 409 `idempotency_conflict`, other binding → 409 `binding_mismatch` (details name the stored draft; edit it with `incident.edit`). Relative times use `captured_at`. Upload never confirms.
+- Task commands act on the current session only (`original_binding` of another session → 409 `binding_mismatch`), still need current `expected_version`, and are refused when `captured_at` is more than 120 s old (a queued start or condition acknowledgement from a disconnected period is never replayed). Check-in answers name their exact `checkin_id`. Consent changes use `expected_version`, so an old offline grant cannot undo a later revocation.
+- After a lost response, `GET .../commands/{command_id}` (from any verified session of the same operator) returns the saved outcome and record IDs without executing anything; retry with the same `command_id`, never a new one.
+- Announcements carry `expired` (server clock) and `presentations` (screen/vibration receipts, separate from audio `deliveries`).
+
+### Batch D examples for the Flutter, supervisor and voice owners
+
+Synthetic values; every request uses a bearer token (operator or supervisor actor token, or the service credential server-side only). Complete request/response transcripts come from `python scripts/demo_scheduled_features.py` (`data/demo_d/demo_d_transcript_<run>.json`).
+
+```jsonc
+// Flutter (operator token): grant vitals processing against the notice shown to the operator
+POST /v1/operators/OP_DEMO_2_1/consents
+{"change_id": "c-7f3", "purpose": "vitals_processing", "action": "grant", "expected_version": 0,
+ "notice_version": "wellbeing-notice-2026-09-24.1", "is_synthetic_demo_record": true}
+// -> 200 {"change_id": "c-7f3", "applied": true, "duplicate": false, "cascaded": [], "state": {"version": 1, ...}}
+// stale expected_version -> 409 {"error": {"code": "version_conflict", "details": [{"field": "body.expected_version", "issue": "current version is 3"}], ...}}
+
+// Supervisor dashboard: the only wellbeing shape it ever receives
+GET /v1/supervisor/overview?site_id=SITE_DEMO_NORTH
+// -> "risks": [{"operator_id": "OP_DEMO_2_1", "site_id": "SITE_DEMO_NORTH", "risk_level": "unavailable",
+//               "unavailable_reason": "consent_revoked", "freshness": "none", "as_of": null}]
+
+// Supervisor: decide with the version and payload hash it displayed
+POST /v1/approvals/APR-0c1d2e3f4a5b/decision
+{"decision_id": "dec-91", "decision": "approve", "expected_version": 1,
+ "payload_sha256": "<approval.payload_sha256>"}
+// -> 200 {"decision_recorded": true, "approval": {"status": "approved", "application": {"status": "applied"}, ...}}
+// same body again -> 200 decision_recorded:false; another decision -> 409 decision_conflict
+
+// Voice worker: speaking the SOS check-in is reported like any announcement; that report is the contact offer
+POST /v1/sessions/{sid}/events/ann_SOS-6d44_checkin/delivery   {"consumer_id": "voice-worker", "status": "played"}
+// Flutter: showing it on screen (vibration alone does not count)
+POST /v1/sessions/{sid}/events/ann_SOS-6d44_checkin/presentation
+{"presentation_id": "pres-2", "consumer_id": "phone-1", "channel": "screen", "status": "presented",
+ "presented_at": "2026-09-24T02:20:31Z"}
+// Flutter tap answer (voice: "I'm okay" / "I need help")
+POST /v1/sessions/{sid}/commands
+{"command_id": "sos-help-1", "kind": "sos.respond", "payload": {"checkin_id": "SOS-6d44", "response": "help"}}
+
+// Flutter presence (every <= ttl seconds while connected)
+POST /v1/sessions/{sid}/presence
+{"report_id": "pr-118", "consumer_id": "phone-1", "sequence": 118, "connection": "online",
+ "voice_available": false, "screen_available": true, "reported_at": "2026-09-24T02:21:00Z", "ttl_seconds": 30}
+
+// Flutter offline draft, uploaded after reconnecting (keep the local copy until saved-on-server)
+POST /v1/sessions/{current_sid}/commands
+{"command_id": "off-9a1", "kind": "incident.submit_draft", "client_draft_id": "local-draft-42",
+ "captured_at": "2026-09-24T02:10:04Z",
+ "original_binding": {"session_id": "ses_...", "operator_id": "OP_DEMO_1_1", "machine_id": "EXC_DEMO_001",
+                      "site_id": "SITE_DEMO_NORTH", "shift_id": "SHF-EXC_DEMO_001-2026-09-24"},
+ "payload": {"description": "Cracked mirror bracket on the cab", "occurred_expression": "ten minutes ago"}}
+// lost response -> GET /v1/sessions/{sid}/commands/off-9a1 (never re-executes); retry with the SAME command_id
+// same client_draft_id with other content -> 409 idempotency_conflict (details name the stored DRF-...)
+```
 
 ### Example requests
 
@@ -201,18 +318,27 @@ Example bodies are in `contracts/examples/`, including a completed turn, a turn 
 | `POST /v1/sessions/{session_id}/turns/{turn_id}/delivery` | proposed | I08B | voice | Record response playback separately | Immutable attempts keyed by `delivery_id`. |
 | `GET /v1/sessions/{session_id}/events/stream` | proposed | I08A/I11 | voice, operator | Announcement SSE in the polling order | Shares `event_id`/`sequence` with polling. |
 | `GET /v1/me` | implemented | I02b | voice, operator, supervisor | Describe the authenticated principal (`Cache-Control: no-store`) | Never returns a token, digest or service configuration. `site_ids` are always empty until site grants exist (I13). |
-| `POST /v1/sessions/{session_id}/commands` | implemented | B1 | operator, voice | Command from a tap: `task.start`, `task.complete` (B1); `incident.edit`, `incident.confirm`, `incident.dismiss` on the session's drafts (B2). The same domain service as the voice tools | Subset of `cocoon.command.v1`: the binding comes from the session, not the body. 409 `idempotency_conflict` / `version_conflict` / `invalid_transition`. Offline queueing and other kinds are still I15. |
+| `POST /v1/sessions/{session_id}/commands` | implemented | B1 | operator, voice | Command from a tap: `task.start`, `task.complete` (B1); `incident.edit`, `incident.confirm`, `incident.dismiss` (B2); `lesson.*`, `quiz.*` (C4); `break.start`, `break.end` (D1); `sos.respond` (D3); `incident.submit_draft` with `client_draft_id` and `original_binding` (D4). The same domain service as the voice tools | Subset of `cocoon.command.v1`: the binding comes from the session, or for an offline draft from the checked `original_binding`. 409 `idempotency_conflict` / `version_conflict` / `invalid_transition` / `binding_mismatch`. |
 | `GET /v1/sessions/{session_id}/commands/{command_id}` | implemented | B1 | operator, voice | Saved result of a committed command (scoped to the calling principal) | Never re-executes. |
-| `POST /v1/sessions/{session_id}/presence` | proposed | I15 | operator, voice | Last-known connectivity and voice availability | Not proof the operator is conscious. |
-| `POST /v1/sessions/{session_id}/events/{event_id}/presentation` | proposed | I15 | operator | Screen/vibration presentation report | Not audio playback and not acknowledgement. |
-| `GET /v1/operators/{operator_id}/consents` | proposed | I02 | operator, voice | Purpose-specific consent state | — |
-| `POST /v1/operators/{operator_id}/consents` | proposed | I02 | operator | Grant or revoke one purpose | A supervisor token gets 403. |
-| `GET /v1/supervisor/overview` | proposed | I13 | supervisor | Site-scoped overview: risk level only, no raw vitals | Separate projection, not a filtered operator `/state`. |
-| `GET /v1/supervisor/events/stream` | proposed | I13 | supervisor | Role-filtered `cocoon.supervisor-feed.v1` | Never carries operator speech or evidence. |
-| `GET /v1/approvals` | proposed | I13 | supervisor, operator | Authorised, paged proposal list | — |
-| `GET /v1/approvals/{approval_id}` | proposed | I13 | supervisor, operator | Proposal, decision and separate application outcome | — |
-| `POST /v1/approvals/{approval_id}/decision` | proposed | I13 | supervisor | Approve/reject with `decision_id`, version and payload hash | Approval is reported separately from execution. |
-| `GET /v1/content/{asset_id}` | proposed | I12A | operator, voice | Approved lesson text/media metadata | Not an arbitrary URL fetcher. |
+| `POST /v1/sessions/{session_id}/presence` | implemented | D3 | operator, voice | Last-known connectivity and voice/screen availability per consumer (`ConsumerPresenceReport` → `PresenceResult`) | Liveness = server receipt + `ttl_seconds`; older `sequence` ignored; one consumer never erases another. Not proof the operator is conscious. |
+| `POST /v1/sessions/{session_id}/events/{event_id}/presentation` | implemented | D3 | operator, voice | Screen/vibration presentation report (`PresentationReceipt` → `PresentationView`) | Separate from audio `deliveries`; not acknowledgement. A screen `presented` report of an SOS check-in is an eligible contact offer; vibration alone is not. |
+| `POST /v1/sessions/{session_id}/impacts` | implemented | D3 | simulator, operator | Typed human-impact candidate (`HumanImpactCandidate` → `ImpactResult`) opening or merging an SOS check-in | Simulated provenance in this prototype; a candidate older than 300 s is `historical` (no current emergency); future capture time 422. |
+| `GET /v1/operators/{operator_id}/consents` | implemented | D1 | operator, voice | Purpose-specific consent state (`OperatorConsentState`); `not_set` is never a grant | Own operator or the voice service; supervisor 403, another operator 404. |
+| `POST /v1/operators/{operator_id}/consents` | implemented | D1 | operator | Grant or revoke one purpose against the current notice, with `change_id` and `expected_version` | Only the operator's own token (service credential and supervisors 403). Identical retry is not re-applied; 409 `idempotency_conflict` / `version_conflict` / `invalid_transition` (sharing needs processing). |
+| `POST /v1/sessions/{session_id}/wellbeing/samples` | implemented | D1 | simulator, operator | Private HR (bpm) / skin temperature (degC) summary; retained only under `vitals_processing` | Values never echoed; `rejected_consent` retains nothing. Target I05A: also a `vitals` observation in the telemetry v2 batch. |
+| `GET /v1/sessions/{session_id}/wellbeing` | implemented | D1 | operator, voice | Operator-private rule status, advice with explanation, breaks, consent summary | Never a supervisor view (supervisors get `WellbeingRiskView` only). |
+| `GET /v1/supervisor/overview` | implemented | D2 | supervisor | Site-scoped `SupervisorSiteOverview`: tasks, alert summaries, structured incidents (no text), approvals, risk category only, notifications, `feed_cursor` | `site_id` must be a CLI-granted site (else 403). Separate projection, not a filtered operator `/state`. |
+| `GET /v1/supervisor/events/stream` | implemented | D2 | supervisor | SSE `cocoon.supervisor-feed.v1`: replay after `after`/Last-Event-ID, then tail; heartbeats; closes on revocation or max duration | Projected at send time under current scope and consent. 410 `replay_expired`, 422 `invalid_cursor`, 429 `rate_limited`. |
+| `POST /v1/supervisor/notifications/{notification_id}/receipt` | implemented | D2 | supervisor | Record `presented` / `acknowledged` for an in-app notification | Creation is not delivery; status never goes backwards (409). |
+| `GET /v1/approvals` | implemented | D2 | supervisor, operator | Authorised, paged `ApprovalPageView` (supervisor: granted sites; operator: own) | Legacy rows without a trusted site are `ineligible_no_site` and visible to no supervisor. |
+| `GET /v1/approvals/{approval_id}` | implemented | D2 | supervisor, operator | `ApprovalView`: payload hash, decision and separate application outcome | 404 outside the caller's scope. |
+| `POST /v1/approvals/{approval_id}/decision` | implemented | D2 | supervisor | Approve/reject with `decision_id`, `expected_version` and `payload_sha256` | Identical retry → `decision_recorded: false`; 409 `decision_conflict` / `version_conflict` / `approval_expired`. Application is reported separately. |
+| `POST /v1/shifts/{shift_id}/schedule-proposals` | implemented | D2 | voice, simulator | Ask the deterministic weather re-planner for a reorder proposal | Trusted service only. `proposed`, `duplicate` (unchanged inputs) or `no_proposal` with the reason; a proposal changes nothing until approved and applied. |
+| `GET /v1/content/{asset_id}` | implemented | C4 | operator, voice | Catalog lesson media metadata (`LessonMediaAsset`) | Not an arbitrary URL fetcher: only catalog asset IDs. Target I12A: the fuller proposed `ContentAsset` shape. |
+| `GET /v1/content/{asset_id}/file` | implemented | C4 | operator, voice | The media file (e.g. `video/mp4`), resolved by catalog ID inside the content root, served only when its bytes match the catalog checksum | A fetch is not playback and never completes a lesson. |
+| `GET /v1/content/{asset_id}/captions` | implemented | C4 | operator, voice | WebVTT captions of a catalog video | |
+| `GET /v1/sessions/{session_id}/lessons` | implemented | C4 | operator, voice | Learning record of the verified operator: level (not a certification), per-lesson progress, active question | 404 for legacy/unverified sessions. No answer keys. |
+| `GET /v1/sessions/{session_id}/lessons/{lesson_id}` | implemented | C4 | operator, voice | One lesson version: speakable steps, media metadata, assessment shape | No answer keys. |
 
 The plan's "twelve session/turn/event routes" are the **seven implemented JSON routes plus the five proposed streaming/control routes**. Only the seven are served today. A `POST .../turns/stream` request to the current app returns 405 because the path matches the registered `GET /v1/sessions/{session_id}/turns/{turn_id}` template with `turn_id=stream`. No streaming handler exists.
 

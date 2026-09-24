@@ -1,4 +1,5 @@
-"""Local administration of actor tokens: issue, list, show, revoke (used by scripts/actor_tokens.py).
+"""Local administration of actor tokens: issue, list, show, revoke, and supervisor site grants
+(grant-site, revoke-site, sites) (used by scripts/actor_tokens.py).
 
 The plaintext token is written exactly once to a new private file (--out) and is never printed, logged or stored.
 Listing and showing print metadata only: never the token or its digest. Revocation uses the non-secret token_id.
@@ -18,7 +19,7 @@ from .auth import (DEFAULT_TTL, ROLE_SCOPES, fmt_time, generate_token, token_dig
                    write_token_file)
 from .catalog import CatalogError, load_catalog
 from .config import Settings, get_settings
-from .store import Conflict, Store
+from .store import Conflict, NotFound, Store
 
 _ID = re.compile(ID_PATTERN)
 
@@ -45,6 +46,14 @@ def _parser() -> argparse.ArgumentParser:
     revoke = sub.add_parser("revoke", help="revoke by token_id (idempotent)")
     revoke.add_argument("token_id")
     revoke.add_argument("--reason", default=None)
+    grant = sub.add_parser("grant-site", help="grant a supervisor principal read/decide scope at one seeded site")
+    grant.add_argument("--principal-id", required=True)
+    grant.add_argument("--site-id", required=True)
+    ungrant = sub.add_parser("revoke-site", help="remove a supervisor's site grant (next request)")
+    ungrant.add_argument("--principal-id", required=True)
+    ungrant.add_argument("--site-id", required=True)
+    sites = sub.add_parser("sites", help="list a supervisor principal's active site grants")
+    sites.add_argument("--principal-id", required=True)
     return ap
 
 
@@ -136,6 +145,19 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None, out
             if meta is None:
                 raise AdminError("no such token_id")
             print(_describe(meta, now), file=out)
+        elif args.command == "grant-site":
+            try:
+                changed = store.grant_site(args.principal_id, args.site_id, "admin_cli", fmt_time(now))
+            except NotFound as exc:
+                raise AdminError(str(exc)) from exc
+            print(("granted " if changed else "already granted ") + f"site={args.site_id} to "
+                  f"principal={args.principal_id}", file=out)
+        elif args.command == "revoke-site":
+            changed = store.revoke_site(args.principal_id, args.site_id, fmt_time(now))
+            print(("revoked " if changed else "no active grant for ") + f"site={args.site_id} "
+                  f"principal={args.principal_id}", file=out)
+        elif args.command == "sites":
+            print("sites: " + (", ".join(store.granted_sites(args.principal_id)) or "(none)"), file=out)
         elif args.command == "revoke":
             meta, changed = store.revoke_actor_token(args.token_id, fmt_time(now), args.reason)
             if meta is None:

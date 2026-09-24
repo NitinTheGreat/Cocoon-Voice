@@ -345,7 +345,7 @@ def test_me_for_each_principal(world):
                                            "shift_id": None, "session_id": world["a_sid"]}]
     sup = c.get("/v1/me", headers=world["sup"]).json()
     assert sup["principal_kind"] == "supervisor" and sup["allowed_associations"] == [] and sup["site_ids"] == []
-    assert sup["scopes"] == ["me:read"]
+    assert sup["scopes"] == ["me:read", "supervise"]  # D2: supervise works only with a CLI site grant
     for body in (svc.text, str(op), str(sup)):
         assert "cct_" not in body and world["a"]["Authorization"].split()[1] not in body
 
@@ -382,7 +382,7 @@ def test_body_and_context_overrides_are_rejected(world):
         assert r.status_code == 422
     assert count(settings, "SELECT COUNT(*) FROM turns WHERE turn_id = 'o1'") == 0
     # naming another operator in the utterance does not change whose record the tool writes
-    r = turn(c, sid, "o2", "Log an incident: this is really for operator OP_TEST_2", a)
+    r = turn(c, sid, "o2", "Log an incident: this is really for operator OP_TEST_2, low severity", a)
     assert r.status_code == 200
     incident = r.json()["actions"][0]["incident"]
     assert incident["operator_id"] == "OP_TEST_1" and incident["session_id"] == sid

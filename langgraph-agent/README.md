@@ -196,6 +196,67 @@ Cat 320 belt/idle replay → warning polled from `/events` → "Why did you warn
 - **Training link:** a belt episode assigns lesson L1 (versioned demo text `L1.demo.1`, `demo_authored_unreviewed`)
   once while it is outstanding and links it from the episode. Reading it never marks it complete.
 
+## Batch C: required features (weather, hazards, estimates, LMS)
+
+All C behaviour runs in mock mode and on simulated machine data. Every threshold, rate and lesson is a labelled demo
+assumption or unreviewed demo content; nothing here is validated machine-safety logic or approved training.
+
+```bash
+python scripts/demo_required_features.py            # isolated seeded backend in data/demo_c; prints each step
+python scripts/demo_required_features.py            # same run ID again: every saved result replays
+python scripts/simulate_machine.py --machine EXC_DEMO_001 --scenario proximity_approach   # or proximity_lost,
+#   sudden_stop, slope, fuel_high, fuel_normal, fuel_reset, repeat_belt, normal_operation (synthetic)
+python scripts/weather_smoke.py                     # ONE live Open-Meteo request for the demo site (needs network)
+python scripts/evaluate_estimator.py [--check]      # frozen estimator on the five provided rows -> estimation/
+python scripts/make_lesson_video.py [--verify]      # rebuild / decode-check the original L1 demo clip (ffmpeg)
+```
+
+Without `Cocoon_Dataset_v1` the demo scripts write a labelled synthetic stand-in catalog (the five asset IDs and
+the demo operators only) into their own data directory; the real dataset is used whenever it is present.
+
+| Area | Where | Notes |
+|---|---|---|
+| Incident severity and time (C1) | `cocoon_agent/incident_time.py`, graph `log_incident` | Missing severity → saved draft + one question; "don't know" is recorded; time phrases interpreted against the persisted first receipt |
+| Weather and pre-task checks (C2) | `weather.py`, `conditions.py`, `policies/working_conditions_v1.json`, `demo/weather_fixture_v1.json` | `COCOON_WEATHER_MODE=fixture|live|off`; voice and tap share the start gate |
+| Hazard rules (C2) | `hazards.py`, `policies/hazard_rules_v1.json` | proximity, sudden start/stop, slope, fuel per cycle, repeats; `/state.rule_coverage` |
+| Duration estimates (C3) | `estimation.py`, `planning.py`, `estimation/` | uncalibrated configured prior; saved per input snapshot; start estimate kept |
+| LMS (C4) | `lms.py`, `content/curriculum_v1.json`, `content/media/` | lessons, quizzes, scenario, levels, coaching prompts; `GET .../lessons`, `GET /v1/content/...` |
+
+## Batch D: consent, wellbeing, supervision, SOS and offline sync
+
+```bash
+python scripts/demo_scheduled_features.py      # isolated backend in data/demo_d: all Batch D workflows over HTTP
+python scripts/demo_scheduled_features.py      # same run ID again: every stable request replays, counts unchanged
+```
+
+The demo seeds its own database (stand-in catalog when `Cocoon_Dataset_v1` is absent), issues synthetic operator and
+supervisor tokens into private files under `data/demo_d/tokens/`, grants sites through the CLI, swaps its own copy of
+the re-planning weather fixture to inject forecast changes, uses the accelerated SOS timers, and kills/restarts the
+backend once while a check-in is pending.
+
+Everything below runs in mock mode on synthetic inputs. Wellbeing thresholds are labelled demo assumptions (the
+heat-index bands follow the NWS chart); nothing is a medical assessment, a fall detector or a validated device.
+
+| Area | Where | Notes |
+|---|---|---|
+| Consent (D1) | `wellbeing.py`, `policies/consent_notices_v1.json` | `GET/POST /v1/operators/{id}/consents`; operator's own token only; `not_set` = off |
+| Wellbeing advice (D1) | `wellbeing.py`, `policies/wellbeing_v1.json` | `POST .../wellbeing/samples` (retained only under `vitals_processing`, 24 h), `GET .../wellbeing`, `break.start`/`break.end` commands, "I'm taking a break", "why did you suggest a break?" |
+| Supervisor scope and views (D2) | `supervision.py`, `scripts/actor_tokens.py grant-site` | `GET /v1/supervisor/overview?site_id=`, SSE `GET /v1/supervisor/events/stream`, notification receipts; explicit safe fields only |
+| Approvals (D2) | `approvals.py` | `GET /v1/approvals[/{id}]`, `POST /v1/approvals/{id}/decision`; decision and application are separate; one in-app notification per approved escalation |
+| Weather re-planning (D2) | `replanning.py`, `demo/task_constraints_v1.json`, `demo/weather_fixture_replan_*.json` | `POST /v1/shifts/{id}/schedule-proposals` (service); applied only after approval, revalidated |
+| SOS check-ins (D3) | `sos.py`, `channels.py`, `policies/emergency_notification_v1.json` | `POST .../impacts` (simulated), check-in announcement, deadlines, "I'm okay" / "I need help" / `sos.respond`, urgent in-app notifications; `COCOON_SOS_TIMER_PROFILE=accelerated_demo` for demos |
+| Presence and presentation (D3) | `channels.py` | `POST .../presence`, `POST .../events/{id}/presentation` (screen/vibration, separate from audio playback) |
+| Offline reconciliation (D4) | `sync.py`, `service.execute_command` | `incident.submit_draft` (`client_draft_id`, `captured_at`, `original_binding`), `/state.snapshot`, command status lookup, stale task refusal |
+
+Raw wellbeing samples are deleted 24 h after receipt (at startup and on each sample request) and at once when the
+operator revokes `vitals_processing`. Derived advice evidence stays as a private operator record. The WESAD source is
+not available (DG-15): every wellbeing profile here is assumption-based.
+
+Supervisors: issue with `python scripts/actor_tokens.py issue --role supervisor --principal-id sup-north --out ...`,
+then `python scripts/actor_tokens.py grant-site --principal-id sup-north --site-id SITE_DEMO_NORTH`. A background
+worker (every `COCOON_WORKER_INTERVAL_SECONDS`, default 2) expires requests, resumes approved-but-unapplied changes
+and prunes the feed (`COCOON_FEED_*` settings); the same pass runs once at startup.
+
 ## Actor tokens (local prototype auth, I02b)
 
 The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.
@@ -275,4 +336,4 @@ The tests cover:
 
 ## Environment variables
 
-Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live`, `GOOGLE_CLOUD_PROJECT` and ADC (see "LLM modes"). Everything else has a default; see `.env.example`.
+Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live`, `GOOGLE_CLOUD_PROJECT` and ADC (see "LLM modes"). Everything else has a default; see `.env.example`. Batch D adds optional `COCOON_WELLBEING_POLICY_PATH` and `COCOON_CONSENT_NOTICES_PATH` (defaults under `policies/`).

@@ -70,13 +70,15 @@ ADDED_COLUMNS = {
     "sessions": ("dataset_manifest_sha256", "site_id", "shift_id", "binding_status", "context_status",
                  "context_source"),
     "incidents": ("origin", "severity", "severity_basis", "site_id", "site_zone_id", "zone_basis", "location_text",
-                  "occurred_at", "occurred_basis", "episode_id", "draft_id", "confirmed_at"),
+                  "occurred_at", "occurred_basis", "episode_id", "draft_id", "confirmed_at", "occurred_expression",
+                  "occurred_reference_at"),
     "turns": ("route_json",),
     "alerts": ("policy_version", "source_status", "reason", "recommended_action", "evidence_json",
-               "correlated_alert_id", "draft_incident_id", "announced", "training_assignment_id"),
+               "correlated_alert_id", "draft_incident_id", "announced", "training_assignment_id", "details_json",
+               "subject_key", "level", "last_seen_at", "cleared_reason"),
     "telemetry_events": ("provenance_json",),
     "lessons": ("version", "content_text", "content_status"),
-    "training_assignments": ("source_episode_id",),
+    "training_assignments": ("source_episode_id", "completed_at", "deferred_until", "coaching_prompted_at"),
 }
 
 

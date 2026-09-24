@@ -1,0 +1,13 @@
+{
+  "schema": "cocoon.task-constraints.v1",
+  "version": "demo-constraints-2026-09-24.1",
+  "provenance": "synthetic_demo_fixture: backend-owned ordering constraints invented for the re-planning demo (keyed by machine and task type of demo/demo_site_v1.json). Not site rules.",
+  "constraints": [
+    {"machine_id": "BHL_DEMO_001", "task_type": "backfilling", "after_task_types": ["utility_trenching"],
+     "reason": "backfill only after the cable trench is dug and inspected"},
+    {"machine_id": "LDR_DEMO_001", "task_type": "stockpiling", "after_task_types": ["material_loading"],
+     "reason": "rebuild the stockpile face after the trucks are loaded"},
+    {"machine_id": "EXC_DEMO_001", "task_type": "demolition", "not_before_local": "08:00",
+     "reason": "breaker work only after the 08:00 site noise window opens"}
+  ]
+}
