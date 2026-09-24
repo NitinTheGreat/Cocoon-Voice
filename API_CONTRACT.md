@@ -212,6 +212,56 @@ Valid new-session request against the development catalog:
 - After a lost response, `GET .../commands/{command_id}` (from any verified session of the same operator) returns the saved outcome and record IDs without executing anything; retry with the same `command_id`, never a new one.
 - Announcements carry `expired` (server clock) and `presentations` (screen/vibration receipts, separate from audio `deliveries`).
 
+### Batch D examples for the Flutter, supervisor and voice owners
+
+Synthetic values; every request uses a bearer token (operator or supervisor actor token, or the service credential server-side only). Complete request/response transcripts come from `python scripts/demo_scheduled_features.py` (`data/demo_d/demo_d_transcript_<run>.json`).
+
+```jsonc
+// Flutter (operator token): grant vitals processing against the notice shown to the operator
+POST /v1/operators/OP_DEMO_2_1/consents
+{"change_id": "c-7f3", "purpose": "vitals_processing", "action": "grant", "expected_version": 0,
+ "notice_version": "wellbeing-notice-2026-09-24.1", "is_synthetic_demo_record": true}
+// -> 200 {"change_id": "c-7f3", "applied": true, "duplicate": false, "cascaded": [], "state": {"version": 1, ...}}
+// stale expected_version -> 409 {"error": {"code": "version_conflict", "details": [{"field": "body.expected_version", "issue": "current version is 3"}], ...}}
+
+// Supervisor dashboard: the only wellbeing shape it ever receives
+GET /v1/supervisor/overview?site_id=SITE_DEMO_NORTH
+// -> "risks": [{"operator_id": "OP_DEMO_2_1", "site_id": "SITE_DEMO_NORTH", "risk_level": "unavailable",
+//               "unavailable_reason": "consent_revoked", "freshness": "none", "as_of": null}]
+
+// Supervisor: decide with the version and payload hash it displayed
+POST /v1/approvals/APR-0c1d2e3f4a5b/decision
+{"decision_id": "dec-91", "decision": "approve", "expected_version": 1,
+ "payload_sha256": "<approval.payload_sha256>"}
+// -> 200 {"decision_recorded": true, "approval": {"status": "approved", "application": {"status": "applied"}, ...}}
+// same body again -> 200 decision_recorded:false; another decision -> 409 decision_conflict
+
+// Voice worker: speaking the SOS check-in is reported like any announcement; that report is the contact offer
+POST /v1/sessions/{sid}/events/ann_SOS-6d44_checkin/delivery   {"consumer_id": "voice-worker", "status": "played"}
+// Flutter: showing it on screen (vibration alone does not count)
+POST /v1/sessions/{sid}/events/ann_SOS-6d44_checkin/presentation
+{"presentation_id": "pres-2", "consumer_id": "phone-1", "channel": "screen", "status": "presented",
+ "presented_at": "2026-09-24T02:20:31Z"}
+// Flutter tap answer (voice: "I'm okay" / "I need help")
+POST /v1/sessions/{sid}/commands
+{"command_id": "sos-help-1", "kind": "sos.respond", "payload": {"checkin_id": "SOS-6d44", "response": "help"}}
+
+// Flutter presence (every <= ttl seconds while connected)
+POST /v1/sessions/{sid}/presence
+{"report_id": "pr-118", "consumer_id": "phone-1", "sequence": 118, "connection": "online",
+ "voice_available": false, "screen_available": true, "reported_at": "2026-09-24T02:21:00Z", "ttl_seconds": 30}
+
+// Flutter offline draft, uploaded after reconnecting (keep the local copy until saved-on-server)
+POST /v1/sessions/{current_sid}/commands
+{"command_id": "off-9a1", "kind": "incident.submit_draft", "client_draft_id": "local-draft-42",
+ "captured_at": "2026-09-24T02:10:04Z",
+ "original_binding": {"session_id": "ses_...", "operator_id": "OP_DEMO_1_1", "machine_id": "EXC_DEMO_001",
+                      "site_id": "SITE_DEMO_NORTH", "shift_id": "SHF-EXC_DEMO_001-2026-09-24"},
+ "payload": {"description": "Cracked mirror bracket on the cab", "occurred_expression": "ten minutes ago"}}
+// lost response -> GET /v1/sessions/{sid}/commands/off-9a1 (never re-executes); retry with the SAME command_id
+// same client_draft_id with other content -> 409 idempotency_conflict (details name the stored DRF-...)
+```
+
 ### Example requests
 
 Bash:

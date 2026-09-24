@@ -2,6 +2,15 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## Batch D completion: combined HTTP demonstration and summary
+
+- **Commits (local, not pushed):** D1 `a2e7d50` consent/wellbeing (v13), D2 `da12453` supervision/approvals/re-planning (v14), D3 `27b8375` SOS (v15), D4 `291a798` offline sync (v16), plus this demo/handoff commit. Author and committer Ayush Raj on every commit.
+- **Demo:** `python scripts/demo_scheduled_features.py` (mock LLM, fixture weather, synthetic actors and inputs, isolated `data/demo_d`). Observed 2026-09-24: fresh run 26/26 checks, same-ID replay 24/24 with identical counts (`consent_version 3, offline_drafts 1, decisions 4, schedule_version 2, notifications 5, sos_episodes 5`). It showed no implicit consent; one high advice episode (heat index 33.7 °C, 122 min without a break, mean HR 129) explained to the operator; no supervisor risk under processing-only consent, a category after sharing, `consent_revoked` after revocation including a full feed replay; one approval notification, identical retry, 409 contradiction; calm → no proposal, gusty → proposal, reject, stale approval (`failed_stale_inputs`, schedule intact), fresh approval applied once with one announcement; SOS okay / help / no response / unreachable and recovery after a real kill + restart; offline upload, retry, lookup, replacement session on another machine (one draft on EXC_DEMO_001, occurred = captured − 10 min), 409 on changed content and stale task start, screen receipt without audio.
+- **Found by the demo and fixed:** re-seeding refused a shift whose tasks an approved re-plan had moved; seeding now keeps a task whose only differences are order/start in a shift with `schedule_version > 1` (regression test added).
+- **Final checks (once, after assembly):** full suite 406 passed, 2 skipped (dataset replay test: dataset absent; Windows-only symlink case); `export_openapi.py --check` and `export_proposed_contract.py --check` clean; `evaluate_estimator.py --check` report unchanged (MAE 7.6 = baseline).
+- **Environment:** Linux, Python 3.11.15, no `Cocoon_Dataset_v1` (labelled stand-in catalog in the demo), no WESAD, mock LLM only (no Vertex call in Batch D), no network weather call.
+- **Still open (Batch E and beyond):** turn streaming/cancellation/playback recovery (E); live-model routing of the new intents (break, wellbeing, consent status, SOS answers); Flutter, supervisor UI and voice integration; any real wearable, fall detector or phone; privacy review of the consent notices; real-site emergency policy; source validation of every demo threshold; the unrotated token in the teammate's `.env.example` change.
+
 ## D4: connection state, offline reconciliation and non-voice receipts
 
 - **Schema v16 (`offline_sync`):** `offline_drafts` (operator-wide `client_draft_id` identity with content and binding digests); `incident_drafts.client_draft_id`, `captured_at`, `capture_mode`.

@@ -274,7 +274,8 @@ def replan(tmp_path):
                                            "simulated": True, "readings": {"engine_on": False,
                                                                            "seatbelt_fastened": True,
                                                                            "idle_seconds": 0}}])
-        yield {"c": c, "weather": weather, "shift": session["shift_id"], "sid": session["session_id"], **tokens}
+        yield {"c": c, "weather": weather, "shift": session["shift_id"], "sid": session["session_id"], "tmp": tmp_path,
+               **tokens}
 
 
 def propose(c, shift):
@@ -321,6 +322,9 @@ def test_reorder_is_proposed_only_when_it_helps_and_applied_once_after_approval(
     assert decide(c, sup, p3, "app-3").json()["decision_recorded"] is False and order(c, sid) == after
     events = c.get(f"/v1/sessions/{sid}/events", headers=AUTH).json()["events"]
     assert [e["type"] for e in events].count("schedule_changed") == 1
+    # re-seeding the same service date keeps the approved schedule (only order/start differ, schedule_version 2)
+    report = seeded_demo(replan["tmp"])[1]
+    assert report["reused"]["task_assignments"] >= 3 and order(c, sid) == after
     # the conditions gate still applies to the new order
     started = c.post(f"/v1/sessions/{sid}/commands", headers=AUTH, json={
         "command_id": "s1", "kind": "task.start", "payload": {"task_id": applied["schedule"]["changes"][0]["task_id"]}})

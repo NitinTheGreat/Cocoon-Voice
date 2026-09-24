@@ -224,6 +224,16 @@ the demo operators only) into their own data directory; the real dataset is used
 
 ## Batch D: consent, wellbeing, supervision, SOS and offline sync
 
+```bash
+python scripts/demo_scheduled_features.py      # isolated backend in data/demo_d: all Batch D workflows over HTTP
+python scripts/demo_scheduled_features.py      # same run ID again: every stable request replays, counts unchanged
+```
+
+The demo seeds its own database (stand-in catalog when `Cocoon_Dataset_v1` is absent), issues synthetic operator and
+supervisor tokens into private files under `data/demo_d/tokens/`, grants sites through the CLI, swaps its own copy of
+the re-planning weather fixture to inject forecast changes, uses the accelerated SOS timers, and kills/restarts the
+backend once while a check-in is pending.
+
 Everything below runs in mock mode on synthetic inputs. Wellbeing thresholds are labelled demo assumptions (the
 heat-index bands follow the NWS chart); nothing is a medical assessment, a fall detector or a validated device.
 

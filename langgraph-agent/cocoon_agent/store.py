@@ -422,12 +422,24 @@ class Store:
                         marks = ", ".join("?" * len(values))
                         c.execute(f"INSERT INTO {table}({cols}) VALUES ({marks})", values)
                         inserted += 1
-                    elif tuple(existing)[:n] != tuple(values)[:n]:
+                    elif tuple(existing)[:n] != tuple(values)[:n] and not self._replanned(c, table, existing, values, n):
                         raise Conflict(f"{table} row {values[0]} already exists with different content")
                     else:
                         reused += 1
                 report["inserted"][table], report["reused"][table] = inserted, reused
         return report
+
+    @staticmethod
+    def _replanned(c: sqlite3.Connection, table: str, existing: sqlite3.Row, values: tuple, n: int) -> bool:
+        """A seeded task whose ONLY differences are its order and start time, in a shift whose schedule was changed
+        by an approved re-plan (schedule_version > 1), is the same record: re-seeding keeps the approved schedule."""
+        if table != "task_assignments":
+            return False
+        moved = {i for i in range(n) if tuple(existing)[i] != values[i]}
+        if not moved <= {5, 6}:  # scheduled_order, scheduled_start_at
+            return False
+        row = c.execute("SELECT schedule_version FROM shifts WHERE shift_id = ?", (values[1],)).fetchone()
+        return row is not None and row[0] > 1
 
     def get_shift(self, shift_id: str) -> s.ShiftInfo | None:
         row = self._one("SELECT sh.*, si.name AS site_name, si.timezone, si.utc_offset FROM shifts sh"
