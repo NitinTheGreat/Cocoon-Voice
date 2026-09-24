@@ -222,6 +222,20 @@ the demo operators only) into their own data directory; the real dataset is used
 | Duration estimates (C3) | `estimation.py`, `planning.py`, `estimation/` | uncalibrated configured prior; saved per input snapshot; start estimate kept |
 | LMS (C4) | `lms.py`, `content/curriculum_v1.json`, `content/media/` | lessons, quizzes, scenario, levels, coaching prompts; `GET .../lessons`, `GET /v1/content/...` |
 
+## Batch D: consent, wellbeing, supervision, SOS and offline sync
+
+Everything below runs in mock mode on synthetic inputs. Wellbeing thresholds are labelled demo assumptions (the
+heat-index bands follow the NWS chart); nothing is a medical assessment, a fall detector or a validated device.
+
+| Area | Where | Notes |
+|---|---|---|
+| Consent (D1) | `wellbeing.py`, `policies/consent_notices_v1.json` | `GET/POST /v1/operators/{id}/consents`; operator's own token only; `not_set` = off |
+| Wellbeing advice (D1) | `wellbeing.py`, `policies/wellbeing_v1.json` | `POST .../wellbeing/samples` (retained only under `vitals_processing`, 24 h), `GET .../wellbeing`, `break.start`/`break.end` commands, "I'm taking a break", "why did you suggest a break?" |
+
+Raw wellbeing samples are deleted 24 h after receipt (at startup and on each sample request) and at once when the
+operator revokes `vitals_processing`. Derived advice evidence stays as a private operator record. The WESAD source is
+not available (DG-15): every wellbeing profile here is assumption-based.
+
 ## Actor tokens (local prototype auth, I02b)
 
 The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.
@@ -301,4 +315,4 @@ The tests cover:
 
 ## Environment variables
 
-Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live`, `GOOGLE_CLOUD_PROJECT` and ADC (see "LLM modes"). Everything else has a default; see `.env.example`.
+Mock mode needs `COCOON_SERVICE_TOKEN` and a verified catalog (`DATASET_ROOT`, `DATASET_MANIFEST_SHA256`; defaults point at the local development dataset). `SESSION_BINDINGS_PATH` is optional. Live mode also needs `COCOON_LLM_MODE=live`, `GOOGLE_CLOUD_PROJECT` and ADC (see "LLM modes"). Everything else has a default; see `.env.example`. Batch D adds optional `COCOON_WELLBEING_POLICY_PATH` and `COCOON_CONSENT_NOTICES_PATH` (defaults under `policies/`).

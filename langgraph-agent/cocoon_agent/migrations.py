@@ -655,6 +655,108 @@ CORE_LMS: tuple[str, ...] = (
 )
 
 
+CONSENT_WELLBEING: tuple[str, ...] = (
+    # Purpose-specific consent owned by the operator. Current state per purpose plus an append-only change log.
+    """CREATE TABLE consent_state (
+    operator_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 0
+)""",
+    """CREATE TABLE consent_current (
+    operator_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('vitals_processing', 'risk_sharing_supervisor')),
+    status TEXT NOT NULL CHECK (status IN ('granted', 'revoked')),
+    notice_version TEXT NOT NULL,
+    effective_at TEXT,
+    revoked_at TEXT,
+    is_synthetic INTEGER NOT NULL CHECK (is_synthetic IN (0, 1)),
+    provenance TEXT NOT NULL,
+    PRIMARY KEY (operator_id, purpose)
+)""",
+    """CREATE TABLE consent_changes (
+    operator_id TEXT NOT NULL,
+    change_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
+    notice_version TEXT NOT NULL,
+    expected_version INTEGER NOT NULL,
+    resulting_version INTEGER NOT NULL,
+    cascaded TEXT NOT NULL DEFAULT '',
+    provenance TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, change_id)
+)""",
+    # Raw private samples, kept only under an effective processing grant and only until expires_at (bounded
+    # retention, purged by the maintenance worker and on revocation).
+    """CREATE TABLE wellbeing_samples (
+    operator_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    observed_at TEXT NOT NULL,
+    heart_rate_bpm REAL,
+    skin_temp_c REAL,
+    window_seconds INTEGER NOT NULL,
+    quality TEXT NOT NULL,
+    source TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, sample_id)
+)""",
+    "CREATE INDEX wellbeing_samples_by_time ON wellbeing_samples(operator_id, observed_at)",
+    # Outcome of every sample request, WITHOUT values (idempotency and audit never retain raw inputs).
+    """CREATE TABLE wellbeing_sample_outcomes (
+    operator_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, sample_id)
+)""",
+    # Operator-private advice episodes with their saved derived evidence and explanation.
+    """CREATE TABLE wellbeing_advice (
+    advice_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    rule_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    level TEXT NOT NULL CHECK (level IN ('advisory', 'high')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'cleared', 'withdrawn')),
+    evidence_json TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ended_at TEXT,
+    end_reason TEXT,
+    announcement_event_id TEXT
+)""",
+    "CREATE UNIQUE INDEX one_active_advice_per_rule ON wellbeing_advice(operator_id, rule_id) WHERE status = 'active'",
+    # Explicit breaks (engine-off, waiting or telemetry silence are never a break).
+    """CREATE TABLE break_records (
+    break_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    shift_id TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1
+)""",
+    "CREATE UNIQUE INDEX one_open_break ON break_records(operator_id) WHERE ended_at IS NULL",
+    # Supervisor change-feed outbox: references only (projected at read time under current scope and consent).
+    """CREATE TABLE supervisor_feed (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    site_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    ref_type TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)""",
+    "CREATE INDEX supervisor_feed_by_site ON supervisor_feed(site_id, sequence)",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -675,6 +777,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(10, "hazard_rules", HAZARD_RULES),
     Migration(11, "task_estimates", TASK_ESTIMATES),
     Migration(12, "core_lms", CORE_LMS),
+    Migration(13, "consent_wellbeing", CONSENT_WELLBEING),
 )
 
 

@@ -60,7 +60,7 @@ def _history(state: CocoonState) -> list[tuple[str, str]]:
     return out
 
 
-def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=None):
+def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=None, wellbeing=None):
     """`conditions` (cocoon_agent.conditions.Conditions) enables the working-conditions gate on task starts and the
     conditions intent; without it task starts are ungated (as before Batch C)."""
     def _session(state: CocoonState) -> s.Session:
@@ -109,7 +109,7 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
 
     def choose(state: CocoonState) -> Literal[
         "tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
-        "unsupported", "compose"
+        "unsupported", "wellbeing", "compose"
     ]:
         intent = state["route"]["intent"]
         if intent == "answer_pending":
@@ -628,6 +628,33 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
             alert_id=result["alert_id"], belt_warning_active=result["belt_warning_active"], created=not duplicate)
         return {"actions": [action.model_dump(mode="json")]}
 
+    async def wellbeing_node(state: CocoonState) -> CocoonState:
+        """Breaks (explicit operator statements only), the operator's own advice explanation and a read-only consent
+        summary. Consent is never granted or revoked by voice."""
+        session = _session(state)
+        action = state["route"].get("wellbeing_action")
+        if wellbeing is None or session.binding_status != "catalog_verified":
+            unavailable = s.CapabilityUnavailableAction(type="capability_unavailable", capability="wellbeing_checks")
+            return {"actions": [unavailable.model_dump(mode="json")]}
+        if action in ("break_start", "break_end"):
+            kind = "break.start" if action == "break_start" else "break.end"
+            at = conditions.data_time(session) if conditions is not None else utcnow()
+            try:
+                result, duplicate = _command(state, kind, kind, wellbeing.break_mutation(session, kind, None, at))
+            except InvalidTransition as exc:
+                out = s.WellbeingAction(type="wellbeing", event="break_rejected", reason=str(exc))
+                return {"actions": [out.model_dump(mode="json")]}
+            out = s.WellbeingAction(type="wellbeing", event="break_started" if kind == "break.start" else "break_ended",
+                                    break_record=result["break_record"], created=not duplicate)
+        elif action == "consent_status":
+            out = s.WellbeingAction(type="wellbeing", event="consent_status",
+                                    consents=wellbeing.consent_state(session.operator_id).consents)
+        else:
+            advice = wellbeing.latest_advice(session.operator_id)
+            out = s.WellbeingAction(type="wellbeing", event="advice_explained" if advice else "no_advice",
+                                    advice=advice)
+        return {"actions": [out.model_dump(mode="json")]}
+
     async def cancel_pending(state: CocoonState) -> CocoonState:
         """Stop asking. A report already saved as a draft stays saved (it can be finished or dismissed later)."""
         pending = state.get("pending")
@@ -652,12 +679,13 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
     g.add_node("training", training)
     g.add_node("explain_alert", explain_alert)
     g.add_node("cancel_pending", cancel_pending)
+    g.add_node("wellbeing", wellbeing_node)
     g.add_node("compose", compose)
     g.add_edge(START, "load_context")
     g.add_edge("load_context", "route")
     g.add_conditional_edges("route", choose)
     for node in ("tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
-                 "unsupported"):
+                 "unsupported", "wellbeing"):
         g.add_edge(node, "compose")
     g.add_edge("compose", END)
     return g

@@ -1329,6 +1329,15 @@ class Store:
         )
         return event_id
 
+    @staticmethod
+    def feed_event(c: sqlite3.Connection, site_id: str, kind: str, ref_type: str, ref_id: str, now: datetime) -> str:
+        """Supervisor change-feed outbox row, committed with the change it reports. It holds a reference only; the
+        payload is projected at read time under the reader's current scope and the operator's current consent."""
+        event_id = "sfe_" + uuid.uuid4().hex[:16]
+        c.execute("INSERT INTO supervisor_feed(event_id, site_id, type, ref_type, ref_id, created_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?)", (event_id, site_id, kind, ref_type, ref_id, iso(now)))
+        return event_id
+
     # ------------------------------------------------------------------ announcements
 
     def list_events(self, session_id: str, after: int, limit: int) -> tuple[list[s.Announcement], bool]:

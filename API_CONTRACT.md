@@ -177,6 +177,16 @@ Valid new-session request against the development catalog:
 - Completion requires every step presented plus a passed assessment. Media metadata or a media fetch never counts. Levels are demo learning levels with saved evidence, never certification.
 - Media: `GET /v1/content/{asset_id}` gives metadata; `content_ref` (`/file`) and `captions_ref` (`/captions`) are fetched with the same bearer token. Only catalog IDs resolve, and only when the file matches its catalog checksum.
 
+### Consent and wellbeing (D1)
+
+- Purposes: `vitals_processing` (use HR/skin temperature for advice) and `risk_sharing_supervisor` (share a derived risk category with the site's supervisors). Sharing needs processing; revoking processing revokes sharing too (`cascaded`). `not_set` behaves exactly like revoked; migration, startup and seeding never grant anything.
+- A change names the current `notice_version` (`policies/consent_notices_v1.json`; outdated → 422) and the `expected_version` last read (stale → 409 `version_conflict`), so an old offline grant cannot override a newer revocation. The same `change_id` with the same body returns `applied: false` and the current state; with another body 409 `idempotency_conflict`.
+- Voice can read the consent summary and record breaks; it never grants or revokes consent.
+- `POST .../wellbeing/samples` (service or the owning operator): `heart_rate_bpm` 20–250, `skin_temp_c` 20–45 (skin, not core), finite only, `window_seconds`, `quality`, `source`, `simulated`. The consent check and the write share one transaction. Result `status`: `accepted`, `duplicate`, `rejected_consent` (nothing kept, not even a digest), `ignored_late` (older than the newest retained sample), `expired` (deleted by retention or revocation). The result lists advice IDs and rule statuses, never values. Machine telemetry is processed regardless of wellbeing consent.
+- Retention: raw samples are kept `retention_hours` (24) after server receipt, then deleted at startup and on every sample request; revoking processing deletes them at once. Advice episodes keep derived evidence (means, heat index, minutes) as private operator records. Backups and anything a client already downloaded cannot be recalled.
+- Advice (`policies/wellbeing_v1.json`): factors `heat_index` (NWS heat index from site air temperature + humidity; category boundaries are published guidance, the advice is not), `break_due` and `vitals_strain` (synthetic demo assumptions). One episode per operator, announced once as `wellbeing_advice` (no values in the speech), once more if it rises, and cleared only when every contributing factor is observed clear. `unknown` is never normal. Break records come only from `break.start` / `break.end` commands (tap or voice); engine-off or silence is not a break.
+- Runtime names `OperatorConsentState`, `OperatorConsentChange(Result)`, `WellbeingSampleRequest` deliberately differ from the proposed `ConsentState`, `ConsentChangeRequest/Result` and `VitalsObservation`; the proposed contract generator now fails if a proposed model shares a name with a runtime component without being the same class.
+
 ### Example requests
 
 Bash:
@@ -237,8 +247,10 @@ Example bodies are in `contracts/examples/`, including a completed turn, a turn 
 | `GET /v1/sessions/{session_id}/commands/{command_id}` | implemented | B1 | operator, voice | Saved result of a committed command (scoped to the calling principal) | Never re-executes. |
 | `POST /v1/sessions/{session_id}/presence` | proposed | I15 | operator, voice | Last-known connectivity and voice availability | Not proof the operator is conscious. |
 | `POST /v1/sessions/{session_id}/events/{event_id}/presentation` | proposed | I15 | operator | Screen/vibration presentation report | Not audio playback and not acknowledgement. |
-| `GET /v1/operators/{operator_id}/consents` | proposed | I02 | operator, voice | Purpose-specific consent state | — |
-| `POST /v1/operators/{operator_id}/consents` | proposed | I02 | operator | Grant or revoke one purpose | A supervisor token gets 403. |
+| `GET /v1/operators/{operator_id}/consents` | implemented | D1 | operator, voice | Purpose-specific consent state (`OperatorConsentState`); `not_set` is never a grant | Own operator or the voice service; supervisor 403, another operator 404. |
+| `POST /v1/operators/{operator_id}/consents` | implemented | D1 | operator | Grant or revoke one purpose against the current notice, with `change_id` and `expected_version` | Only the operator's own token (service credential and supervisors 403). Identical retry is not re-applied; 409 `idempotency_conflict` / `version_conflict` / `invalid_transition` (sharing needs processing). |
+| `POST /v1/sessions/{session_id}/wellbeing/samples` | implemented | D1 | simulator, operator | Private HR (bpm) / skin temperature (degC) summary; retained only under `vitals_processing` | Values never echoed; `rejected_consent` retains nothing. Target I05A: also a `vitals` observation in the telemetry v2 batch. |
+| `GET /v1/sessions/{session_id}/wellbeing` | implemented | D1 | operator, voice | Operator-private rule status, advice with explanation, breaks, consent summary | Never a supervisor view (supervisors get `WellbeingRiskView` only). |
 | `GET /v1/supervisor/overview` | proposed | I13 | supervisor | Site-scoped overview: risk level only, no raw vitals | Separate projection, not a filtered operator `/state`. |
 | `GET /v1/supervisor/events/stream` | proposed | I13 | supervisor | Role-filtered `cocoon.supervisor-feed.v1` | Never carries operator speech or evidence. |
 | `GET /v1/approvals` | proposed | I13 | supervisor, operator | Authorised, paged proposal list | — |

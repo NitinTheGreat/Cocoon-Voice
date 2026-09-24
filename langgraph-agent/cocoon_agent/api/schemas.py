@@ -894,8 +894,22 @@ class TaskRejectedAction(ContractModel):
     task_title: str | None = None
 
 
+class WellbeingAction(ContractModel):
+    """Voice outcome for breaks, wellbeing advice explanations and consent status (operator-private)."""
+
+    type: Literal["wellbeing"]
+    event: Literal["break_started", "break_ended", "break_rejected", "advice_explained", "no_advice",
+                   "consent_status"]
+    break_record: "BreakRecord | None" = None
+    advice: "WellbeingAdvice | None" = None
+    consents: "list[OperatorConsent]" = Field(default_factory=list)
+    created: bool | None = None
+    reason: str | None = None
+
+
 ActionResult = Annotated[
     Union[
+        WellbeingAction,
         NextTaskAction,
         IncidentLoggedAction,
         InformationRequestedAction,
@@ -975,6 +989,9 @@ class SessionState(ContractModel):
         default_factory=list, description="Whether each safety rule could evaluate the latest observation.")
     site_conditions: WorkingConditionsCheck | None = Field(
         default=None, description="Site conditions at the session's data clock (null when the session has no site).")
+    wellbeing: "WellbeingView | None" = Field(
+        default=None, description="Operator-private wellbeing advice, rule status and break record (never shown to a "
+                                  "supervisor; supervisors get only WellbeingRiskView).")
 
 
 class RuleCoverage(ContractModel):
@@ -1067,7 +1084,8 @@ class DeliveryRecord(ContractModel):
 class Announcement(ContractModel):
     event_id: str
     sequence: int
-    type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated", "coaching_prompt"]
+    type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated", "coaching_prompt",
+                  "wellbeing_advice"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -1139,7 +1157,7 @@ class ReadyResponse(ContractModel):
 
 CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss",
                       "lesson.start", "lesson.next", "lesson.pause", "lesson.resume", "lesson.defer", "quiz.start",
-                      "quiz.answer"]
+                      "quiz.answer", "break.start", "break.end"]
 
 
 class CommandPayload(ContractModel):
@@ -1207,8 +1225,188 @@ class SessionCommandResult(ContractModel):
     approval: ApprovalRequest | None = Field(
         default=None, description="Pending supervisor-review request created with a confirmation (not a notification).")
     learning: LearningAction | None = Field(default=None, description="lesson.* / quiz.* outcome.")
+    break_record: "BreakRecord | None" = Field(default=None, description="break.start / break.end outcome.")
     created_at: datetime
 
 
+# --------------------------------------------------------------------------- consent (D1)
+
+ConsentPurposeName = Literal["vitals_processing", "risk_sharing_supervisor"]
+
+
+class OperatorConsent(ContractModel):
+    """One purpose. `not_set` means the operator never decided: it is treated exactly like revoked (no implicit
+    opt-in). Runtime shape of the proposed ConsentRecord."""
+
+    purpose: ConsentPurposeName
+    status: Literal["granted", "revoked", "not_set"]
+    notice_version: str | None = Field(default=None, description="Notice the last decision was made against.")
+    current_notice_version: str = Field(description="Notice a grant must name now.")
+    notice_summary: str
+    effective_at: datetime | None = None
+    revoked_at: datetime | None = None
+    is_synthetic_demo_record: bool = False
+    requires: list[ConsentPurposeName] = Field(default_factory=list,
+                                               description="Purposes that must be granted first.")
+
+
+class OperatorConsentState(ContractModel):
+    operator_id: str
+    version: int = Field(description="Increments on every applied change; send it as expected_version.")
+    consents: list[OperatorConsent]
+
+
+class OperatorConsentChange(ContractModel):
+    """POST /v1/operators/{operator_id}/consents. Only the operator's own actor token may send it."""
+
+    change_id: StableId = Field(description="Idempotency key per operator.")
+    purpose: ConsentPurposeName
+    action: Literal["grant", "revoke"]
+    notice_version: str = Field(min_length=1, max_length=64, description="Must equal the current notice version.")
+    expected_version: int = Field(ge=0, description="OperatorConsentState.version the operator saw.")
+    is_synthetic_demo_record: bool = Field(default=False, description="True for rehearsal grants by synthetic actors.")
+    captured_at: AwareDatetime | None = Field(default=None, description="Device time of the decision (informational;"
+                                                                        " ordering uses expected_version).")
+
+
+class OperatorConsentChangeResult(ContractModel):
+    change_id: str
+    applied: bool = Field(description="False for an identical retry: the saved change is not re-applied.")
+    duplicate: bool
+    cascaded: list[ConsentPurposeName] = Field(
+        default_factory=list, description="Purposes revoked together with this change (sharing needs processing).")
+    state: OperatorConsentState
+
+
+# --------------------------------------------------------------------------- wellbeing (D1)
+
+
+class WellbeingSampleRequest(ContractModel):
+    """POST /v1/sessions/{session_id}/wellbeing/samples. Private operator data: heart rate in bpm and SKIN temperature
+    in degrees Celsius only (not core temperature). Values are never echoed back or written to telemetry history,
+    logs, checkpoints or command payloads; without an effective vitals_processing grant nothing is retained."""
+
+    sample_id: StableId = Field(description="Idempotency key per operator.")
+    observed_at: AwareDatetime = Field(description="End of the summary window at the source; normalised to UTC.")
+    heart_rate_bpm: float | None = Field(default=None, ge=20, le=250, allow_inf_nan=False)
+    skin_temp_c: float | None = Field(default=None, ge=20, le=45, allow_inf_nan=False,
+                                      description="Skin temperature, degrees Celsius. Not core body temperature.")
+    window_seconds: int = Field(ge=1, le=3600, description="Window the values summarise.")
+    quality: Literal["good", "degraded", "poor"]
+    source: Literal["synthetic_wearable_fixture", "wearable_device"]
+    simulated: bool = Field(description="True for synthetic samples (every sample in this prototype).")
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def _honest(self) -> "WellbeingSampleRequest":
+        if self.heart_rate_bpm is None and self.skin_temp_c is None:
+            raise ValueError("a sample needs heart_rate_bpm or skin_temp_c")
+        if self.source == "synthetic_wearable_fixture" and not self.simulated:
+            raise ValueError("a synthetic fixture sample must be marked simulated")
+        return self
+
+
+WellbeingLevel = Literal["clear", "advisory", "high", "unknown"]
+
+
+class WellbeingRuleStatus(ContractModel):
+    rule_id: str
+    factor: Literal["heat_index", "break_due", "vitals_strain"]
+    status: WellbeingLevel = Field(description="unknown = could not evaluate (missing, stale, not permitted); never "
+                                               "read as normal.")
+    reason: str | None = None
+    basis: Literal["published_guidance", "synthetic_demo_assumption"]
+    evaluated_at: datetime | None = None
+
+
+class WellbeingSampleResult(ContractModel):
+    """Never contains the submitted values."""
+
+    sample_id: str
+    status: Literal["accepted", "duplicate", "rejected_consent", "ignored_late", "expired"]
+    retained: bool = Field(description="True only when the raw sample is kept (bounded retention).")
+    reason: str | None = None
+    advice_opened: list[str] = Field(default_factory=list)
+    advice_updated: list[str] = Field(default_factory=list)
+    advice_cleared: list[str] = Field(default_factory=list)
+    announcements_created: list[str] = Field(default_factory=list)
+    rules: list[WellbeingRuleStatus] = Field(default_factory=list)
+
+
+class WellbeingFactor(ContractModel):
+    factor: Literal["heat_index", "break_due", "vitals_strain"]
+    level: WellbeingLevel
+    heat_index_c: float | None = Field(default=None, description="NWS heat index from site air temperature and "
+                                                                 "relative humidity (environmental screening input).")
+    heat_index_band: Literal["none", "caution", "extreme_caution", "danger", "extreme_danger"] | None = None
+    weather_provider: Literal["open_meteo", "fixture"] | None = None
+    work_minutes: int | None = Field(default=None, description="Minutes since the shift start or the last recorded "
+                                                               "break end.")
+    mean_heart_rate_bpm: float | None = None
+    max_skin_temp_c: float | None = None
+    sample_count: int | None = None
+    window_seconds: int | None = None
+
+
+class WellbeingAdvice(ContractModel):
+    """Operator-only advice episode with its saved derived evidence. Advice, not a diagnosis."""
+
+    advice_id: str
+    rule_id: str
+    policy_version: str
+    level: Literal["advisory", "high"]
+    status: Literal["active", "cleared", "withdrawn"]
+    explanation: str
+    factors: list[WellbeingFactor]
+    started_at: datetime
+    updated_at: datetime
+    ended_at: datetime | None = None
+    end_reason: Literal["observed_clear", "consent_revoked"] | None = None
+    announcement_event_id: str | None = None
+
+
+class BreakRecord(ContractModel):
+    break_id: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    version: int
+    source: Literal["operator_command"] = Field(
+        default="operator_command", description="Only an explicit operator command records a break; engine-off, "
+                                                "waiting or telemetry silence never do.")
+
+
+class WellbeingView(ContractModel):
+    operator_id: str
+    policy_version: str
+    processing: Literal["granted", "revoked", "not_set"]
+    sharing: Literal["granted", "revoked", "not_set"]
+    rules: list[WellbeingRuleStatus]
+    active_advice: list[WellbeingAdvice]
+    open_break: BreakRecord | None = None
+    last_break: BreakRecord | None = None
+    latest_sample_at: datetime | None = None
+    retention_hours: int
+    evaluated_at: datetime
+    notice: str = "Contextual advice from a demo policy; not a medical assessment or a fitness-to-work decision."
+
+
+class WellbeingRiskView(ContractModel):
+    """The ONLY wellbeing shape a supervisor may receive: derived category, availability and freshness. No vitals,
+    evidence, explanation or speech."""
+
+    operator_id: str
+    site_id: str
+    risk_level: Literal["no_advisory", "advisory", "high", "unavailable"]
+    unavailable_reason: Literal["consent_not_granted", "consent_revoked", "stale_data", "no_data"] | None = None
+    freshness: Literal["fresh", "stale", "none"]
+    as_of: datetime | None = None
+
+
 AlertExplainedAction.model_rebuild()
+WellbeingAction.model_rebuild()
+SessionCommandResult.model_rebuild()
 SessionState.model_rebuild()

@@ -29,6 +29,7 @@ from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
 from ..store import Store
 from ..weather import OpenMeteoWeather, WeatherService, load_conditions_policy
+from ..wellbeing import Wellbeing, load_consent_notices, load_wellbeing_policy
 from . import schemas as s
 
 log = logging.getLogger("cocoon_agent.api")
@@ -108,6 +109,9 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         planner = Planner(store, conditions, load_estimator(settings.estimator_config_path), catalog)
         lms = load_lms(settings.curriculum_path)
         lms.seed(store)  # lesson rows and pinned lesson versions (idempotent; never overwrites authored content)
+        wellbeing = Wellbeing(store, load_wellbeing_policy(settings.wellbeing_policy_path),
+                              load_consent_notices(settings.consent_notices_path), weather=weather)
+        wellbeing.purge_expired()  # bounded raw-sample retention also holds across restarts
         refresher = None
         if weather.live is not None:  # bounded background refresh; lookups never wait for it
             refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
@@ -115,10 +119,10 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
             graph = build_graph(store, brain, conditions=conditions, planner=planner,
-                                lms=lms).compile(checkpointer=saver)
+                                lms=lms, wellbeing=wellbeing).compile(checkpointer=saver)
             app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
                                               catalog_issue=catalog_issue, conditions=conditions, planner=planner,
-                                              lms=lms)
+                                              lms=lms, wellbeing=wellbeing)
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -346,6 +350,52 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
     async def get_content_captions(asset_id: str, service: Service) -> FileResponse:
         path, media_type, _ = service.media_file(asset_id, captions=True)
         return FileResponse(path, media_type=media_type)
+
+    # ------------------------------------------------------------------ consent and wellbeing (D1)
+
+    @app.get("/v1/operators/{operator_id}/consents", response_model=s.OperatorConsentState, tags=["consent"],
+             **v1({403: {"model": s.ErrorResponse, "description": "forbidden: supervisors cannot read consent"},
+                   404: {"model": s.ErrorResponse, "description": "Unknown operator, or another operator's record"}}))
+    async def get_consents(operator_id: str, principal: Caller, service: Service,
+                           response: Response) -> s.OperatorConsentState:
+        response.headers["Cache-Control"] = "no-store"
+        return service.consents(principal, operator_id)
+
+    @app.post("/v1/operators/{operator_id}/consents", response_model=s.OperatorConsentChangeResult, tags=["consent"],
+              **v1({403: {"model": s.ErrorResponse, "description": (
+                  "forbidden: only the operator's own actor token may change consent (not the service credential, "
+                  "not a supervisor)")},
+                    404: {"model": s.ErrorResponse, "description": "Another operator's record"},
+                    409: {"model": s.ErrorResponse, "description": (
+                        "idempotency_conflict (change_id reused with another body), version_conflict (stale "
+                        "expected_version; details give the current version) or invalid_transition (sharing needs "
+                        "vitals_processing granted)")},
+                    422: {"model": s.ErrorResponse, "description": "Malformed request or an outdated notice_version"}}))
+    async def change_consent(operator_id: str, body: s.OperatorConsentChange, principal: Caller, service: Service,
+                             response: Response) -> s.OperatorConsentChangeResult:
+        response.headers["Cache-Control"] = "no-store"
+        return service.change_consent(principal, operator_id, body)
+
+    @app.post("/v1/sessions/{session_id}/wellbeing/samples", response_model=s.WellbeingSampleResult,
+              tags=["wellbeing"],
+              **v1({404: {"model": s.ErrorResponse, "description": "Unknown session, not the caller's, or not a "
+                                                                   "catalog-verified operator session"},
+                    409: {"model": s.ErrorResponse, "description": "sample_id reused with a different sample"},
+                    422: {"model": s.ErrorResponse, "description": (
+                        "Out-of-range, non-finite or unit-less values (values are never echoed in the error)")}},
+                   access=OwnedSession))
+    async def submit_wellbeing(session_id: str, body: s.WellbeingSampleRequest, service: Service,
+                               session: Annotated[s.Session, OwnedSession],
+                               response: Response) -> s.WellbeingSampleResult:
+        response.headers["Cache-Control"] = "no-store"
+        return service.wellbeing_sample(session, body)
+
+    @app.get("/v1/sessions/{session_id}/wellbeing", response_model=s.WellbeingView, tags=["wellbeing"],
+             **v1(access=OwnedSession))
+    async def get_wellbeing(session_id: str, service: Service, session: Annotated[s.Session, OwnedSession],
+                            response: Response) -> s.WellbeingView:
+        response.headers["Cache-Control"] = "no-store"
+        return service.wellbeing_view(session)
 
     # ------------------------------------------------------------------ state
 

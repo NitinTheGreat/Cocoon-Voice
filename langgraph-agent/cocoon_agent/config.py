@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     estimator_config_path: Path | None = Field(default=None, alias="COCOON_ESTIMATOR_CONFIG_PATH")
     # Versioned curriculum (lessons, quizzes, scenario, media catalog, level criteria). Unset = content/curriculum_v1.json.
     curriculum_path: Path | None = Field(default=None, alias="COCOON_CURRICULUM_PATH")
+    # Wellbeing rule policy and the consent notices a grant must name. Unset = policies/wellbeing_v1.json and
+    # policies/consent_notices_v1.json.
+    wellbeing_policy_path: Path | None = Field(default=None, alias="COCOON_WELLBEING_POLICY_PATH")
+    consent_notices_path: Path | None = Field(default=None, alias="COCOON_CONSENT_NOTICES_PATH")
 
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",
@@ -103,7 +107,7 @@ class Settings(BaseSettings):
         if not self.dataset_root.is_absolute():
             self.dataset_root = (SERVICE_DIR / self.dataset_root).resolve()
         for name in ("weather_fixture_path", "conditions_policy_path", "hazard_policy_path", "estimator_config_path",
-                     "curriculum_path"):
+                     "curriculum_path", "wellbeing_policy_path", "consent_notices_path"):
             value = getattr(self, name)
             if value is not None and not value.is_absolute():
                 setattr(self, name, (SERVICE_DIR / value).resolve())

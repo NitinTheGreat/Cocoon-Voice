@@ -231,15 +231,27 @@ ROUTES: tuple[Route, ...] = (
           request=cm.PresentationReport,
           responses={200: Resp("Stored presentation", cm.PresentationRecord), 409: Resp("idempotency_conflict", ERR),
                      **_errs(401, 403, 404, 422)}),
-    Route("get", "/v1/operators/{operator_id}/consents", "proposed", "I02", ("operator", "voice_service"),
-          "Current purpose-specific consents", responses={200: Resp("Consent state", idn.ConsentState),
-                                                          **_errs(401, 403, 404)}),
-    Route("post", "/v1/operators/{operator_id}/consents", "proposed", "I02", ("operator",),
-          "Grant or revoke a consent purpose (operator only)",
-          idempotency="change_id; expected_version stale → 409 version_conflict. A supervisor token → 403.",
-          request=idn.ConsentChangeRequest,
-          responses={200: Resp("Resulting consent state", idn.ConsentChangeResult),
-                     409: Resp("version_conflict / idempotency_conflict", ERR), **_errs(401, 403, 404, 422)}),
+    Route("get", "/v1/operators/{operator_id}/consents", "implemented", "D1", ("operator", "voice_service"),
+          "Current purpose-specific consents (runtime OperatorConsentState; not_set is never a grant)",
+          target_changes=({"stage": "D1", "change": "Runtime shape of the proposed ConsentState (adds "
+                                                    "current_notice_version, notice_summary, requires).",
+                           "schema": "ConsentState"},)),
+    Route("post", "/v1/operators/{operator_id}/consents", "implemented", "D1", ("operator",),
+          "Grant or revoke a consent purpose (the operator's own actor token only)",
+          idempotency="change_id per operator: identical retry → applied:false with the current state (never "
+                      "re-applied over a later revocation); changed body → 409 idempotency_conflict; stale "
+                      "expected_version → 409 version_conflict. Service or supervisor credential → 403.",
+          target_changes=({"stage": "D1", "change": "Runtime shape of the proposed ConsentChangeRequest/Result.",
+                           "schema": "ConsentChangeResult"},)),
+    Route("post", "/v1/sessions/{session_id}/wellbeing/samples", "implemented", "D1", ("simulator", "operator"),
+          "Private heart-rate / skin-temperature summary for the session's operator (retained only under "
+          "vitals_processing; values never echoed)",
+          idempotency="sample_id per operator; identical retry → status duplicate; changed body → 409; after "
+                      "retention deletion → status expired",
+          target_changes=({"stage": "I05A", "change": "Also accepted as a `vitals` observation in the typed "
+                                                      "cocoon.telemetry.v2 batch.", "schema": "VitalsObservation"},)),
+    Route("get", "/v1/sessions/{session_id}/wellbeing", "implemented", "D1", ("operator", "voice_service"),
+          "Operator-private wellbeing view: rule status, advice with explanation, breaks, consent summary"),
     Route("get", "/v1/supervisor/overview", "proposed", "I13", ("supervisor",),
           "Site-scoped supervisor overview (risk-only wellbeing, no raw vitals)",
           params=(Param("site_id", "query", {"type": "string"}, "Authorised site", required=True),
@@ -291,6 +303,8 @@ EXTRA_MODELS: tuple[type[BaseModel], ...] = (
     tm.TelemetryRequestTarget, tm.TelemetryIngestResult, an.EventsPageTarget, an.AnnouncementDeliveryReportTarget,
     tm.ConditionsSnapshot, lms.LessonVersion, lms.Course, lms.QuizAttempt, lms.ContentAsset,
     ap.ApprovalRecord, cm.Command, cm.CommandResult,
+    # Proposed shapes of routes implemented in D (kept for fixtures and x-target-changes references).
+    idn.ConsentState, idn.ConsentChangeRequest, idn.ConsentChangeResult, tm.VitalsObservation,
 )
 INTERNAL_MODELS: tuple[type[BaseModel], ...] = (inn.ClassifierDecision, inn.ActionPlan)
 STANDALONE: dict[str, type[BaseModel]] = {
@@ -380,6 +394,17 @@ def _proposed_operation(route: Route) -> dict[str, Any]:
     return op
 
 
+def check_schema_collisions(runtime_names: set[str], proposed_names: set[str]) -> None:
+    """Runtime and proposed components share one namespace. A shared name is allowed only for a runtime (v1) model
+    reused by a target model: then both sides ARE the same class. A model defined in the contract package with the
+    name of a runtime component would silently be replaced by the runtime shape (a matching class name alone proves
+    nothing), so generation fails and names it; give the runtime model a distinct name instead."""
+    own = {name for name, model in model_index().items() if model.__module__ != s.__name__}
+    clashes = sorted(runtime_names & proposed_names & own)
+    if clashes:
+        raise ValueError(f"proposed schema(s) {clashes} collide with runtime component(s) of the same name")
+
+
 def build_proposed_openapi(runtime_spec: dict[str, Any]) -> dict[str, Any]:
     """Target contract = runtime export (unchanged operations, annotated) + proposed routes and schemas."""
     runtime = copy.deepcopy(runtime_spec)
@@ -406,15 +431,9 @@ def build_proposed_openapi(runtime_spec: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"runtime routes missing from the registry: {sorted(missing)}")
 
     schemas = dict(runtime["components"]["schemas"])
-    runtime_models = {n for n, v in vars(s).items() if isinstance(v, type) and issubclass(v, BaseModel)}
+    check_schema_collisions(set(schemas), set(component_schemas(_models())))
     for name, schema in component_schemas(_models()).items():
-        if name in schemas:
-            # A v1 model reused by a target model keeps its runtime component unchanged. Any other name clash is
-            # a bug: a proposed model must never redefine a runtime schema.
-            if name not in runtime_models:
-                raise ValueError(f"proposed schema {name!r} collides with a runtime component")
-            continue
-        schemas[name] = schema
+        schemas.setdefault(name, schema)
 
     return {
         "openapi": "3.1.0",

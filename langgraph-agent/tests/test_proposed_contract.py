@@ -334,3 +334,10 @@ def test_api_contract_capability_table_lists_every_route():
         row = re.search(rf"^\| `{route.method.upper()} {re.escape(route.path)}` \| (\w+) \|", text, re.MULTILINE)
         assert row, f"{route.method.upper()} {route.path} missing from API_CONTRACT.md"
         assert row.group(1) == route.status
+
+
+def test_a_proposed_model_can_never_share_a_runtime_component_name():
+    # reused runtime classes (same class on both sides) are fine; a contract-package model with a runtime name is not
+    spec.check_schema_collisions({"Alert", "Session"}, {"Alert", "Session"})
+    with pytest.raises(ValueError, match="ConsentState"):
+        spec.check_schema_collisions({"ConsentState", "Alert"}, {"ConsentState", "Alert"})

@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -60,6 +61,37 @@ def _without_unset(data: dict[str, Any], added: tuple[str, ...]) -> dict[str, An
     return {k: v for k, v in data.items() if not (k in added and v is None)}
 
 
+@contextmanager
+def domain_errors(noun: str):
+    """Map store-level refusals to the shared API errors (one mapping for taps, consent and wellbeing)."""
+    try:
+        yield
+    except Conflict as exc:
+        raise ApiError(409, "idempotency_conflict", str(exc)) from exc
+    except NotFound as exc:
+        raise ApiError(404, "not_found", str(exc)) from exc
+    except VersionConflict as exc:
+        raise ApiError(409, "version_conflict", str(exc), details=[
+            {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
+    except InvalidTransition as exc:
+        details = [{"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]
+        details += [{"field": f"draft.{m}", "issue": "not stated yet"} for m in exc.missing]
+        raise ApiError(409, "invalid_transition", str(exc), details=details) from exc
+    except InvalidInput as exc:
+        raise ApiError(422, "validation_error", str(exc), details=[
+            {"field": f"body.{exc.field}", "issue": exc.issue}]) from exc
+    except ConditionsGate as exc:
+        check = exc.check
+        details = [{"field": "conditions.level", "issue": check.level if check else "unknown"}]
+        details += [{"field": f"conditions.{f.variable}", "issue": f"{f.level}: {f.value} {f.unit}"}
+                    for f in (check.findings if check else []) if f.level in ("acknowledge", "block")]
+        if exc.reason == "conditions_need_acknowledgement":
+            details.append({"field": "body.payload.acknowledge_conditions",
+                            "issue": "required to start despite these findings"})
+        raise ApiError(409, "invalid_transition", f"task start stopped by working conditions ({exc.reason})",
+                       details=details) from exc
+
+
 def thread_config(session_id: str) -> RunnableConfig:
     return {"configurable": {"thread_id": session_id}}
 
@@ -67,7 +99,7 @@ def thread_config(session_id: str) -> RunnableConfig:
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
                  bindings: SessionBindings | None = None, catalog_issue: str | None = None,
-                 conditions: Conditions | None = None, planner=None, lms=None):
+                 conditions: Conditions | None = None, planner=None, lms=None, wellbeing=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -79,6 +111,7 @@ class CocoonService:
         self.conditions = conditions
         self.planner = planner  # cocoon_agent.planning.Planner (conditions + saved estimates per task)
         self.lms = lms  # cocoon_agent.lms.LMS (curriculum; None = no LMS)
+        self.wellbeing = wellbeing  # cocoon_agent.wellbeing.Wellbeing (consent, private samples, advice, breaks)
         self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
@@ -192,6 +225,11 @@ class CocoonService:
                                     "expected_version": req.expected_version})
         if req.kind.startswith(("lesson.", "quiz.")):
             mutate, noun = self._lms_mutation(session, req), "lesson"
+        elif req.kind.startswith("break."):
+            if self.wellbeing is None:
+                raise ApiError(404, "not_found", "break records are not enabled")
+            at = self.conditions.data_time(session) if self.conditions is not None else utcnow()
+            mutate, noun = self.wellbeing.break_mutation(session, req.kind, req.expected_version, at), "break"
         elif req.kind.startswith("task."):
             gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
                 else None
@@ -260,34 +298,58 @@ class CocoonService:
 
     def run_domain_command(self, *, scope: str, command_id: str, kind: str, fingerprint: str, session: s.Session,
                            mutate, noun: str) -> tuple[dict, bool]:
-        try:
+        with domain_errors(noun):
             return self.store.run_command(
                 scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
                 turn_id=None, mutate=mutate)
-        except Conflict as exc:
-            raise ApiError(409, "idempotency_conflict", str(exc)) from exc
-        except NotFound as exc:
-            raise ApiError(404, "not_found", str(exc)) from exc
-        except VersionConflict as exc:
-            raise ApiError(409, "version_conflict", str(exc), details=[
-                {"field": "body.expected_version", "issue": f"current version is {exc.current_version}"}]) from exc
-        except InvalidTransition as exc:
-            details = [{"field": "body.kind", "issue": f"{noun} status is {exc.current_status}"}]
-            details += [{"field": f"draft.{m}", "issue": "not stated yet"} for m in exc.missing]
-            raise ApiError(409, "invalid_transition", str(exc), details=details) from exc
-        except InvalidInput as exc:
-            raise ApiError(422, "validation_error", str(exc), details=[
-                {"field": f"body.{exc.field}", "issue": exc.issue}]) from exc
-        except ConditionsGate as exc:
-            check = exc.check
-            details = [{"field": "conditions.level", "issue": check.level if check else "unknown"}]
-            details += [{"field": f"conditions.{f.variable}", "issue": f"{f.level}: {f.value} {f.unit}"}
-                        for f in (check.findings if check else []) if f.level in ("acknowledge", "block")]
-            if exc.reason == "conditions_need_acknowledgement":
-                details.append({"field": "body.payload.acknowledge_conditions",
-                                "issue": "required to start despite these findings"})
-            raise ApiError(409, "invalid_transition", f"task start stopped by working conditions ({exc.reason})",
-                           details=details) from exc
+
+    # ------------------------------------------------------------------ consent and wellbeing (D1)
+
+    def _need_wellbeing(self):
+        if self.wellbeing is None:
+            raise ApiError(404, "not_found", "wellbeing is not enabled")
+        return self.wellbeing
+
+    def _consent_subject(self, principal: Principal, operator_id: str, write: bool) -> None:
+        """Consent belongs to the operator. Reads: the operator themself, or the trusted voice service. Writes: only
+        the operator's own actor token (a service or supervisor credential is not proof of consent)."""
+        if principal.kind == "operator":
+            if principal.operator_id != operator_id or not principal.has_scope("sessions:own"):
+                raise ApiError(404, "not_found", "operator not found")
+            return
+        if principal.kind == "service" and not write:
+            if self.catalog is None or not self.catalog.has_operator(operator_id):
+                raise ApiError(404, "not_found", "operator not found")
+            return
+        raise ApiError(403, "forbidden", "only the operator can change their own consent" if write
+                       else "this principal cannot read operator consent")
+
+    def consents(self, principal: Principal, operator_id: str) -> s.OperatorConsentState:
+        self._consent_subject(principal, operator_id, write=False)
+        return self._need_wellbeing().consent_state(operator_id)
+
+    def change_consent(self, principal: Principal, operator_id: str,
+                       req: s.OperatorConsentChange) -> s.OperatorConsentChangeResult:
+        self._consent_subject(principal, operator_id, write=True)
+        with domain_errors("consent"):
+            result = self._need_wellbeing().change_consent(operator_id, principal.subject_id, req)
+        log.info("consent change operator=%s change=%s purpose=%s action=%s applied=%s", operator_id, req.change_id,
+                 req.purpose, req.action, result.applied)
+        return result
+
+    def wellbeing_sample(self, session: s.Session, req: s.WellbeingSampleRequest) -> s.WellbeingSampleResult:
+        with domain_errors("wellbeing"):
+            result = self._need_wellbeing().ingest(session, req,
+                                                   timedelta(seconds=self.settings.announcement_ttl_seconds))
+        # never log values: only identifiers and the outcome
+        log.info("wellbeing sample session=%s sample=%s status=%s advice_opened=%s", session.session_id,
+                 req.sample_id, result.status, result.advice_opened)
+        return result
+
+    def wellbeing_view(self, session: s.Session) -> s.WellbeingView:
+        if session.binding_status != "catalog_verified":
+            raise ApiError(404, "not_found", "no wellbeing record for this session")
+        return self._need_wellbeing().view(session)
 
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
@@ -502,6 +564,8 @@ class CocoonService:
             rule_coverage=self.store.rule_coverage(session_id),
             learning=self.learner(session),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
+            wellbeing=self.wellbeing.view(session) if self.wellbeing is not None
+            and session.binding_status == "catalog_verified" else None,
         )
 
     def tasks_with_conditions(self, session: s.Session) -> list[s.AssignedTask]:

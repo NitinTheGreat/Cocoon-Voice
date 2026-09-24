@@ -742,6 +742,267 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/operators/{operator_id}/consents:
+    get:
+      tags:
+      - consent
+      summary: Get Consents
+      operationId: get_consents_v1_operators__operator_id__consents_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: operator_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Operator Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorConsentState'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: supervisors cannot read consent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown operator, or another operator's record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - consent
+      summary: Change Consent
+      operationId: change_consent_v1_operators__operator_id__consents_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: operator_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Operator Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorConsentChange'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorConsentChangeResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: only the operator''s own actor token may change consent (not the service credential,
+            not a supervisor)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Another operator's record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request or an outdated notice_version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: idempotency_conflict (change_id reused with another body), version_conflict (stale expected_version;
+            details give the current version) or invalid_transition (sharing needs vitals_processing granted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/wellbeing/samples:
+    post:
+      tags:
+      - wellbeing
+      summary: Submit Wellbeing
+      operationId: submit_wellbeing_v1_sessions__session_id__wellbeing_samples_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WellbeingSampleRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WellbeingSampleResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session, not the caller's, or not a catalog-verified operator session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Out-of-range, non-finite or unit-less values (values are never echoed in the error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: sample_id reused with a different sample
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/sessions/{session_id}/wellbeing:
+    get:
+      tags:
+      - wellbeing
+      summary: Get Wellbeing
+      operationId: get_wellbeing_v1_sessions__session_id__wellbeing_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WellbeingView'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/sessions/{session_id}/state:
     get:
       tags:
@@ -1363,6 +1624,7 @@ components:
           - shift_briefing
           - alert_escalated
           - coaching_prompt
+          - wellbeing_advice
           title: Type
         priority:
           type: string
@@ -1742,6 +2004,38 @@ components:
       - pass_mark
       - lesson_completed
       title: AttemptResult
+    BreakRecord:
+      properties:
+        break_id:
+          type: string
+          title: Break Id
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        version:
+          type: integer
+          title: Version
+        source:
+          type: string
+          const: operator_command
+          title: Source
+          description: Only an explicit operator command records a break; engine-off, waiting or telemetry silence
+            never do.
+          default: operator_command
+      additionalProperties: false
+      type: object
+      required:
+      - break_id
+      - started_at
+      - version
+      title: BreakRecord
     CapabilityUnavailableAction:
       properties:
         type:
@@ -3358,6 +3652,177 @@ components:
       - type
       - task
       title: NextTaskAction
+    OperatorConsent:
+      properties:
+        purpose:
+          type: string
+          enum:
+          - vitals_processing
+          - risk_sharing_supervisor
+          title: Purpose
+        status:
+          type: string
+          enum:
+          - granted
+          - revoked
+          - not_set
+          title: Status
+        notice_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Notice Version
+          description: Notice the last decision was made against.
+        current_notice_version:
+          type: string
+          title: Current Notice Version
+          description: Notice a grant must name now.
+        notice_summary:
+          type: string
+          title: Notice Summary
+        effective_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective At
+        revoked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Revoked At
+        is_synthetic_demo_record:
+          type: boolean
+          title: Is Synthetic Demo Record
+          default: false
+        requires:
+          items:
+            type: string
+            enum:
+            - vitals_processing
+            - risk_sharing_supervisor
+          type: array
+          title: Requires
+          description: Purposes that must be granted first.
+      additionalProperties: false
+      type: object
+      required:
+      - purpose
+      - status
+      - current_notice_version
+      - notice_summary
+      title: OperatorConsent
+      description: 'One purpose. `not_set` means the operator never decided: it is treated exactly like revoked
+        (no implicit
+
+        opt-in). Runtime shape of the proposed ConsentRecord.'
+    OperatorConsentChange:
+      properties:
+        change_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Change Id
+          description: Idempotency key per operator.
+          examples:
+          - lk-item_4f2c9a
+        purpose:
+          type: string
+          enum:
+          - vitals_processing
+          - risk_sharing_supervisor
+          title: Purpose
+        action:
+          type: string
+          enum:
+          - grant
+          - revoke
+          title: Action
+        notice_version:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Notice Version
+          description: Must equal the current notice version.
+        expected_version:
+          type: integer
+          minimum: 0.0
+          title: Expected Version
+          description: OperatorConsentState.version the operator saw.
+        is_synthetic_demo_record:
+          type: boolean
+          title: Is Synthetic Demo Record
+          description: True for rehearsal grants by synthetic actors.
+          default: false
+        captured_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Captured At
+          description: Device time of the decision (informational; ordering uses expected_version).
+      additionalProperties: false
+      type: object
+      required:
+      - change_id
+      - purpose
+      - action
+      - notice_version
+      - expected_version
+      title: OperatorConsentChange
+      description: POST /v1/operators/{operator_id}/consents. Only the operator's own actor token may send it.
+    OperatorConsentChangeResult:
+      properties:
+        change_id:
+          type: string
+          title: Change Id
+        applied:
+          type: boolean
+          title: Applied
+          description: 'False for an identical retry: the saved change is not re-applied.'
+        duplicate:
+          type: boolean
+          title: Duplicate
+        cascaded:
+          items:
+            type: string
+            enum:
+            - vitals_processing
+            - risk_sharing_supervisor
+          type: array
+          title: Cascaded
+          description: Purposes revoked together with this change (sharing needs processing).
+        state:
+          $ref: '#/components/schemas/OperatorConsentState'
+      additionalProperties: false
+      type: object
+      required:
+      - change_id
+      - applied
+      - duplicate
+      - state
+      title: OperatorConsentChangeResult
+    OperatorConsentState:
+      properties:
+        operator_id:
+          type: string
+          title: Operator Id
+        version:
+          type: integer
+          title: Version
+          description: Increments on every applied change; send it as expected_version.
+        consents:
+          items:
+            $ref: '#/components/schemas/OperatorConsent'
+          type: array
+          title: Consents
+      additionalProperties: false
+      type: object
+      required:
+      - operator_id
+      - version
+      - consents
+      title: OperatorConsentState
     PendingCancelledAction:
       properties:
         type:
@@ -3837,6 +4302,8 @@ components:
           - lesson.defer
           - quiz.start
           - quiz.answer
+          - break.start
+          - break.end
           title: Kind
         captured_at:
           anyOf:
@@ -3918,6 +4385,11 @@ components:
           - $ref: '#/components/schemas/LearningAction'
           - type: 'null'
           description: lesson.* / quiz.* outcome.
+        break_record:
+          anyOf:
+          - $ref: '#/components/schemas/BreakRecord'
+          - type: 'null'
+          description: break.start / break.end outcome.
         created_at:
           type: string
           format: date-time
@@ -4085,6 +4557,12 @@ components:
           - $ref: '#/components/schemas/WorkingConditionsCheck'
           - type: 'null'
           description: Site conditions at the session's data clock (null when the session has no site).
+        wellbeing:
+          anyOf:
+          - $ref: '#/components/schemas/WellbeingView'
+          - type: 'null'
+          description: Operator-private wellbeing advice, rule status and break record (never shown to a supervisor;
+            supervisors get only WellbeingRiskView).
       additionalProperties: false
       type: object
       required:
@@ -4828,6 +5306,7 @@ components:
         actions:
           items:
             oneOf:
+            - $ref: '#/components/schemas/WellbeingAction'
             - $ref: '#/components/schemas/NextTaskAction'
             - $ref: '#/components/schemas/IncidentLoggedAction'
             - $ref: '#/components/schemas/InformationRequestedAction'
@@ -4874,6 +5353,7 @@ components:
                 task_started: '#/components/schemas/TaskTransitionAction'
                 training_assigned: '#/components/schemas/TrainingAssignedAction'
                 training_status: '#/components/schemas/TrainingStatusAction'
+                wellbeing: '#/components/schemas/WellbeingAction'
           type: array
           title: Actions
         state_version:
@@ -5085,6 +5565,438 @@ components:
         provider states a forecast issue time (Open-Meteo does not; retrieval time and generation time are not issue
 
         times). Fixture values are synthetic and aligned to the site-local clock of the data time.'
+    WellbeingAction:
+      properties:
+        type:
+          type: string
+          const: wellbeing
+          title: Type
+        event:
+          type: string
+          enum:
+          - break_started
+          - break_ended
+          - break_rejected
+          - advice_explained
+          - no_advice
+          - consent_status
+          title: Event
+        break_record:
+          anyOf:
+          - $ref: '#/components/schemas/BreakRecord'
+          - type: 'null'
+        advice:
+          anyOf:
+          - $ref: '#/components/schemas/WellbeingAdvice'
+          - type: 'null'
+        consents:
+          items:
+            $ref: '#/components/schemas/OperatorConsent'
+          type: array
+          title: Consents
+        created:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Created
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - type
+      - event
+      title: WellbeingAction
+      description: Voice outcome for breaks, wellbeing advice explanations and consent status (operator-private).
+    WellbeingAdvice:
+      properties:
+        advice_id:
+          type: string
+          title: Advice Id
+        rule_id:
+          type: string
+          title: Rule Id
+        policy_version:
+          type: string
+          title: Policy Version
+        level:
+          type: string
+          enum:
+          - advisory
+          - high
+          title: Level
+        status:
+          type: string
+          enum:
+          - active
+          - cleared
+          - withdrawn
+          title: Status
+        explanation:
+          type: string
+          title: Explanation
+        factors:
+          items:
+            $ref: '#/components/schemas/WellbeingFactor'
+          type: array
+          title: Factors
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        end_reason:
+          anyOf:
+          - type: string
+            enum:
+            - observed_clear
+            - consent_revoked
+          - type: 'null'
+          title: End Reason
+        announcement_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Announcement Event Id
+      additionalProperties: false
+      type: object
+      required:
+      - advice_id
+      - rule_id
+      - policy_version
+      - level
+      - status
+      - explanation
+      - factors
+      - started_at
+      - updated_at
+      title: WellbeingAdvice
+      description: Operator-only advice episode with its saved derived evidence. Advice, not a diagnosis.
+    WellbeingFactor:
+      properties:
+        factor:
+          type: string
+          enum:
+          - heat_index
+          - break_due
+          - vitals_strain
+          title: Factor
+        level:
+          type: string
+          enum:
+          - clear
+          - advisory
+          - high
+          - unknown
+          title: Level
+        heat_index_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Heat Index C
+          description: NWS heat index from site air temperature and relative humidity (environmental screening input).
+        heat_index_band:
+          anyOf:
+          - type: string
+            enum:
+            - none
+            - caution
+            - extreme_caution
+            - danger
+            - extreme_danger
+          - type: 'null'
+          title: Heat Index Band
+        weather_provider:
+          anyOf:
+          - type: string
+            enum:
+            - open_meteo
+            - fixture
+          - type: 'null'
+          title: Weather Provider
+        work_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Work Minutes
+          description: Minutes since the shift start or the last recorded break end.
+        mean_heart_rate_bpm:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Mean Heart Rate Bpm
+        max_skin_temp_c:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Max Skin Temp C
+        sample_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Sample Count
+        window_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Window Seconds
+      additionalProperties: false
+      type: object
+      required:
+      - factor
+      - level
+      title: WellbeingFactor
+    WellbeingRuleStatus:
+      properties:
+        rule_id:
+          type: string
+          title: Rule Id
+        factor:
+          type: string
+          enum:
+          - heat_index
+          - break_due
+          - vitals_strain
+          title: Factor
+        status:
+          type: string
+          enum:
+          - clear
+          - advisory
+          - high
+          - unknown
+          title: Status
+          description: unknown = could not evaluate (missing, stale, not permitted); never read as normal.
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        basis:
+          type: string
+          enum:
+          - published_guidance
+          - synthetic_demo_assumption
+          title: Basis
+        evaluated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Evaluated At
+      additionalProperties: false
+      type: object
+      required:
+      - rule_id
+      - factor
+      - status
+      - basis
+      title: WellbeingRuleStatus
+    WellbeingSampleRequest:
+      properties:
+        sample_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Sample Id
+          description: Idempotency key per operator.
+          examples:
+          - lk-item_4f2c9a
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+          description: End of the summary window at the source; normalised to UTC.
+        heart_rate_bpm:
+          anyOf:
+          - type: number
+            maximum: 250.0
+            minimum: 20.0
+          - type: 'null'
+          title: Heart Rate Bpm
+        skin_temp_c:
+          anyOf:
+          - type: number
+            maximum: 45.0
+            minimum: 20.0
+          - type: 'null'
+          title: Skin Temp C
+          description: Skin temperature, degrees Celsius. Not core body temperature.
+        window_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 1.0
+          title: Window Seconds
+          description: Window the values summarise.
+        quality:
+          type: string
+          enum:
+          - good
+          - degraded
+          - poor
+          title: Quality
+        source:
+          type: string
+          enum:
+          - synthetic_wearable_fixture
+          - wearable_device
+          title: Source
+        simulated:
+          type: boolean
+          title: Simulated
+          description: True for synthetic samples (every sample in this prototype).
+      additionalProperties: false
+      type: object
+      required:
+      - sample_id
+      - observed_at
+      - window_seconds
+      - quality
+      - source
+      - simulated
+      title: WellbeingSampleRequest
+      description: 'POST /v1/sessions/{session_id}/wellbeing/samples. Private operator data: heart rate in bpm and
+        SKIN temperature
+
+        in degrees Celsius only (not core temperature). Values are never echoed back or written to telemetry history,
+
+        logs, checkpoints or command payloads; without an effective vitals_processing grant nothing is retained.'
+    WellbeingSampleResult:
+      properties:
+        sample_id:
+          type: string
+          title: Sample Id
+        status:
+          type: string
+          enum:
+          - accepted
+          - duplicate
+          - rejected_consent
+          - ignored_late
+          - expired
+          title: Status
+        retained:
+          type: boolean
+          title: Retained
+          description: True only when the raw sample is kept (bounded retention).
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        advice_opened:
+          items:
+            type: string
+          type: array
+          title: Advice Opened
+        advice_updated:
+          items:
+            type: string
+          type: array
+          title: Advice Updated
+        advice_cleared:
+          items:
+            type: string
+          type: array
+          title: Advice Cleared
+        announcements_created:
+          items:
+            type: string
+          type: array
+          title: Announcements Created
+        rules:
+          items:
+            $ref: '#/components/schemas/WellbeingRuleStatus'
+          type: array
+          title: Rules
+      additionalProperties: false
+      type: object
+      required:
+      - sample_id
+      - status
+      - retained
+      title: WellbeingSampleResult
+      description: Never contains the submitted values.
+    WellbeingView:
+      properties:
+        operator_id:
+          type: string
+          title: Operator Id
+        policy_version:
+          type: string
+          title: Policy Version
+        processing:
+          type: string
+          enum:
+          - granted
+          - revoked
+          - not_set
+          title: Processing
+        sharing:
+          type: string
+          enum:
+          - granted
+          - revoked
+          - not_set
+          title: Sharing
+        rules:
+          items:
+            $ref: '#/components/schemas/WellbeingRuleStatus'
+          type: array
+          title: Rules
+        active_advice:
+          items:
+            $ref: '#/components/schemas/WellbeingAdvice'
+          type: array
+          title: Active Advice
+        open_break:
+          anyOf:
+          - $ref: '#/components/schemas/BreakRecord'
+          - type: 'null'
+        last_break:
+          anyOf:
+          - $ref: '#/components/schemas/BreakRecord'
+          - type: 'null'
+        latest_sample_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Latest Sample At
+        retention_hours:
+          type: integer
+          title: Retention Hours
+        evaluated_at:
+          type: string
+          format: date-time
+          title: Evaluated At
+        notice:
+          type: string
+          title: Notice
+          default: Contextual advice from a demo policy; not a medical assessment or a fitness-to-work decision.
+      additionalProperties: false
+      type: object
+      required:
+      - operator_id
+      - policy_version
+      - processing
+      - sharing
+      - rules
+      - active_advice
+      - retention_hours
+      - evaluated_at
+      title: WellbeingView
     WorkingConditionsCheck:
       properties:
         check_id:
