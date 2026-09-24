@@ -54,7 +54,11 @@ def payload_hash(obj: dict[str, Any]) -> str:
 # Optional request fields added after B. They are left out of an idempotency digest while unset, so a request saved
 # before the upgrade still matches its own retry byte-for-byte (a digest never changes because the model grew).
 ADDED_READINGS = ("proximity", "motion", "pitch_deg", "roll_deg", "grade_pct", "fuel_meter_l", "load_cycles_total")
-ADDED_PAYLOAD = ("severity_unknown", "occurred_expression", "occurred_at", "acknowledge_conditions")
+ADDED_PAYLOAD = ("severity_unknown", "occurred_expression", "occurred_at", "acknowledge_conditions", "checkin_id",
+                 "response")
+# Task commands captured longer ago than this (device clock vs server receipt) must be re-confirmed: a queued start or
+# condition acknowledgement from a disconnected period never stands in for a current pre-task check.
+OFFLINE_TASK_MAX_AGE = timedelta(seconds=120)
 
 
 def _without_unset(data: dict[str, Any], added: tuple[str, ...]) -> dict[str, Any]:
@@ -227,10 +231,35 @@ class CocoonService:
     def execute_command(self, principal: Principal, session: s.Session,
                         req: s.SessionCommand) -> s.SessionCommandResult:
         """Tap path. The same domain mutation as the graph tools; identity is scoped to the calling principal."""
-        fingerprint = payload_hash({"session_id": session.session_id, "kind": req.kind,
-                                    "payload": _without_unset(req.payload.model_dump(mode="json"), ADDED_PAYLOAD),
-                                    "expected_version": req.expected_version})
-        if req.kind.startswith(("lesson.", "quiz.")):
+        body = {"session_id": session.session_id, "kind": req.kind,
+                "payload": _without_unset(req.payload.model_dump(mode="json"), ADDED_PAYLOAD),
+                "expected_version": req.expected_version}
+        if req.original_binding is not None or req.client_draft_id is not None:  # D4 fields only when used
+            body.update(original_binding=req.original_binding.model_dump(mode="json") if req.original_binding
+                        else None, client_draft_id=req.client_draft_id)
+        record_session = session
+        if req.original_binding is not None:
+            record_session = self._original_session(session, req.original_binding)
+            if req.kind != "incident.submit_draft" and record_session.session_id != session.session_id:
+                raise ApiError(409, "binding_mismatch", "only offline incident drafts may target another session; "
+                                                        "task, lesson and check-in commands act on this session",
+                               details=[{"field": "body.original_binding.session_id",
+                                         "issue": "not the current session"}])
+        if req.kind == "incident.submit_draft":
+            from .sync import submit_draft_mutation
+
+            body.pop("session_id")  # the same upload retried from a replacement session is the same command
+            body["captured_at"] = req.captured_at.isoformat()
+        elif req.kind.startswith("task.") and req.captured_at is not None \
+                and utcnow() - req.captured_at > OFFLINE_TASK_MAX_AGE:
+            raise ApiError(409, "invalid_transition", "this task command was captured too long ago; check the current "
+                                                      "task and conditions and confirm again",
+                           details=[{"field": "body.captured_at",
+                                     "issue": f"older than {int(OFFLINE_TASK_MAX_AGE.total_seconds())} s"}])
+        fingerprint = payload_hash(body)
+        if req.kind == "incident.submit_draft":
+            mutate, noun = submit_draft_mutation(record_session, req), "incident"
+        elif req.kind.startswith(("lesson.", "quiz.")):
             mutate, noun = self._lms_mutation(session, req), "lesson"
         elif req.kind == "sos.respond":
             if self.sos is None:
@@ -258,9 +287,15 @@ class CocoonService:
                 edits["occurred_at"] = req.payload.occurred_at
             mutate = Store.incident_transition(session, req.kind, req.payload.incident_id, req.expected_version, edits)
             noun = "incident"
-        result, duplicate = self.run_domain_command(
-            scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind, fingerprint=fingerprint,
-            session=session, mutate=mutate, noun=noun)
+        from .sync import DraftConflict
+
+        try:
+            result, duplicate = self.run_domain_command(
+                scope=f"actor:{principal.subject_id}", command_id=req.command_id, kind=req.kind,
+                fingerprint=fingerprint, session=record_session, mutate=mutate, noun=noun)
+        except DraftConflict as exc:  # raised inside the mutation, before domain_errors maps Conflict
+            raise ApiError(409, "binding_mismatch" if exc.reason == "binding" else "idempotency_conflict", str(exc),
+                           details=[{"field": "body.client_draft_id", "issue": f"stored as {exc.draft_id}"}]) from exc
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
                                       status="completed", duplicate=duplicate)
 
@@ -525,9 +560,29 @@ class CocoonService:
             raise ApiError(404, "not_found", "no wellbeing record for this session")
         return self._need_wellbeing().view(session)
 
+    def _original_session(self, current: s.Session, binding: s.OriginalBinding) -> s.Session:
+        """Resolve an offline command's original association against the server's own record."""
+        original = self.store.get_session(binding.session_id)
+        if original is None or original.binding_status != "catalog_verified" \
+                or original.operator_id != current.operator_id or binding.operator_id != current.operator_id:
+            raise ApiError(404, "not_found", "original session not found")
+        wrong = [f for f in ("machine_id", "site_id", "shift_id")
+                 if getattr(binding, f) is not None and getattr(binding, f) != getattr(original, f)]
+        if wrong:
+            raise ApiError(409, "binding_mismatch", "original_binding does not match the stored session",
+                           details=[{"field": f"body.original_binding.{f}", "issue": "differs from the stored session"}
+                                    for f in wrong])
+        return original
+
     def get_command(self, principal: Principal, session: s.Session, command_id: str) -> s.SessionCommandResult:
+        """Status after a lost response. Never executes. Visible from any verified session of the same operator (an
+        offline draft may be looked up from a replacement session)."""
         row = self.store.get_command(f"actor:{principal.subject_id}", command_id)
-        if row is None or row["session_id"] != session.session_id:
+        owner = self.store.get_session(row["session_id"]) if row is not None else None
+        same = owner is not None and (owner.session_id == session.session_id or (
+            owner.operator_id == session.operator_id and owner.binding_status == "catalog_verified"
+            and session.binding_status == "catalog_verified"))
+        if row is None or not same:
             raise ApiError(404, "not_found", "command not found")
         result = json.loads(row["result_json"])
         return s.SessionCommandResult(**{k: v for k, v in result.items() if k in s.SessionCommandResult.model_fields},
@@ -742,9 +797,26 @@ class CocoonService:
             sos=self.sos.current(session.operator_id) if self.sos is not None
             and session.binding_status == "catalog_verified" else None,
             presence=self.channels.presence(session_id) if self.channels is not None else [],
+            snapshot=self._snapshot(session),
             wellbeing=self.wellbeing.view(session) if self.wellbeing is not None
             and session.binding_status == "catalog_verified" else None,
         )
+
+    def _snapshot(self, session: s.Session) -> s.SyncSnapshot:
+        now = utcnow()
+        machine = self._machine_state(session.session_id)
+        presence = self.channels.presence(session.session_id) if self.channels is not None else []
+        live = [p for p in presence if p.live and p.connection != "offline"]
+        shift = self.store._one("SELECT schedule_version FROM shifts WHERE shift_id = ?", (session.shift_id,)) \
+            if session.shift_id else None
+        tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []
+        return s.SyncSnapshot(
+            server_time=now, state_version=self.store.state_version(session.session_id),
+            schedule_version=shift[0] if shift else None, task_versions={t.task_id: t.version for t in tasks},
+            machine_data_time=machine.observed_at, machine_status=machine.status,
+            machine_data_age_seconds=int((now - machine.received_at).total_seconds()) if machine.received_at else None,
+            last_contact_at=max((p.received_at for p in presence), default=None),
+            voice_available=any(p.voice_available for p in live), screen_available=any(p.screen_available for p in live))
 
     def tasks_with_conditions(self, session: s.Session) -> list[s.AssignedTask]:
         tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []

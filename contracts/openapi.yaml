@@ -2391,6 +2391,11 @@ components:
           type: array
           title: Deliveries
           description: Latest playback report per consumer. Played is not acknowledgement.
+        expired:
+          type: boolean
+          title: Expired
+          description: 'expires_at has passed (server clock): do not speak it as new.'
+          default: false
         presentations:
           items:
             $ref: '#/components/schemas/PresentationView'
@@ -3468,6 +3473,7 @@ components:
           - invalid_cursor
           - replay_expired
           - rate_limited
+          - binding_mismatch
           title: Code
         message:
           type: string
@@ -4096,6 +4102,26 @@ components:
           type: array
           title: Missing
           description: Facts still needed before confirmation.
+        client_draft_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Draft Id
+          description: Device draft ID of an offline upload.
+        captured_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Captured At
+          description: Device capture time of an offline upload.
+        capture_mode:
+          type: string
+          enum:
+          - online
+          - offline_sync
+          title: Capture Mode
+          default: online
       additionalProperties: false
       type: object
       required:
@@ -5094,6 +5120,53 @@ components:
       - version
       - consents
       title: OperatorConsentState
+    OriginalBinding:
+      properties:
+        session_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Session Id
+          examples:
+          - lk-item_4f2c9a
+        operator_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Operator Id
+          examples:
+          - lk-item_4f2c9a
+        machine_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Machine Id
+          examples:
+          - lk-item_4f2c9a
+        site_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Site Id
+        shift_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Shift Id
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - operator_id
+      - machine_id
+      title: OriginalBinding
+      description: 'The association a command was captured under (offline). Checked against trusted server records;
+        it grants
+
+        no authority by itself and is never replaced by the current session''s association.'
     PendingCancelledAction:
       properties:
         type:
@@ -5826,6 +5899,7 @@ components:
           - break.start
           - break.end
           - sos.respond
+          - incident.submit_draft
           title: Kind
         captured_at:
           anyOf:
@@ -5833,13 +5907,28 @@ components:
             format: date-time
           - type: 'null'
           title: Captured At
-          description: Device time of the tap (informational).
+          description: Device time of the tap. Offline drafts interpret relative times against it; task commands
+            captured more than 120 s before receipt are refused as stale.
         expected_version:
           anyOf:
           - type: integer
             minimum: 1.0
           - type: 'null'
           title: Expected Version
+        client_draft_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+            examples:
+            - lk-item_4f2c9a
+          - type: 'null'
+          title: Client Draft Id
+          description: 'incident.submit_draft: the device''s persistent draft ID (operator-wide identity).'
+        original_binding:
+          anyOf:
+          - $ref: '#/components/schemas/OriginalBinding'
+          - type: 'null'
+          description: 'Offline commands: the association they were captured under.'
         payload:
           $ref: '#/components/schemas/CommandPayload'
       additionalProperties: false
@@ -5917,6 +6006,18 @@ components:
           - $ref: '#/components/schemas/SosEpisodeView'
           - type: 'null'
           description: sos.respond outcome.
+        record_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Record Session Id
+          description: Session holding the record (an offline draft stays with its original session).
+        duplicate_draft:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Duplicate Draft
+          description: 'incident.submit_draft: this client_draft_id was already stored (any session).'
         created_at:
           type: string
           format: date-time
@@ -6095,6 +6196,11 @@ components:
           type: array
           title: Presence
           description: Last-known connection/channel state per consumer (server receipt time).
+        snapshot:
+          anyOf:
+          - $ref: '#/components/schemas/SyncSnapshot'
+          - type: 'null'
+          description: Server time, versions and data age for a client cache (D4).
         wellbeing:
           anyOf:
           - $ref: '#/components/schemas/WellbeingView'
@@ -6747,6 +6853,77 @@ components:
       - scheduled_start_at
       - version
       title: SupervisorTaskItem
+    SyncSnapshot:
+      properties:
+        server_time:
+          type: string
+          format: date-time
+          title: Server Time
+        state_version:
+          type: integer
+          title: State Version
+        schedule_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Schedule Version
+        task_versions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Task Versions
+        machine_data_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Machine Data Time
+          description: Newest applied machine observation.
+        machine_data_age_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Machine Data Age Seconds
+          description: server_time - machine receipt time.
+        machine_status:
+          type: string
+          enum:
+          - unavailable
+          - fresh
+          - stale
+          title: Machine Status
+        last_contact_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Contact At
+          description: Newest presence report received.
+        voice_available:
+          type: boolean
+          title: Voice Available
+          description: A live consumer reports voice available.
+        screen_available:
+          type: boolean
+          title: Screen Available
+          description: A live consumer reports a screen available.
+        provenance:
+          type: string
+          title: Provenance
+          default: synthetic demo data (simulated telemetry, fixture site and shift)
+      additionalProperties: false
+      type: object
+      required:
+      - server_time
+      - state_version
+      - machine_status
+      - voice_available
+      - screen_available
+      title: SyncSnapshot
+      description: 'What a client caches with this state. Sensor freshness, application contact and voice availability
+        are
+
+        separate facts; none of them says the phone is offline or the operator is unwell.'
     Task:
       properties:
         task_id:

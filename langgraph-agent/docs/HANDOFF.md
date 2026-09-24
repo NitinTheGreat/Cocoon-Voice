@@ -2,6 +2,14 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## D4: connection state, offline reconciliation and non-voice receipts
+
+- **Schema v16 (`offline_sync`):** `offline_drafts` (operator-wide `client_draft_id` identity with content and binding digests); `incident_drafts.client_draft_id`, `captured_at`, `capture_mode`.
+- **Behaviour:** `incident.submit_draft` through the shared command route (checked original binding; attached to the original session/machine; relative time against `captured_at`; duplicate across retries and replacement sessions; content/binding conflicts; foreign operator 404); task commands current-session only and refused when captured more than 120 s ago; command lookup from any verified session of the same operator; `/state.snapshot` and `/state.presence`; `Announcement.expired`; presence ordering/liveness and presentation receipts from D3.
+- **Compatibility fix:** D3's optional payload fields `checkin_id` and `response` are now left out of the command digest while unset, so B/C-era commands keep their stored fingerprints (tested).
+- **Checks:** `tests/test_offline_sync.py` 6 passed (snapshot and presence ordering, future client clock, two consumers; offline upload twice + lookup + replacement session on the same and on another machine → one draft on the original machine; changed content/binding, forged binding and foreign operator refused; stale task start/version and cross-session task refused; offline consent retry refused; screen receipt without audio, 404 for foreign/missing events, `expired`; B/C digest unchanged).
+- **Not verified:** a real Flutter client, airplane mode, device clocks, screen or vibration hardware.
+
 ## D3: durable human-impact check-ins and SOS
 
 - **Schema v15 (`sos_presence`):** `human_impacts` (every candidate with capture time and disposition), `sos_episodes` (one open per operator, fixed server-clock deadlines, version-conditioned transitions), `sos_transitions` (ordered audit with the deciding rule), `presence` + `presence_reports`, `presentations` (separate from audio `deliveries`).

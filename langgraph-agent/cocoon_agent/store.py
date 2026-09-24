@@ -1403,6 +1403,7 @@ class Store:
     # ------------------------------------------------------------------ announcements
 
     def list_events(self, session_id: str, after: int, limit: int) -> tuple[list[s.Announcement], bool]:
+        now = utcnow()
         rows = self._all(
             "SELECT * FROM announcements WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
             (session_id, after, limit + 1),
@@ -1417,10 +1418,12 @@ class Store:
                                         presented_at=parse_dt(p["presented_at"]), received_at=parse_dt(p["received_at"]))
                      for p in self._all("SELECT * FROM presentations WHERE event_id = ? ORDER BY received_at,"
                                         " presentation_id", (r["event_id"],))]
+            expires = parse_dt(r["expires_at"])
             events.append(s.Announcement(
                 event_id=r["event_id"], sequence=r["sequence"], type=r["type"], priority=r["priority"],
                 speech=r["speech"], alert_id=r["alert_id"], created_at=parse_dt(r["created_at"]),
-                expires_at=parse_dt(r["expires_at"]), deliveries=deliveries, presentations=shown,
+                expires_at=expires, deliveries=deliveries, presentations=shown,
+                expired=expires is not None and expires <= now,
             ))
         return events, has_more
 
@@ -1547,6 +1550,9 @@ def _draft(r: sqlite3.Row) -> s.IncidentDraft:
         extra = dict(occurred_expression=r["occurred_expression"],
                      occurred_reference_at=parse_dt(r["occurred_reference_at"]),
                      notify_supervisor=bool(r["notify_supervisor"]))
+    if "capture_mode" in keys:  # v16
+        extra.update(client_draft_id=r["client_draft_id"], captured_at=parse_dt(r["captured_at"]),
+                     capture_mode=r["capture_mode"])
     return s.IncidentDraft(
         draft_id=r["draft_id"], draft_number=r["draft_number"], session_id=r["session_id"],
         operator_id=r["operator_id"], machine_id=r["machine_id"], origin=r["origin"], status=r["status"],

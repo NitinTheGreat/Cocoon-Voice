@@ -957,6 +957,29 @@ SOS_PRESENCE: tuple[str, ...] = (
 )
 
 
+OFFLINE_SYNC: tuple[str, ...] = (
+    # Operator-wide identity of drafts captured offline: one row per (operator, client_draft_id), whatever session or
+    # transport retry uploads it. The original binding and a content digest are kept for comparison.
+    """CREATE TABLE offline_drafts (
+    operator_id TEXT NOT NULL,
+    client_draft_id TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    binding_sha256 TEXT NOT NULL,
+    binding_json TEXT NOT NULL,
+    draft_id TEXT NOT NULL REFERENCES incident_drafts(draft_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    command_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (operator_id, client_draft_id)
+)""",
+    "ALTER TABLE incident_drafts ADD COLUMN client_draft_id TEXT",
+    "ALTER TABLE incident_drafts ADD COLUMN captured_at TEXT",
+    "ALTER TABLE incident_drafts ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'online'"
+    " CHECK (capture_mode IN ('online', 'offline_sync'))",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -980,6 +1003,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(13, "consent_wellbeing", CONSENT_WELLBEING),
     Migration(14, "supervision_approvals", SUPERVISION_APPROVALS),
     Migration(15, "sos_presence", SOS_PRESENCE),
+    Migration(16, "offline_sync", OFFLINE_SYNC),
 )
 
 

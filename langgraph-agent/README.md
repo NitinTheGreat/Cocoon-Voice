@@ -236,6 +236,7 @@ heat-index bands follow the NWS chart); nothing is a medical assessment, a fall 
 | Weather re-planning (D2) | `replanning.py`, `demo/task_constraints_v1.json`, `demo/weather_fixture_replan_*.json` | `POST /v1/shifts/{id}/schedule-proposals` (service); applied only after approval, revalidated |
 | SOS check-ins (D3) | `sos.py`, `channels.py`, `policies/emergency_notification_v1.json` | `POST .../impacts` (simulated), check-in announcement, deadlines, "I'm okay" / "I need help" / `sos.respond`, urgent in-app notifications; `COCOON_SOS_TIMER_PROFILE=accelerated_demo` for demos |
 | Presence and presentation (D3) | `channels.py` | `POST .../presence`, `POST .../events/{id}/presentation` (screen/vibration, separate from audio playback) |
+| Offline reconciliation (D4) | `sync.py`, `service.execute_command` | `incident.submit_draft` (`client_draft_id`, `captured_at`, `original_binding`), `/state.snapshot`, command status lookup, stale task refusal |
 
 Raw wellbeing samples are deleted 24 h after receipt (at startup and on each sample request) and at once when the
 operator revokes `vitals_processing`. Derived advice evidence stays as a private operator record. The WESAD source is

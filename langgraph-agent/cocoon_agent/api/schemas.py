@@ -44,6 +44,7 @@ ErrorCode = Literal[
     "invalid_cursor",
     "replay_expired",
     "rate_limited",
+    "binding_mismatch",
 ]
 
 
@@ -375,6 +376,9 @@ class IncidentDraft(ContractModel):
     dismissed_at: datetime | None = None
     notify_supervisor: bool = Field(default=False, description="Confirming also requests supervisor review.")
     missing: list[DraftFact] = Field(default_factory=list, description="Facts still needed before confirmation.")
+    client_draft_id: str | None = Field(default=None, description="Device draft ID of an offline upload.")
+    captured_at: datetime | None = Field(default=None, description="Device capture time of an offline upload.")
+    capture_mode: Literal["online", "offline_sync"] = "online"
 
 
 class ApprovalRequest(ContractModel):
@@ -999,6 +1003,8 @@ class SessionState(ContractModel):
         default=None, description="The operator's open check-in, else the latest episode (operator view).")
     presence: list["ConsumerPresence"] = Field(
         default_factory=list, description="Last-known connection/channel state per consumer (server receipt time).")
+    snapshot: "SyncSnapshot | None" = Field(
+        default=None, description="Server time, versions and data age for a client cache (D4).")
     wellbeing: "WellbeingView | None" = Field(
         default=None, description="Operator-private wellbeing advice, rule status and break record (never shown to a "
                                   "supervisor; supervisors get only WellbeingRiskView).")
@@ -1104,6 +1110,7 @@ class Announcement(ContractModel):
     deliveries: list[DeliveryRecord] = Field(
         default_factory=list, description="Latest playback report per consumer. Played is not acknowledgement."
     )
+    expired: bool = Field(default=False, description="expires_at has passed (server clock): do not speak it as new.")
     presentations: list["PresentationView"] = Field(
         default_factory=list, description="Screen/vibration reports (separate from audio playback; never an "
                                           "acknowledgement).")
@@ -1171,7 +1178,18 @@ class ReadyResponse(ContractModel):
 
 CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss",
                       "lesson.start", "lesson.next", "lesson.pause", "lesson.resume", "lesson.defer", "quiz.start",
-                      "quiz.answer", "break.start", "break.end", "sos.respond"]
+                      "quiz.answer", "break.start", "break.end", "sos.respond", "incident.submit_draft"]
+
+
+class OriginalBinding(ContractModel):
+    """The association a command was captured under (offline). Checked against trusted server records; it grants
+    no authority by itself and is never replaced by the current session's association."""
+
+    session_id: StableId
+    operator_id: StableId
+    machine_id: StableId
+    site_id: StableId | None = None
+    shift_id: StableId | None = None
 
 
 class CommandPayload(ContractModel):
@@ -1208,16 +1226,20 @@ class SessionCommand(ContractModel):
     schema_version: Literal["cocoon.command.v1"] = "cocoon.command.v1"
     command_id: StableId = Field(description="Unique per caller; an identical retry returns the saved result.")
     kind: CommandKind
-    captured_at: AwareDatetime | None = Field(default=None, description="Device time of the tap (informational).")
+    captured_at: AwareDatetime | None = Field(
+        default=None, description="Device time of the tap. Offline drafts interpret relative times against it; task "
+                                  "commands captured more than 120 s before receipt are refused as stale.")
     expected_version: int | None = Field(default=None, ge=1)
+    client_draft_id: StableId | None = Field(
+        default=None, description="incident.submit_draft: the device's persistent draft ID (operator-wide identity).")
+    original_binding: OriginalBinding | None = Field(
+        default=None, description="Offline commands: the association they were captured under.")
     payload: CommandPayload
 
     @model_validator(mode="after")
     def _payload_for_kind(self) -> "SessionCommand":
         if self.kind.startswith("task.") and not self.payload.task_id:
             raise ValueError("task commands need payload.task_id")
-        if self.kind.startswith("incident.") and not self.payload.incident_id:
-            raise ValueError("incident commands need payload.incident_id")
         if (self.kind.startswith("lesson.") or self.kind == "quiz.start") and not self.payload.lesson_id:
             raise ValueError("lesson and quiz.start commands need payload.lesson_id")
         if self.kind == "quiz.answer" and not (self.payload.attempt_id and self.payload.question_id
@@ -1225,6 +1247,12 @@ class SessionCommand(ContractModel):
             raise ValueError("quiz.answer needs payload.attempt_id, question_id and choice_id")
         if self.kind == "sos.respond" and not (self.payload.checkin_id and self.payload.response):
             raise ValueError("sos.respond needs payload.checkin_id and payload.response")
+        if self.kind == "incident.submit_draft" and not (self.client_draft_id and self.captured_at
+                                                         and self.original_binding and self.payload.description):
+            raise ValueError("incident.submit_draft needs client_draft_id, captured_at, original_binding and "
+                             "payload.description")
+        if self.kind.startswith("incident.") and self.kind != "incident.submit_draft" and not self.payload.incident_id:
+            raise ValueError("incident commands need payload.incident_id")
         return self
 
 
@@ -1245,6 +1273,10 @@ class SessionCommandResult(ContractModel):
     learning: LearningAction | None = Field(default=None, description="lesson.* / quiz.* outcome.")
     break_record: "BreakRecord | None" = Field(default=None, description="break.start / break.end outcome.")
     sos: "SosEpisodeView | None" = Field(default=None, description="sos.respond outcome.")
+    record_session_id: str | None = Field(
+        default=None, description="Session holding the record (an offline draft stays with its original session).")
+    duplicate_draft: bool | None = Field(
+        default=None, description="incident.submit_draft: this client_draft_id was already stored (any session).")
     created_at: datetime
 
 
@@ -1747,6 +1779,23 @@ class PresentationView(ContractModel):
     status: Literal["presented", "failed", "unknown"]
     presented_at: datetime
     received_at: datetime
+
+
+class SyncSnapshot(ContractModel):
+    """What a client caches with this state. Sensor freshness, application contact and voice availability are
+    separate facts; none of them says the phone is offline or the operator is unwell."""
+
+    server_time: datetime
+    state_version: int
+    schedule_version: int | None = None
+    task_versions: dict[str, int] = Field(default_factory=dict)
+    machine_data_time: datetime | None = Field(default=None, description="Newest applied machine observation.")
+    machine_data_age_seconds: int | None = Field(default=None, description="server_time - machine receipt time.")
+    machine_status: Literal["unavailable", "fresh", "stale"]
+    last_contact_at: datetime | None = Field(default=None, description="Newest presence report received.")
+    voice_available: bool = Field(description="A live consumer reports voice available.")
+    screen_available: bool = Field(description="A live consumer reports a screen available.")
+    provenance: str = "synthetic demo data (simulated telemetry, fixture site and shift)"
 
 
 class SosAction(ContractModel):
