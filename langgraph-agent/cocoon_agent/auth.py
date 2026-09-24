@@ -29,7 +29,9 @@ DEFAULT_TTL = timedelta(hours=12)
 
 ROLE_SCOPES: dict[str, tuple[str, ...]] = {
     "operator": ("me:read", "sessions:own"),
-    "supervisor": ("me:read",),  # no site grants exist yet (DG-01): a supervisor can only describe itself
+    # D2: "supervise" reads/decides ONLY at sites granted through the admin CLI. Tokens issued before D2 lack the scope
+    # and stay limited to /v1/me: a legacy supervisor token never becomes a reader, even with a grant.
+    "supervisor": ("me:read", "supervise"),
 }
 
 PrincipalKind = Literal["service", "operator", "supervisor"]

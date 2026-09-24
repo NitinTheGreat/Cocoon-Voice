@@ -2,6 +2,15 @@
 
 Newest increment first. Each entry separates what was observed from what is still unverified.
 
+## D2: scoped supervisor views, durable approvals and weather re-planning
+
+- **Schema v14 (`supervision_approvals`):** `principal_site_grants`; `approval_requests` rebuilt (existing rows copied; trusted site back-filled only from trusted session bindings, else `ineligible_no_site`; payload derived from stored references and made immutable by trigger) with proposer, action type, payload, resource versions, evidence refs, dedup key, version, expiry, decision identity/actor/reason and a separate application outcome; `supervisor_notifications` (unique per kind + source); `shifts.schedule_version`; `feed_meta`.
+- **Scope:** supervisor tokens carry `supervise`; CLI `grant-site` / `revoke-site` / `sites`. Tokens issued before D2 stay `/v1/me`-only. `/v1/me.site_ids` lists grants.
+- **Routes:** overview, SSE feed, notification receipt, approvals list/detail/decision (promoted from proposed; runtime names `SupervisorSiteOverview`, `ApprovalView`, `ApprovalDecisionRequest/Result`, `ApprovalPageView`), `POST /v1/shifts/{id}/schedule-proposals` (service). Background worker + startup pass: expiry, pending application, feed pruning, sample retention.
+- **Behaviour change to an existing test:** `/v1/me` for a newly issued supervisor now lists scopes `me:read, supervise` (was `me:read`).
+- **Checks:** `tests/test_supervision.py` 10 passed: CLI-only scope (foreign-site, legacy-token, operator and service denied; grant revocation next request); sentinel narrative/vitals absent from overview, approvals and full feed replay, risk follows current consent including replay after revocation; decision once/applied once/one notification, identical retry, contradiction, stale version/hash, cross-site 404, operator 403, receipt monotonic; rejection and expiry create nothing; v12→v14 upgrade makes a legacy-session review ineligible; approved-but-unapplied request applied by startup recovery after restart (still one notification after a second restart); reorder: calm → explained no proposal, forecast change → proposal (demolition moved out of the gusty slot, score [0,1,0]→[0,0,1]), duplicate, no mutation before approval, reject, stale forecast → `failed_stale_inputs` with schedule intact, fresh approval → applied once, one `schedule_changed`, conditions gate on the new order; dependency fixture → no proposal; SSE over a real uvicorn socket: incremental delivery, Last-Event-ID replay, 422/403, close on token revocation; 410 below the pruned cursor. Full suite: 392 passed, 2 skipped; both contract checks clean.
+- **Not verified:** supervisor UI, live-forecast re-planning, any external notification (none exists by design).
+
 ## D1: purpose-specific consent and contextual wellbeing
 
 - **Owner/branch:** Ayush Raj, `ayush-backend` (base `de60d66`). **Schema v13 (`consent_wellbeing`):** `consent_state`, `consent_current`, `consent_changes`, `wellbeing_samples` (raw, bounded), `wellbeing_sample_outcomes` (no values), `wellbeing_advice`, `break_records`, `supervisor_feed` (reference-only outbox used by D2).

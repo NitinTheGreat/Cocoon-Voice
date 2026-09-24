@@ -1,0 +1,53 @@
+{
+  "schema": "cocoon.weather-fixture.v1",
+  "fixture_version": "replan-calm-1",
+  "site_id": "SITE_DEMO_NORTH",
+  "provenance": "synthetic_demo_fixture for the D2 re-planning demo (calm all day: no reorder can help). Not an observation, not a forecast and not provider output.",
+  "units": {
+    "temperature_c": "degC",
+    "relative_humidity_pct": "%",
+    "precipitation_mm": "mm over the period hour",
+    "precipitation_rate_mm_h": "mm/h",
+    "wind_speed_ms": "m/s",
+    "wind_gust_ms": "m/s",
+    "visibility_m": "m"
+  },
+  "periods": [
+    {
+      "from_local": "00:00",
+      "to_local": "11:00",
+      "temperature_c": 31.0,
+      "relative_humidity_pct": 55,
+      "precipitation_rate_mm_h": 0.0,
+      "wind_speed_ms": 3.0,
+      "wind_gust_ms": 6.0,
+      "visibility_m": 12000,
+      "weather_code": 2,
+      "summary": "clear, light wind"
+    },
+    {
+      "from_local": "11:00",
+      "to_local": "13:00",
+      "temperature_c": 31.0,
+      "relative_humidity_pct": 55,
+      "precipitation_rate_mm_h": 0.0,
+      "wind_speed_ms": 7.0,
+      "wind_gust_ms": 6.0,
+      "visibility_m": 12000,
+      "weather_code": 3,
+      "summary": "calm all day: no reorder can help"
+    },
+    {
+      "from_local": "13:00",
+      "to_local": "24:00",
+      "temperature_c": 31.0,
+      "relative_humidity_pct": 55,
+      "precipitation_rate_mm_h": 0.0,
+      "wind_speed_ms": 3.0,
+      "wind_gust_ms": 6.0,
+      "visibility_m": 12000,
+      "weather_code": 2,
+      "summary": "clear, light wind"
+    }
+  ]
+}

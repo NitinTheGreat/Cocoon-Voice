@@ -757,6 +757,102 @@ CONSENT_WELLBEING: tuple[str, ...] = (
 )
 
 
+SUPERVISION_APPROVALS: tuple[str, ...] = (
+    # Trusted supervisor scope, granted only by the local admin CLI (never inferred from speech, query or metadata).
+    """CREATE TABLE principal_site_grants (
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    granted_at TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY (principal_id, site_id)
+)""",
+    # approval_requests is rebuilt (like v10) to add schedule proposals and the cancelled state. Existing rows are
+    # copied unchanged; their trusted site comes ONLY from their session's trusted binding (else they are
+    # ineligible, never globally visible); their immutable payload is derived from the stored references.
+    """CREATE TABLE approval_requests_v14 (
+    approval_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    operator_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('incident_escalation', 'repeated_violations', 'schedule_change')),
+    incident_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'cancelled')),
+    created_at TEXT NOT NULL,
+    alert_id TEXT,
+    details_json TEXT,
+    site_id TEXT,
+    eligibility TEXT NOT NULL DEFAULT 'eligible' CHECK (eligibility IN ('eligible', 'ineligible_no_site')),
+    proposer TEXT NOT NULL DEFAULT 'legacy_request',
+    action_type TEXT NOT NULL DEFAULT 'notify_supervisor'
+        CHECK (action_type IN ('notify_supervisor', 'escalate_repeat_violation', 'apply_schedule_change')),
+    payload_json TEXT,
+    resource_versions_json TEXT,
+    evidence_refs_json TEXT,
+    dedup_key TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT,
+    decision_id TEXT,
+    decision TEXT CHECK (decision IS NULL OR decision IN ('approve', 'reject')),
+    decision_hash TEXT,
+    decided_by TEXT,
+    decided_at TEXT,
+    decision_reason TEXT,
+    application_status TEXT NOT NULL DEFAULT 'not_started'
+        CHECK (application_status IN ('not_started', 'pending', 'applied', 'failed_stale_inputs', 'failed',
+                                      'not_applicable')),
+    application_reason TEXT,
+    applied_at TEXT,
+    updated_at TEXT,
+    UNIQUE (kind, incident_id),
+    UNIQUE (kind, alert_id),
+    CHECK (incident_id IS NOT NULL OR alert_id IS NOT NULL OR kind = 'schedule_change')
+)""",
+    "INSERT INTO approval_requests_v14(approval_id, session_id, operator_id, kind, incident_id, status, created_at,"
+    " alert_id, details_json) SELECT approval_id, session_id, operator_id, kind, incident_id, status, created_at,"
+    " alert_id, details_json FROM approval_requests",
+    "DROP TABLE approval_requests",
+    "ALTER TABLE approval_requests_v14 RENAME TO approval_requests",
+    """UPDATE approval_requests SET
+    site_id = (SELECT s.site_id FROM sessions s WHERE s.session_id = approval_requests.session_id
+               AND s.binding_status = 'catalog_verified' AND s.context_status = 'trusted_binding'),
+    action_type = CASE kind WHEN 'repeated_violations' THEN 'escalate_repeat_violation' ELSE 'notify_supervisor' END,
+    payload_json = json_object('kind', kind, 'incident_id', incident_id, 'alert_id', alert_id,
+                               'details', json(COALESCE(details_json, 'null'))),
+    updated_at = created_at""",
+    "UPDATE approval_requests SET eligibility = 'ineligible_no_site' WHERE site_id IS NULL",
+    "CREATE UNIQUE INDEX one_pending_proposal ON approval_requests(dedup_key)"
+    " WHERE status = 'pending' AND dedup_key IS NOT NULL",
+    "CREATE INDEX approval_requests_by_site ON approval_requests(site_id, status, created_at)",
+    """CREATE TRIGGER approval_payload_immutable BEFORE UPDATE OF payload_json, kind, action_type, site_id,
+    operator_id, session_id ON approval_requests WHEN OLD.payload_json IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'an approval request payload and scope are immutable'); END""",
+    # In-app supervisor notifications: application records only (no email/SMS/phone/dispatch). One per source.
+    """CREATE TABLE supervisor_notifications (
+    notification_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    operator_id TEXT,
+    priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'urgent')),
+    policy_id TEXT,
+    summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'presented', 'acknowledged')),
+    created_at TEXT NOT NULL,
+    presented_at TEXT,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT,
+    UNIQUE (kind, source_id)
+)""",
+    "CREATE INDEX supervisor_notifications_by_site ON supervisor_notifications(site_id, created_at)",
+    # Weather re-planning: the schedule of a shift is versioned as a whole.
+    "ALTER TABLE shifts ADD COLUMN schedule_version INTEGER NOT NULL DEFAULT 1",
+    # How far the supervisor feed was pruned (replay below this cursor is 410 replay_expired).
+    "CREATE TABLE feed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -778,6 +874,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(11, "task_estimates", TASK_ESTIMATES),
     Migration(12, "core_lms", CORE_LMS),
     Migration(13, "consent_wellbeing", CONSENT_WELLBEING),
+    Migration(14, "supervision_approvals", SUPERVISION_APPROVALS),
 )
 
 

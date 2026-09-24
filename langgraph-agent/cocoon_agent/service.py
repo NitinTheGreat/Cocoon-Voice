@@ -99,7 +99,8 @@ def thread_config(session_id: str) -> RunnableConfig:
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
                  bindings: SessionBindings | None = None, catalog_issue: str | None = None,
-                 conditions: Conditions | None = None, planner=None, lms=None, wellbeing=None):
+                 conditions: Conditions | None = None, planner=None, lms=None, wellbeing=None,
+                 approvals=None, supervision=None, replanner=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -112,6 +113,10 @@ class CocoonService:
         self.planner = planner  # cocoon_agent.planning.Planner (conditions + saved estimates per task)
         self.lms = lms  # cocoon_agent.lms.LMS (curriculum; None = no LMS)
         self.wellbeing = wellbeing  # cocoon_agent.wellbeing.Wellbeing (consent, private samples, advice, breaks)
+        self.approvals = approvals  # cocoon_agent.approvals.Approvals (decisions and application)
+        self.supervision = supervision  # cocoon_agent.supervision.Supervision (site scope, overview, feed)
+        self.replanner = replanner  # cocoon_agent.replanning.Replanner (weather reorder proposals)
+        self._feed_subscribers = 0
         self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
@@ -303,6 +308,147 @@ class CocoonService:
                 scope=scope, command_id=command_id, kind=kind, fingerprint=fingerprint, session_id=session.session_id,
                 turn_id=None, mutate=mutate)
 
+    # ------------------------------------------------------------------ supervision and approvals (D2)
+
+    def supervisor_sites(self, principal: Principal) -> set[str]:
+        return self.supervision.sites(principal) if self.supervision is not None else set()
+
+    def require_site(self, principal: Principal, site_id: str) -> None:
+        """The named site must be one of the supervisor's CLI grants (the query parameter grants nothing)."""
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "only a supervisor with a site grant may use this route")
+        if site_id not in self.supervisor_sites(principal):
+            raise ApiError(403, "forbidden", "no grant for this site")
+
+    def overview(self, principal: Principal, site_id: str) -> s.SupervisorSiteOverview:
+        self.require_site(principal, site_id)
+        self.approvals.expire_due()
+        return self.supervision.overview(site_id)
+
+    def _approval_reader(self, principal: Principal) -> set[str]:
+        if principal.kind == "supervisor" and principal.has_scope("supervise"):
+            return self.supervisor_sites(principal)
+        if principal.kind == "operator" and principal.has_scope("sessions:own"):
+            return set()
+        raise ApiError(403, "forbidden", "approvals are read by supervisors and the operator concerned")
+
+    def list_approvals(self, principal: Principal, status: str | None, limit: int,
+                       cursor: str | None) -> s.ApprovalPageView:
+        return self.approvals.list(principal, self._approval_reader(principal), status, limit, cursor)
+
+    def get_approval(self, principal: Principal, approval_id: str) -> s.ApprovalView:
+        with domain_errors("approval"):
+            return self.approvals.get(principal, self._approval_reader(principal), approval_id)
+
+    def decide(self, principal: Principal, approval_id: str,
+               req: s.ApprovalDecisionRequest) -> s.ApprovalDecisionResult:
+        from .approvals import ApprovalExpired, DecisionConflict, PayloadMismatch
+
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "only a scoped supervisor may decide")
+        try:
+            with domain_errors("approval"):
+                result = self.approvals.decide(principal, self.supervisor_sites(principal), approval_id, req)
+        except DecisionConflict as exc:
+            raise ApiError(409, "decision_conflict", str(exc)) from exc
+        except ApprovalExpired as exc:
+            raise ApiError(409, "approval_expired", str(exc)) from exc
+        except PayloadMismatch as exc:
+            raise ApiError(409, "version_conflict", str(exc), details=[
+                {"field": "body.payload_sha256", "issue": f"current payload hash is {exc.current}"}]) from exc
+        log.info("approval decision approval=%s decision=%s recorded=%s application=%s", approval_id, req.decision,
+                 result.decision_recorded, result.approval.application.status)
+        return result
+
+    def notification_receipt(self, principal: Principal, notification_id: str,
+                             req: s.NotificationReceipt) -> s.SupervisorNotificationItem:
+        if principal.kind != "supervisor" or not principal.has_scope("supervise"):
+            raise ApiError(403, "forbidden", "notifications are reported by the supervisor client")
+        with domain_errors("notification"):
+            return self.approvals.notification_receipt(self.supervisor_sites(principal), notification_id,
+                                                       req.status, principal.subject_id)
+
+    def propose_schedule(self, shift_id: str) -> s.ScheduleProposalResult:
+        if self.replanner is None:
+            raise ApiError(404, "not_found", "re-planning is not enabled")
+        if self.store.get_shift(shift_id) is None:
+            raise ApiError(404, "not_found", "shift not found")
+        result = self.replanner.propose(shift_id)
+        log.info("schedule proposal shift=%s status=%s", shift_id, result.status)
+        return result
+
+    def feed_start(self, principal: Principal, site_id: str, after: int | None, last_event_id: str | None) -> int:
+        """Validate scope and cursor before the stream opens (errors are plain JSON responses)."""
+        self.require_site(principal, site_id)
+        cursor = after
+        if last_event_id is not None:
+            if not last_event_id.isdigit() or (after is not None and int(last_event_id) != after):
+                raise ApiError(422, "invalid_cursor", "Last-Event-ID must be a feed sequence equal to `after`")
+            cursor = int(last_event_id)
+        floor, newest = self.supervision.feed_bounds()
+        if cursor is None:
+            cursor = newest
+        if cursor > newest:
+            raise ApiError(422, "invalid_cursor", "cursor is beyond the newest feed event")
+        if cursor < floor:
+            raise ApiError(410, "replay_expired", "events after this cursor are no longer retained; reload the "
+                                                  "overview and continue from its feed_cursor")
+        if self._feed_subscribers >= self.settings.feed_max_subscribers:
+            raise ApiError(429, "rate_limited", "too many open supervisor streams", retryable=True)
+        self._feed_subscribers += 1
+        return cursor
+
+    def _still_allowed(self, principal: Principal, site_id: str) -> bool:
+        """Revocation and grant removal apply to an open stream at its next poll."""
+        meta = self.store.get_actor_token(principal.token_id) if principal.token_id else None
+        if meta is None or meta["revoked_at"] is not None or meta["expires_at"] <= utcnow():
+            return False
+        return site_id in self.supervisor_sites(principal)
+
+    async def feed_stream(self, principal: Principal, site_id: str, cursor: int, is_disconnected):
+        """SSE: replay after the cursor, then tail; heartbeat comments; bounded lifetime; closes on revocation."""
+        loop = asyncio.get_running_loop()
+        started = last_beat = loop.time()
+        try:
+            yield f"retry: 2000\n: cocoon supervisor feed, cursor {cursor}\n\n"
+            while True:
+                if await is_disconnected():
+                    return
+                if not self._still_allowed(principal, site_id):
+                    yield "event: stream_closed\ndata: {\"reason\": \"access_revoked\"}\n\n"
+                    return
+                floor, _ = self.supervision.feed_bounds()
+                if cursor < floor:
+                    yield "event: stream_closed\ndata: {\"reason\": \"replay_expired\"}\n\n"
+                    return
+                events, cursor = self.supervision.feed_page(site_id, cursor)
+                for e in events:
+                    yield f"id: {e['sequence']}\nevent: {e['type']}\ndata: {json.dumps(e, separators=(',', ':'))}\n\n"
+                if events:
+                    continue
+                now = loop.time()
+                if now - started >= self.settings.feed_max_stream_seconds:
+                    yield f"event: stream_closed\ndata: {{\"reason\": \"max_duration\", \"cursor\": {cursor}}}\n\n"
+                    return
+                if now - last_beat >= self.settings.feed_heartbeat_seconds:
+                    last_beat = now
+                    yield f": heartbeat {cursor}\n\n"
+                await asyncio.sleep(self.settings.feed_poll_seconds)
+        finally:
+            self._feed_subscribers -= 1
+
+    def run_due_work(self) -> dict[str, Any]:
+        """One pass of the background worker: short transactions only, no model call, no network."""
+        out: dict[str, Any] = {}
+        if self.approvals is not None:
+            out["expired"] = self.approvals.expire_due()
+            out["applied"] = self.approvals.apply_pending()
+        if self.supervision is not None:
+            out["feed_pruned"] = self.supervision.prune_feed()
+        if self.wellbeing is not None:
+            out["samples_purged"] = self.wellbeing.purge_expired()
+        return out
+
     # ------------------------------------------------------------------ consent and wellbeing (D1)
 
     def _need_wellbeing(self):
@@ -417,7 +563,8 @@ class CocoonService:
             ]
         return s.MeResponse(
             subject_id=principal.subject_id, principal_kind=principal.kind, operator_id=principal.operator_id,
-            display_name=principal.display_name, site_ids=[], allowed_associations=associations,
+            display_name=principal.display_name, site_ids=sorted(self.supervisor_sites(principal)),
+            allowed_associations=associations,
             scopes=sorted(principal.scopes), token_id=principal.token_id, token_expires_at=principal.expires_at,
         )
 

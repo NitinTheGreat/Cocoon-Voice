@@ -6,12 +6,12 @@ import re
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -20,14 +20,17 @@ from .. import __version__
 from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
+from ..approvals import Approvals
 from ..conditions import Conditions
 from ..estimation import load_estimator
 from ..lms import load_lms
 from ..planning import Planner
+from ..replanning import Replanner
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
 from ..store import Store
+from ..supervision import Supervision
 from ..weather import OpenMeteoWeather, WeatherService, load_conditions_policy
 from ..wellbeing import Wellbeing, load_consent_notices, load_wellbeing_policy
 from . import schemas as s
@@ -111,7 +114,9 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         lms.seed(store)  # lesson rows and pinned lesson versions (idempotent; never overwrites authored content)
         wellbeing = Wellbeing(store, load_wellbeing_policy(settings.wellbeing_policy_path),
                               load_consent_notices(settings.consent_notices_path), weather=weather)
-        wellbeing.purge_expired()  # bounded raw-sample retention also holds across restarts
+        replanner = Replanner(store, conditions, planner)
+        approvals = Approvals(store, replanner)
+        supervision = Supervision(store, wellbeing, feed_retention=timedelta(hours=settings.feed_retention_hours))
         refresher = None
         if weather.live is not None:  # bounded background refresh; lookups never wait for it
             refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
@@ -120,9 +125,25 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
             graph = build_graph(store, brain, conditions=conditions, planner=planner,
                                 lms=lms, wellbeing=wellbeing).compile(checkpointer=saver)
-            app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
-                                              catalog_issue=catalog_issue, conditions=conditions, planner=planner,
-                                              lms=lms, wellbeing=wellbeing)
+            service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
+                                    catalog_issue=catalog_issue, conditions=conditions, planner=planner, lms=lms,
+                                    wellbeing=wellbeing, approvals=approvals, supervision=supervision,
+                                    replanner=replanner)
+            app.state.service = service
+            # Startup recovery before serving: expired requests, approved-but-unapplied changes, retention.
+            recovered = service.run_due_work()
+            if recovered.get("applied") or recovered.get("expired"):
+                log.info("startup recovery: %s", recovered)
+
+            async def worker() -> None:
+                while True:
+                    await asyncio.sleep(settings.worker_interval_seconds)
+                    try:
+                        service.run_due_work()
+                    except Exception:  # keep the loop alive; the next pass retries
+                        log.exception("background worker pass failed")
+
+            worker_task = asyncio.create_task(worker())
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",
@@ -130,6 +151,7 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
             try:
                 yield
             finally:
+                worker_task.cancel()
                 if refresher is not None:
                     refresher.cancel()
                 if hasattr(brain, "aclose"):
@@ -159,7 +181,8 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request), exc.details)
+        return _error_response(exc.status, exc.code, exc.message, exc.retryable, rid(request), exc.details,
+                               headers={"Retry-After": "5"} if exc.status == 429 else None)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
@@ -396,6 +419,77 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
                             response: Response) -> s.WellbeingView:
         response.headers["Cache-Control"] = "no-store"
         return service.wellbeing_view(session)
+
+    # ------------------------------------------------------------------ supervisor views, feed and approvals (D2)
+
+    SiteQuery = Annotated[str, Query(min_length=1, max_length=128, description="A site granted to the caller")]
+
+    @app.get("/v1/supervisor/overview", response_model=s.SupervisorSiteOverview, tags=["supervisor"],
+             **v1({403: {"model": s.ErrorResponse, "description": "Not a supervisor, a token without `supervise`, or "
+                                                                   "no grant for this site"}}))
+    async def supervisor_overview(site_id: SiteQuery, principal: Caller, service: Service,
+                                  response: Response) -> s.SupervisorSiteOverview:
+        response.headers["Cache-Control"] = "no-store"
+        return service.overview(principal, site_id)
+
+    @app.get("/v1/supervisor/events/stream", tags=["supervisor"], response_class=StreamingResponse,
+             responses={200: {"description": "text/event-stream of cocoon.supervisor-feed.v1 events (`id` = feed "
+                                             "sequence); `: heartbeat` comments; `stream_closed` on revocation, "
+                                             "expiry or max duration",
+                              "content": {"text/event-stream": {"schema": {"type": "string"}, "x-sse-framing": (
+                                  "UTF-8 SSE. One event = `id:` (feed sequence), `event:` (type), one `data:` line "
+                                  "with one JSON envelope (schema_version, site_id, event_id, sequence, type, "
+                                  "created_at, data), then a blank line. Comment lines are heartbeats. The data is "
+                                  "projected when sent, under the reader's current scope and the operator's current "
+                                  "consent.")}}},
+                        **ERRORS,
+                        403: {"model": s.ErrorResponse, "description": "No grant for this site"},
+                        410: {"model": s.ErrorResponse, "description": "replay_expired: reload the overview"},
+                        422: {"model": s.ErrorResponse, "description": "invalid_cursor"},
+                        429: {"model": s.ErrorResponse, "description": "rate_limited: too many open streams"}},
+             dependencies=[Depends(authenticate)])
+    async def supervisor_stream(request: Request, site_id: SiteQuery, principal: Caller, service: Service,
+                                after: Annotated[int | None, Query(ge=0, description="Exclusive feed cursor")] = None,
+                                last_event_id: Annotated[str | None, Header(alias="Last-Event-ID",
+                                                                            max_length=160)] = None):
+        cursor = service.feed_start(principal, site_id, after, last_event_id)
+        return StreamingResponse(service.feed_stream(principal, site_id, cursor, request.is_disconnected),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @app.post("/v1/supervisor/notifications/{notification_id}/receipt", response_model=s.SupervisorNotificationItem,
+              tags=["supervisor"], **v1({409: {"model": s.ErrorResponse,
+                                               "description": "invalid_transition: status never goes backwards"}}))
+    async def notification_receipt(notification_id: str, body: s.NotificationReceipt, principal: Caller,
+                                   service: Service) -> s.SupervisorNotificationItem:
+        return service.notification_receipt(principal, notification_id, body)
+
+    @app.get("/v1/approvals", response_model=s.ApprovalPageView, tags=["approvals"], **v1())
+    async def list_approvals(
+        principal: Caller, service: Service,
+        status: Annotated[str | None, Query(pattern="^(pending|approved|rejected|expired|cancelled)$")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        cursor: Annotated[str | None, Query(max_length=16, description="Opaque page cursor")] = None,
+    ) -> s.ApprovalPageView:
+        return service.list_approvals(principal, status, limit, cursor)
+
+    @app.get("/v1/approvals/{approval_id}", response_model=s.ApprovalView, tags=["approvals"], **v1())
+    async def get_approval(approval_id: str, principal: Caller, service: Service) -> s.ApprovalView:
+        return service.get_approval(principal, approval_id)
+
+    @app.post("/v1/approvals/{approval_id}/decision", response_model=s.ApprovalDecisionResult, tags=["approvals"],
+              **v1({409: {"model": s.ErrorResponse, "description": (
+                  "decision_conflict (already decided, or decision_id reused with another body), version_conflict "
+                  "(stale expected_version or payload_sha256), approval_expired, invalid_transition (ineligible)")}}))
+    async def decide(approval_id: str, body: s.ApprovalDecisionRequest, principal: Caller,
+                     service: Service) -> s.ApprovalDecisionResult:
+        return service.decide(principal, approval_id, body)
+
+    @app.post("/v1/shifts/{shift_id}/schedule-proposals", response_model=s.ScheduleProposalResult, tags=["approvals"],
+              **v1(access=ServiceCaller))
+    async def propose_schedule(shift_id: str, body: s.ScheduleProposalRequest,
+                               service: Service) -> s.ScheduleProposalResult:
+        return service.propose_schedule(shift_id)
 
     # ------------------------------------------------------------------ state
 

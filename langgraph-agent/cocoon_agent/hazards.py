@@ -33,7 +33,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .api import schemas as s
-from .store import RuleOutcome, Store, iso, parse_dt, utcnow
+from .store import ESCALATION_TTL, RuleOutcome, Store, iso, parse_dt, utcnow
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "policies" / "hazard_rules_v1.json"
 SOURCE = "demo_assumption"
@@ -492,11 +492,12 @@ def _merge(episodes: list[tuple[datetime, datetime, str]]) -> list[tuple[datetim
 def _repeat_links(session: s.Session, family: str, lesson_id: str | None, episode_ids: list[str]):
     """On a new repeat trigger: one pending supervisor review and one coaching assignment, linked to the episode."""
     def hook(c: sqlite3.Connection, alert_id: str) -> dict[str, Any]:
-        approval_id = "APR-" + uuid.uuid4().hex[:12]
-        c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, alert_id, details_json,"
-                  " created_at) VALUES (?, ?, ?, 'repeated_violations', ?, ?, ?)",
-                  (approval_id, session.session_id, session.operator_id, alert_id,
-                   json.dumps({"family": family, "episode_ids": episode_ids}), iso(utcnow())))
+        details = {"family": family, "episode_ids": episode_ids}
+        approval_id = Store.insert_approval(
+            c, session, kind="repeated_violations", action_type="escalate_repeat_violation",
+            payload={"kind": "repeated_violations", "incident_id": None, "alert_id": alert_id, "details": details},
+            proposer=f"rule:{family}", ttl=ESCALATION_TTL, alert_id=alert_id, details=details,
+            evidence_refs={"episode_ids": episode_ids})
         assignment_id = Store._episode_assignment(c, session, lesson_id, alert_id) if lesson_id else None
         if assignment_id:
             c.execute("UPDATE alerts SET training_assignment_id = ? WHERE alert_id = ?", (assignment_id, alert_id))

@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     # policies/consent_notices_v1.json.
     wellbeing_policy_path: Path | None = Field(default=None, alias="COCOON_WELLBEING_POLICY_PATH")
     consent_notices_path: Path | None = Field(default=None, alias="COCOON_CONSENT_NOTICES_PATH")
+    # Background worker (approval expiry/application, feed and sample retention, SOS deadlines): one loop per process.
+    worker_interval_seconds: float = Field(default=2.0, alias="COCOON_WORKER_INTERVAL_SECONDS", gt=0, le=60)
+    # Supervisor change feed (SSE): heartbeat, maximum connection lifetime, concurrent subscribers, poll interval,
+    # and how long feed references are kept for replay.
+    feed_heartbeat_seconds: float = Field(default=15.0, alias="COCOON_FEED_HEARTBEAT_SECONDS", gt=0, le=120)
+    feed_max_stream_seconds: float = Field(default=300.0, alias="COCOON_FEED_MAX_STREAM_SECONDS", gt=0, le=3600)
+    feed_max_subscribers: int = Field(default=8, alias="COCOON_FEED_MAX_SUBSCRIBERS", ge=1, le=64)
+    feed_poll_seconds: float = Field(default=0.5, alias="COCOON_FEED_POLL_SECONDS", gt=0, le=10)
+    feed_retention_hours: float = Field(default=24.0, alias="COCOON_FEED_RETENTION_HOURS", gt=0)
 
     dataset_root: Path = Field(default=Path("../Cocoon_Dataset_v1"), alias="DATASET_ROOT")
     dataset_manifest_sha256: str = Field(default=PINNED_DEV_MANIFEST_SHA256, alias="DATASET_MANIFEST_SHA256",

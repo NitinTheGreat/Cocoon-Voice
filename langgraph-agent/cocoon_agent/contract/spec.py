@@ -252,36 +252,36 @@ ROUTES: tuple[Route, ...] = (
                                                       "cocoon.telemetry.v2 batch.", "schema": "VitalsObservation"},)),
     Route("get", "/v1/sessions/{session_id}/wellbeing", "implemented", "D1", ("operator", "voice_service"),
           "Operator-private wellbeing view: rule status, advice with explanation, breaks, consent summary"),
-    Route("get", "/v1/supervisor/overview", "proposed", "I13", ("supervisor",),
-          "Site-scoped supervisor overview (risk-only wellbeing, no raw vitals)",
-          params=(Param("site_id", "query", {"type": "string"}, "Authorised site", required=True),
-                  Param("cursor", "query", {"type": "string"}, "Opaque page cursor")),
-          responses={200: Resp("Overview", sv.SupervisorOverview), **_errs(401, 403, 422)}),
-    Route("get", "/v1/supervisor/events/stream", "proposed", "I13", ("supervisor",),
-          "Replay then tail the role-filtered supervisor change feed",
-          params=(Param("site_id", "query", {"type": "string"}, "Authorised site", required=True),
-                  Param("after", "query", {"type": "integer", "minimum": 0}, "Exclusive feed cursor"),
-                  LAST_EVENT_ID),
-          responses={200: Resp("Supervisor feed", sv.SupervisorFeedEvent, SSE),
-                     410: Resp("replay_expired; reload the overview", ERR), **_errs(401, 403, 422)}),
-    Route("get", "/v1/approvals", "proposed", "I13", ("supervisor", "operator"),
-          "List authorised approvals",
-          params=(Param("status", "query", {"type": "string", "enum": ["pending", "approved", "rejected", "expired",
-                                                                         "cancelled"]}, "Filter"),
-                  Param("cursor", "query", {"type": "string"}, "Opaque page cursor"),
-                  Param("limit", "query", {"type": "integer", "minimum": 1, "maximum": 100}, "Page size")),
-          responses={200: Resp("Page", ap.ApprovalPage), **_errs(401, 403, 422)}),
-    Route("get", "/v1/approvals/{approval_id}", "proposed", "I13", ("supervisor", "operator"),
+    Route("get", "/v1/supervisor/overview", "implemented", "D2", ("supervisor",),
+          "Site-scoped supervisor overview built from explicit safe fields (risk category only, no raw vitals, no "
+          "incident text); `site_id` must be a CLI-granted site",
+          target_changes=({"stage": "D2", "change": "Runtime shape SupervisorSiteOverview of the proposed "
+                                                    "SupervisorOverview.", "schema": "SupervisorOverview"},)),
+    Route("get", "/v1/supervisor/events/stream", "implemented", "D2", ("supervisor",),
+          "Replay then tail the site's supervisor change feed (SSE, projected at send time under current scope and "
+          "consent)",
+          idempotency="Read-only. Cursor = feed sequence (`after` or Last-Event-ID); 410 replay_expired below the "
+                      "retained window; 422 invalid_cursor beyond the newest event; 429 when too many streams."),
+    Route("post", "/v1/supervisor/notifications/{notification_id}/receipt", "implemented", "D2", ("supervisor",),
+          "Report that an in-app notification was presented or acknowledged (never backwards)",
+          idempotency="Same status again is a no-op; a lower status → 409 invalid_transition"),
+    Route("get", "/v1/approvals", "implemented", "D2", ("supervisor", "operator"),
+          "List authorised approvals (supervisor: granted sites; operator: own)",
+          target_changes=({"stage": "D2", "change": "Runtime ApprovalPageView of the proposed ApprovalPage.",
+                           "schema": "ApprovalPage"},)),
+    Route("get", "/v1/approvals/{approval_id}", "implemented", "D2", ("supervisor", "operator"),
           "Proposal, decision and separate application outcome",
-          responses={200: Resp("Approval", ap.ApprovalRecord), **_errs(401, 403, 404)}),
-    Route("post", "/v1/approvals/{approval_id}/decision", "proposed", "I13", ("supervisor",),
-          "Approve or reject a proposal (scoped supervisor)",
-          idempotency="decision_id: identical retry → 200 decision_recorded:false; contradictory decision → 409 "
+          target_changes=({"stage": "D2", "change": "Runtime ApprovalView of the proposed ApprovalRecord.",
+                           "schema": "ApprovalRecord"},)),
+    Route("post", "/v1/approvals/{approval_id}/decision", "implemented", "D2", ("supervisor",),
+          "Approve or reject a proposal (scoped supervisor); application reported separately",
+          idempotency="decision_id: identical retry → 200 decision_recorded:false; any other decision → 409 "
                       "decision_conflict; stale version/hash → 409 version_conflict; expired → 409 approval_expired.",
-          request=ap.DecisionRequest,
-          responses={200: Resp("Saved decision; execution reported separately", ap.DecisionResult),
-                     409: Resp("decision_conflict / version_conflict / approval_expired", ERR),
-                     **_errs(401, 403, 404, 422)}),
+          target_changes=({"stage": "D2", "change": "Runtime ApprovalDecisionRequest/Result of the proposed "
+                                                    "DecisionRequest/DecisionResult.", "schema": "DecisionResult"},)),
+    Route("post", "/v1/shifts/{shift_id}/schedule-proposals", "implemented", "D2", ("voice_service", "simulator"),
+          "Ask the deterministic weather re-planner for a reorder proposal (pending approval; changes nothing)",
+          idempotency="Unchanged inputs return the pending proposal (status duplicate); changed inputs supersede it"),
     Route("get", "/v1/content/{asset_id}", "implemented", "C4", ("operator", "voice_service"),
           "Catalog lesson media metadata (not an arbitrary URL fetcher)",
           target_changes=({"stage": "I12A", "change": "Full ContentAsset shape (text/image kinds, not_yet_supplied "
@@ -305,6 +305,7 @@ EXTRA_MODELS: tuple[type[BaseModel], ...] = (
     ap.ApprovalRecord, cm.Command, cm.CommandResult,
     # Proposed shapes of routes implemented in D (kept for fixtures and x-target-changes references).
     idn.ConsentState, idn.ConsentChangeRequest, idn.ConsentChangeResult, tm.VitalsObservation,
+    sv.SupervisorOverview, sv.SupervisorFeedEvent, ap.ApprovalPage, ap.DecisionRequest, ap.DecisionResult,
 )
 INTERNAL_MODELS: tuple[type[BaseModel], ...] = (inn.ClassifierDecision, inn.ActionPlan)
 STANDALONE: dict[str, type[BaseModel]] = {

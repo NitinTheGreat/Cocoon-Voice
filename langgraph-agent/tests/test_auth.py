@@ -345,7 +345,7 @@ def test_me_for_each_principal(world):
                                            "shift_id": None, "session_id": world["a_sid"]}]
     sup = c.get("/v1/me", headers=world["sup"]).json()
     assert sup["principal_kind"] == "supervisor" and sup["allowed_associations"] == [] and sup["site_ids"] == []
-    assert sup["scopes"] == ["me:read"]
+    assert sup["scopes"] == ["me:read", "supervise"]  # D2: supervise works only with a CLI site grant
     for body in (svc.text, str(op), str(sup)):
         assert "cct_" not in body and world["a"]["Authorization"].split()[1] not in body
 

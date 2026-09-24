@@ -39,6 +39,11 @@ ErrorCode = Literal[
     "auth_unavailable",
     "version_conflict",
     "invalid_transition",
+    "decision_conflict",
+    "approval_expired",
+    "invalid_cursor",
+    "replay_expired",
+    "rate_limited",
 ]
 
 
@@ -377,10 +382,10 @@ class ApprovalRequest(ContractModel):
     is not a notification and not an approval."""
 
     approval_id: str
-    kind: Literal["incident_escalation", "repeated_violations"]
+    kind: Literal["incident_escalation", "repeated_violations", "schedule_change"]
     incident_id: str | None = None
     alert_id: str | None = Field(default=None, description="repeated_violations: the repeat episode behind it.")
-    status: Literal["pending", "approved", "rejected", "expired"]
+    status: Literal["pending", "approved", "rejected", "expired", "cancelled"]
     created_at: datetime
 
 
@@ -1085,7 +1090,7 @@ class Announcement(ContractModel):
     event_id: str
     sequence: int
     type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated", "coaching_prompt",
-                  "wellbeing_advice"]
+                  "wellbeing_advice", "schedule_changed"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -1124,7 +1129,8 @@ class MeResponse(ContractModel):
     principal_kind: Literal["service", "operator", "supervisor"]
     operator_id: str | None = Field(default=None, description="Catalog operator ID of an operator principal.")
     display_name: str | None = None
-    site_ids: list[str] = Field(description="Granted sites. Always empty in I02b: no site grants exist yet.")
+    site_ids: list[str] = Field(description="Supervisor: sites granted through the admin CLI (D2). Always empty for "
+                                            "operators and the service.")
     allowed_associations: list[SessionAssociation] = Field(
         description="Operator: own catalog_verified sessions. Service and supervisor: empty (the service is trusted "
                     "for all sessions it manages; supervisors have no session access in I02b).")
@@ -1404,6 +1410,198 @@ class WellbeingRiskView(ContractModel):
     unavailable_reason: Literal["consent_not_granted", "consent_revoked", "stale_data", "no_data"] | None = None
     freshness: Literal["fresh", "stale", "none"]
     as_of: datetime | None = None
+
+
+# --------------------------------------------------------------------------- supervision and approvals (D2)
+
+
+class SupervisorTaskItem(ContractModel):
+    task_id: str
+    operator_id: str
+    machine_id: str
+    shift_id: str
+    title: str
+    zone_name: str | None = None
+    status: Literal["scheduled", "in_progress", "completed"]
+    scheduled_order: int
+    scheduled_start_at: datetime
+    version: int
+
+
+class SupervisorAlertItem(ContractModel):
+    """Machine-safety episode summary: no readings, evidence, explanation or speech."""
+
+    alert_id: str
+    operator_id: str
+    machine_id: str
+    alert_type: str
+    severity: Literal["warning", "critical"]
+    level: str | None = None
+    status: Literal["active", "cleared"]
+    started_at: datetime
+    cleared_at: datetime | None = None
+
+
+class SupervisorIncidentItem(ContractModel):
+    """Structured incident status. The operator's free-text description is never included."""
+
+    incident_id: str
+    operator_id: str
+    machine_id: str
+    origin: Literal["operator_reported", "auto_draft"]
+    severity: Severity | None = None
+    site_zone_id: str | None = None
+    occurred_at: datetime | None = None
+    status: Literal["confirmed"] = "confirmed"
+
+
+class ApprovalDecisionView(ContractModel):
+    decision_id: str
+    decision: Literal["approve", "reject"]
+    decided_by: str
+    decided_at: datetime
+    reason: str | None = None
+
+
+class ApprovalApplicationView(ContractModel):
+    """Separate from the decision: an approved request may still fail to apply (never reported as applied)."""
+
+    status: Literal["not_started", "pending", "applied", "failed_stale_inputs", "failed", "not_applicable"]
+    reason: str | None = None
+    applied_at: datetime | None = None
+
+
+class ScheduleChangeItem(ContractModel):
+    task_id: str
+    title: str
+    before_order: int
+    after_order: int
+    before_start_at: datetime
+    after_start_at: datetime
+    duration_minutes: float
+    before_level: str
+    after_level: str
+    reason: str
+
+
+class ForecastReference(ContractModel):
+    provider: Literal["open_meteo", "fixture"]
+    kind: str
+    record_ids: list[str]
+    content_sha256: str = Field(description="Hash of the forecast values used (retrieval time excluded).")
+    retrieved_at: datetime | None = None
+    issued_at: datetime | None = Field(default=None, description="Unknown: the provider does not supply an issue "
+                                                                 "time.")
+
+
+class ScheduleProposalView(ContractModel):
+    shift_id: str
+    schedule_version: int
+    policy_version: str
+    estimator_config_sha256: str | None = None
+    forecast: ForecastReference
+    before_score: list[int] = Field(description="[blocks, acknowledgements, advisories] over whole task intervals.")
+    after_score: list[int]
+    changes: list[ScheduleChangeItem]
+    constraints_version: str
+
+
+class EscalationView(ContractModel):
+    incident_id: str | None = None
+    alert_id: str | None = None
+    rule_family: str | None = None
+    episode_count: int | None = None
+
+
+class ApprovalView(ContractModel):
+    """Runtime shape of the proposed ApprovalRecord. Built from explicit fields only."""
+
+    approval_id: str
+    kind: Literal["incident_escalation", "repeated_violations", "schedule_change"]
+    action_type: Literal["notify_supervisor", "escalate_repeat_violation", "apply_schedule_change"]
+    status: Literal["pending", "approved", "rejected", "expired", "cancelled"]
+    eligibility: Literal["eligible", "ineligible_no_site"]
+    site_id: str | None = None
+    operator_id: str
+    machine_id: str | None = None
+    proposer: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    version: int
+    payload_sha256: str
+    escalation: EscalationView | None = None
+    schedule: ScheduleProposalView | None = None
+    decision: ApprovalDecisionView | None = None
+    application: ApprovalApplicationView
+
+
+class ApprovalPageView(ContractModel):
+    items: list[ApprovalView]
+    next_cursor: str | None = None
+
+
+class ApprovalDecisionRequest(ContractModel):
+    """POST /v1/approvals/{approval_id}/decision (scoped supervisor)."""
+
+    decision_id: StableId
+    decision: Literal["approve", "reject"]
+    expected_version: int = Field(ge=1)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class ApprovalDecisionResult(ContractModel):
+    approval: ApprovalView
+    decision_recorded: bool = Field(description="False for an identical retry (the saved decision is returned).")
+
+
+class SupervisorNotificationItem(ContractModel):
+    """An in-app record. `created` is not delivered or read; presented/acknowledged come from the supervisor client."""
+
+    notification_id: str
+    site_id: str
+    kind: str
+    priority: Literal["normal", "urgent"]
+    policy_id: str | None = None
+    source_type: str
+    source_id: str
+    operator_id: str | None = None
+    summary: str
+    status: Literal["created", "presented", "acknowledged"]
+    created_at: datetime
+    presented_at: datetime | None = None
+    acknowledged_at: datetime | None = None
+
+
+class NotificationReceipt(ContractModel):
+    status: Literal["presented", "acknowledged"]
+
+
+class SupervisorSiteOverview(ContractModel):
+    """GET /v1/supervisor/overview. Runtime shape of the proposed SupervisorOverview: explicit safe fields only;
+    wellbeing is a risk category under the operator's current sharing consent."""
+
+    site_id: str
+    generated_at: datetime
+    feed_cursor: int = Field(description="Pass as ?after= to the supervisor event stream to continue from here.")
+    tasks: list[SupervisorTaskItem]
+    alerts: list[SupervisorAlertItem]
+    incidents: list[SupervisorIncidentItem]
+    approvals: list[ApprovalView]
+    risks: list[WellbeingRiskView]
+    notifications: list[SupervisorNotificationItem]
+
+
+class ScheduleProposalRequest(ContractModel):
+    note: str | None = Field(default=None, max_length=200, description="Why the planner was asked (logged only).")
+
+
+class ScheduleProposalResult(ContractModel):
+    status: Literal["proposed", "duplicate", "no_proposal"]
+    reason: str | None = None
+    approval: ApprovalView | None = None
+    evaluated: list[ScheduleChangeItem] = Field(default_factory=list,
+                                                description="no_proposal: the current order as evaluated.")
 
 
 AlertExplainedAction.model_rebuild()

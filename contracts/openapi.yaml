@@ -1003,6 +1003,518 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/supervisor/overview:
+    get:
+      tags:
+      - supervisor
+      summary: Supervisor Overview
+      operationId: supervisor_overview_v1_supervisor_overview_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: site_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: A site granted to the caller
+          title: Site Id
+        description: A site granted to the caller
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupervisorSiteOverview'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not a supervisor, a token without `supervise`, or no grant for this site
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/supervisor/events/stream:
+    get:
+      tags:
+      - supervisor
+      summary: Supervisor Stream
+      operationId: supervisor_stream_v1_supervisor_events_stream_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: site_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: A site granted to the caller
+          title: Site Id
+        description: A site granted to the caller
+      - name: after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: Exclusive feed cursor
+          title: After
+        description: Exclusive feed cursor
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Last-Event-Id
+      responses:
+        '200':
+          description: 'text/event-stream of cocoon.supervisor-feed.v1 events (`id` = feed sequence); `: heartbeat`
+            comments; `stream_closed` on revocation, expiry or max duration'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              x-sse-framing: UTF-8 SSE. One event = `id:` (feed sequence), `event:` (type), one `data:` line with
+                one JSON envelope (schema_version, site_id, event_id, sequence, type, created_at, data), then a
+                blank line. Comment lines are heartbeats. The data is projected when sent, under the reader's current
+                scope and the operator's current consent.
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: No grant for this site
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: invalid_cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: 'replay_expired: reload the overview'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 'rate_limited: too many open streams'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/supervisor/notifications/{notification_id}/receipt:
+    post:
+      tags:
+      - supervisor
+      summary: Notification Receipt
+      operationId: notification_receipt_v1_supervisor_notifications__notification_id__receipt_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Notification Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationReceipt'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupervisorNotificationItem'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 'invalid_transition: status never goes backwards'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/approvals:
+    get:
+      tags:
+      - approvals
+      summary: List Approvals
+      operationId: list_approvals_v1_approvals_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(pending|approved|rejected|expired|cancelled)$
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          description: Opaque page cursor
+          title: Cursor
+        description: Opaque page cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalPageView'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/approvals/{approval_id}:
+    get:
+      tags:
+      - approvals
+      summary: Get Approval
+      operationId: get_approval_v1_approvals__approval_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Approval Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalView'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/approvals/{approval_id}/decision:
+    post:
+      tags:
+      - approvals
+      summary: Decide
+      operationId: decide_v1_approvals__approval_id__decision_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Approval Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalDecisionResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: decision_conflict (already decided, or decision_id reused with another body), version_conflict
+            (stale expected_version or payload_sha256), approval_expired, invalid_transition (ineligible)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/shifts/{shift_id}/schedule-proposals:
+    post:
+      tags:
+      - approvals
+      summary: Propose Schedule
+      operationId: propose_schedule_v1_shifts__shift_id__schedule_proposals_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shift_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Shift Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleProposalRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleProposalResult'
+        '401':
+          description: 'unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than
+            one Authorization header (the cause is deliberately not distinguished)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 'forbidden: authenticated, but this role may not use the route'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown session or resource; also returned for a session an operator does not own
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error (retryable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'auth_unavailable: the token store could not be read (retryable; never treated as success)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/sessions/{session_id}/state:
     get:
       tags:
@@ -1625,6 +2137,7 @@ components:
           - alert_escalated
           - coaching_prompt
           - wellbeing_advice
+          - schedule_changed
           title: Type
         priority:
           type: string
@@ -1701,6 +2214,134 @@ components:
       - correct
       - correct_choice_id
       title: AnswerFeedback
+    ApprovalApplicationView:
+      properties:
+        status:
+          type: string
+          enum:
+          - not_started
+          - pending
+          - applied
+          - failed_stale_inputs
+          - failed
+          - not_applicable
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        applied_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Applied At
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: ApprovalApplicationView
+      description: 'Separate from the decision: an approved request may still fail to apply (never reported as applied).'
+    ApprovalDecisionRequest:
+      properties:
+        decision_id:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$
+          title: Decision Id
+          examples:
+          - lk-item_4f2c9a
+        decision:
+          type: string
+          enum:
+          - approve
+          - reject
+          title: Decision
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        payload_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Payload Sha256
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 300
+          - type: 'null'
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - decision_id
+      - decision
+      - expected_version
+      - payload_sha256
+      title: ApprovalDecisionRequest
+      description: POST /v1/approvals/{approval_id}/decision (scoped supervisor).
+    ApprovalDecisionResult:
+      properties:
+        approval:
+          $ref: '#/components/schemas/ApprovalView'
+        decision_recorded:
+          type: boolean
+          title: Decision Recorded
+          description: False for an identical retry (the saved decision is returned).
+      additionalProperties: false
+      type: object
+      required:
+      - approval
+      - decision_recorded
+      title: ApprovalDecisionResult
+    ApprovalDecisionView:
+      properties:
+        decision_id:
+          type: string
+          title: Decision Id
+        decision:
+          type: string
+          enum:
+          - approve
+          - reject
+          title: Decision
+        decided_by:
+          type: string
+          title: Decided By
+        decided_at:
+          type: string
+          format: date-time
+          title: Decided At
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - decision_id
+      - decision
+      - decided_by
+      - decided_at
+      title: ApprovalDecisionView
+    ApprovalPageView:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ApprovalView'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - items
+      title: ApprovalPageView
     ApprovalRequest:
       properties:
         approval_id:
@@ -1711,6 +2352,7 @@ components:
           enum:
           - incident_escalation
           - repeated_violations
+          - schedule_change
           title: Kind
         incident_id:
           anyOf:
@@ -1730,6 +2372,7 @@ components:
           - approved
           - rejected
           - expired
+          - cancelled
           title: Status
         created_at:
           type: string
@@ -1747,6 +2390,102 @@ components:
         creating it
 
         is not a notification and not an approval.'
+    ApprovalView:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        kind:
+          type: string
+          enum:
+          - incident_escalation
+          - repeated_violations
+          - schedule_change
+          title: Kind
+        action_type:
+          type: string
+          enum:
+          - notify_supervisor
+          - escalate_repeat_violation
+          - apply_schedule_change
+          title: Action Type
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - expired
+          - cancelled
+          title: Status
+        eligibility:
+          type: string
+          enum:
+          - eligible
+          - ineligible_no_site
+          title: Eligibility
+        site_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Machine Id
+        proposer:
+          type: string
+          title: Proposer
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        version:
+          type: integer
+          title: Version
+        payload_sha256:
+          type: string
+          title: Payload Sha256
+        escalation:
+          anyOf:
+          - $ref: '#/components/schemas/EscalationView'
+          - type: 'null'
+        schedule:
+          anyOf:
+          - $ref: '#/components/schemas/ScheduleProposalView'
+          - type: 'null'
+        decision:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalDecisionView'
+          - type: 'null'
+        application:
+          $ref: '#/components/schemas/ApprovalApplicationView'
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - kind
+      - action_type
+      - status
+      - eligibility
+      - operator_id
+      - proposer
+      - created_at
+      - version
+      - payload_sha256
+      - application
+      title: ApprovalView
+      description: Runtime shape of the proposed ApprovalRecord. Built from explicit fields only.
     AssessmentSummary:
       properties:
         kind:
@@ -2375,6 +3114,11 @@ components:
           - auth_unavailable
           - version_conflict
           - invalid_transition
+          - decision_conflict
+          - approval_expired
+          - invalid_cursor
+          - replay_expired
+          - rate_limited
           title: Code
         message:
           type: string
@@ -2441,6 +3185,31 @@ components:
       - approval
       - created
       title: EscalationRequestedAction
+    EscalationView:
+      properties:
+        incident_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Incident Id
+        alert_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alert Id
+        rule_family:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rule Family
+        episode_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Episode Count
+      additionalProperties: false
+      type: object
+      title: EscalationView
     EventsPage:
       properties:
         session_id:
@@ -2466,6 +3235,47 @@ components:
       - next_cursor
       - has_more
       title: EventsPage
+    ForecastReference:
+      properties:
+        provider:
+          type: string
+          enum:
+          - open_meteo
+          - fixture
+          title: Provider
+        kind:
+          type: string
+          title: Kind
+        record_ids:
+          items:
+            type: string
+          type: array
+          title: Record Ids
+        content_sha256:
+          type: string
+          title: Content Sha256
+          description: Hash of the forecast values used (retrieval time excluded).
+        retrieved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Retrieved At
+        issued_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Issued At
+          description: 'Unknown: the provider does not supply an issue time.'
+      additionalProperties: false
+      type: object
+      required:
+      - provider
+      - kind
+      - record_ids
+      - content_sha256
+      title: ForecastReference
     HealthResponse:
       properties:
         status:
@@ -3558,7 +4368,8 @@ components:
             type: string
           type: array
           title: Site Ids
-          description: 'Granted sites. Always empty in I02b: no site grants exist yet.'
+          description: 'Supervisor: sites granted through the admin CLI (D2). Always empty for operators and the
+            service.'
         allowed_associations:
           items:
             $ref: '#/components/schemas/SessionAssociation'
@@ -3652,6 +4463,19 @@ components:
       - type
       - task
       title: NextTaskAction
+    NotificationReceipt:
+      properties:
+        status:
+          type: string
+          enum:
+          - presented
+          - acknowledged
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: NotificationReceipt
     OperatorConsent:
       properties:
         purpose:
@@ -4158,6 +4982,144 @@ components:
         are never read
 
         as safe: they mean the rule could not decide.'
+    ScheduleChangeItem:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        title:
+          type: string
+          title: Title
+        before_order:
+          type: integer
+          title: Before Order
+        after_order:
+          type: integer
+          title: After Order
+        before_start_at:
+          type: string
+          format: date-time
+          title: Before Start At
+        after_start_at:
+          type: string
+          format: date-time
+          title: After Start At
+        duration_minutes:
+          type: number
+          title: Duration Minutes
+        before_level:
+          type: string
+          title: Before Level
+        after_level:
+          type: string
+          title: After Level
+        reason:
+          type: string
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - title
+      - before_order
+      - after_order
+      - before_start_at
+      - after_start_at
+      - duration_minutes
+      - before_level
+      - after_level
+      - reason
+      title: ScheduleChangeItem
+    ScheduleProposalRequest:
+      properties:
+        note:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Note
+          description: Why the planner was asked (logged only).
+      additionalProperties: false
+      type: object
+      title: ScheduleProposalRequest
+    ScheduleProposalResult:
+      properties:
+        status:
+          type: string
+          enum:
+          - proposed
+          - duplicate
+          - no_proposal
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        approval:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalView'
+          - type: 'null'
+        evaluated:
+          items:
+            $ref: '#/components/schemas/ScheduleChangeItem'
+          type: array
+          title: Evaluated
+          description: 'no_proposal: the current order as evaluated.'
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: ScheduleProposalResult
+    ScheduleProposalView:
+      properties:
+        shift_id:
+          type: string
+          title: Shift Id
+        schedule_version:
+          type: integer
+          title: Schedule Version
+        policy_version:
+          type: string
+          title: Policy Version
+        estimator_config_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Estimator Config Sha256
+        forecast:
+          $ref: '#/components/schemas/ForecastReference'
+        before_score:
+          items:
+            type: integer
+          type: array
+          title: Before Score
+          description: '[blocks, acknowledgements, advisories] over whole task intervals.'
+        after_score:
+          items:
+            type: integer
+          type: array
+          title: After Score
+        changes:
+          items:
+            $ref: '#/components/schemas/ScheduleChangeItem'
+          type: array
+          title: Changes
+        constraints_version:
+          type: string
+          title: Constraints Version
+      additionalProperties: false
+      type: object
+      required:
+      - shift_id
+      - schedule_version
+      - policy_version
+      - forecast
+      - before_score
+      - after_score
+      - changes
+      - constraints_version
+      title: ScheduleProposalView
     Session:
       properties:
         session_id:
@@ -4648,6 +5610,297 @@ components:
       - utc_offset
       - source
       title: ShiftInfo
+    SupervisorAlertItem:
+      properties:
+        alert_id:
+          type: string
+          title: Alert Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        alert_type:
+          type: string
+          title: Alert Type
+        severity:
+          type: string
+          enum:
+          - warning
+          - critical
+          title: Severity
+        level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Level
+        status:
+          type: string
+          enum:
+          - active
+          - cleared
+          title: Status
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        cleared_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cleared At
+      additionalProperties: false
+      type: object
+      required:
+      - alert_id
+      - operator_id
+      - machine_id
+      - alert_type
+      - severity
+      - status
+      - started_at
+      title: SupervisorAlertItem
+      description: 'Machine-safety episode summary: no readings, evidence, explanation or speech.'
+    SupervisorIncidentItem:
+      properties:
+        incident_id:
+          type: string
+          title: Incident Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        origin:
+          type: string
+          enum:
+          - operator_reported
+          - auto_draft
+          title: Origin
+        severity:
+          anyOf:
+          - type: string
+            enum:
+            - low
+            - medium
+            - high
+            - critical
+          - type: 'null'
+          title: Severity
+        site_zone_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Zone Id
+        occurred_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Occurred At
+        status:
+          type: string
+          const: confirmed
+          title: Status
+          default: confirmed
+      additionalProperties: false
+      type: object
+      required:
+      - incident_id
+      - operator_id
+      - machine_id
+      - origin
+      title: SupervisorIncidentItem
+      description: Structured incident status. The operator's free-text description is never included.
+    SupervisorNotificationItem:
+      properties:
+        notification_id:
+          type: string
+          title: Notification Id
+        site_id:
+          type: string
+          title: Site Id
+        kind:
+          type: string
+          title: Kind
+        priority:
+          type: string
+          enum:
+          - normal
+          - urgent
+          title: Priority
+        policy_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Policy Id
+        source_type:
+          type: string
+          title: Source Type
+        source_id:
+          type: string
+          title: Source Id
+        operator_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operator Id
+        summary:
+          type: string
+          title: Summary
+        status:
+          type: string
+          enum:
+          - created
+          - presented
+          - acknowledged
+          title: Status
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        presented_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Presented At
+        acknowledged_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Acknowledged At
+      additionalProperties: false
+      type: object
+      required:
+      - notification_id
+      - site_id
+      - kind
+      - priority
+      - source_type
+      - source_id
+      - summary
+      - status
+      - created_at
+      title: SupervisorNotificationItem
+      description: An in-app record. `created` is not delivered or read; presented/acknowledged come from the supervisor
+        client.
+    SupervisorSiteOverview:
+      properties:
+        site_id:
+          type: string
+          title: Site Id
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        feed_cursor:
+          type: integer
+          title: Feed Cursor
+          description: Pass as ?after= to the supervisor event stream to continue from here.
+        tasks:
+          items:
+            $ref: '#/components/schemas/SupervisorTaskItem'
+          type: array
+          title: Tasks
+        alerts:
+          items:
+            $ref: '#/components/schemas/SupervisorAlertItem'
+          type: array
+          title: Alerts
+        incidents:
+          items:
+            $ref: '#/components/schemas/SupervisorIncidentItem'
+          type: array
+          title: Incidents
+        approvals:
+          items:
+            $ref: '#/components/schemas/ApprovalView'
+          type: array
+          title: Approvals
+        risks:
+          items:
+            $ref: '#/components/schemas/WellbeingRiskView'
+          type: array
+          title: Risks
+        notifications:
+          items:
+            $ref: '#/components/schemas/SupervisorNotificationItem'
+          type: array
+          title: Notifications
+      additionalProperties: false
+      type: object
+      required:
+      - site_id
+      - generated_at
+      - feed_cursor
+      - tasks
+      - alerts
+      - incidents
+      - approvals
+      - risks
+      - notifications
+      title: SupervisorSiteOverview
+      description: 'GET /v1/supervisor/overview. Runtime shape of the proposed SupervisorOverview: explicit safe
+        fields only;
+
+        wellbeing is a risk category under the operator''s current sharing consent.'
+    SupervisorTaskItem:
+      properties:
+        task_id:
+          type: string
+          title: Task Id
+        operator_id:
+          type: string
+          title: Operator Id
+        machine_id:
+          type: string
+          title: Machine Id
+        shift_id:
+          type: string
+          title: Shift Id
+        title:
+          type: string
+          title: Title
+        zone_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zone Name
+        status:
+          type: string
+          enum:
+          - scheduled
+          - in_progress
+          - completed
+          title: Status
+        scheduled_order:
+          type: integer
+          title: Scheduled Order
+        scheduled_start_at:
+          type: string
+          format: date-time
+          title: Scheduled Start At
+        version:
+          type: integer
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - task_id
+      - operator_id
+      - machine_id
+      - shift_id
+      - title
+      - status
+      - scheduled_order
+      - scheduled_start_at
+      - version
+      title: SupervisorTaskItem
     Task:
       properties:
         task_id:
@@ -5758,6 +7011,57 @@ components:
       - factor
       - level
       title: WellbeingFactor
+    WellbeingRiskView:
+      properties:
+        operator_id:
+          type: string
+          title: Operator Id
+        site_id:
+          type: string
+          title: Site Id
+        risk_level:
+          type: string
+          enum:
+          - no_advisory
+          - advisory
+          - high
+          - unavailable
+          title: Risk Level
+        unavailable_reason:
+          anyOf:
+          - type: string
+            enum:
+            - consent_not_granted
+            - consent_revoked
+            - stale_data
+            - no_data
+          - type: 'null'
+          title: Unavailable Reason
+        freshness:
+          type: string
+          enum:
+          - fresh
+          - stale
+          - none
+          title: Freshness
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+      additionalProperties: false
+      type: object
+      required:
+      - operator_id
+      - site_id
+      - risk_level
+      - freshness
+      title: WellbeingRiskView
+      description: 'The ONLY wellbeing shape a supervisor may receive: derived category, availability and freshness.
+        No vitals,
+
+        evidence, explanation or speech.'
     WellbeingRuleStatus:
       properties:
         rule_id:

@@ -54,6 +54,10 @@ SEED_LESSONS = [
 ]
 
 
+def canonical_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -151,6 +155,8 @@ class RuleOutcome:
 
 
 LEVEL_RANK = {"warning": 1, "danger": 2, "advisory": 1, "acknowledge": 2, "block": 3}
+# A supervisor-review request expires if nobody decides it in time (then it can no longer be approved or applied).
+ESCALATION_TTL = timedelta(hours=24)
 
 
 @dataclass
@@ -812,10 +818,11 @@ class Store:
             row = c.execute("SELECT * FROM approval_requests WHERE kind = 'incident_escalation' AND incident_id = ?",
                             (incident_id,)).fetchone()
             if row is None:
-                approval_id = "APR-" + uuid.uuid4().hex[:12]
-                c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id,"
-                          " created_at) VALUES (?, ?, ?, 'incident_escalation', ?, ?)",
-                          (approval_id, session.session_id, session.operator_id, incident_id, iso(utcnow())))
+                approval_id = Store.insert_approval(
+                    c, session, kind="incident_escalation", action_type="notify_supervisor",
+                    payload={"kind": "incident_escalation", "incident_id": incident_id, "alert_id": None,
+                             "details": None}, proposer=f"operator:{session.operator_id}", ttl=ESCALATION_TTL,
+                    incident_id=incident_id, evidence_refs={"incident_id": incident_id})
                 row = c.execute("SELECT * FROM approval_requests WHERE approval_id = ?", (approval_id,)).fetchone()
             approval = _approval(row)
             return {"record_type": "approval_request", "record_id": approval.approval_id,
@@ -823,6 +830,33 @@ class Store:
                     "approval": approval.model_dump(mode="json")}
 
         return mutate
+
+    @staticmethod
+    def insert_approval(c: sqlite3.Connection, session: s.Session, *, kind: str, action_type: str,
+                        payload: dict[str, Any], proposer: str, ttl: timedelta | None, incident_id: str | None = None,
+                        alert_id: str | None = None, details: dict[str, Any] | None = None,
+                        dedup_key: str | None = None, resource_versions: dict[str, Any] | None = None,
+                        evidence_refs: dict[str, Any] | None = None, now: datetime | None = None) -> str:
+        """Create one pending request with its immutable payload (canonical JSON; its SHA-256 is what a decision
+        must name). The trusted site comes only from the session's trusted binding; without one the request is
+        `ineligible_no_site`: visible to no supervisor and never approvable."""
+        now = now or utcnow()
+        approval_id = "APR-" + uuid.uuid4().hex[:12]
+        site_id = session.site_id if session.binding_status == "catalog_verified" \
+            and session.context_status == "trusted_binding" else None
+        c.execute("INSERT INTO approval_requests(approval_id, session_id, operator_id, kind, incident_id, status,"
+                  " created_at, alert_id, details_json, site_id, eligibility, proposer, action_type, payload_json,"
+                  " resource_versions_json, evidence_refs_json, dedup_key, expires_at, updated_at)"
+                  " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (approval_id, session.session_id, session.operator_id, kind, incident_id, iso(now), alert_id,
+                   json.dumps(details) if details is not None else None, site_id,
+                   "eligible" if site_id else "ineligible_no_site", proposer, action_type, canonical_json(payload),
+                   json.dumps(resource_versions) if resource_versions else None,
+                   json.dumps(evidence_refs) if evidence_refs else None, dedup_key,
+                   iso(now + ttl) if ttl else None, iso(now)))
+        if site_id:
+            Store.feed_event(c, site_id, "approval.changed", "approval", approval_id, now)
+        return approval_id
 
     # ------------------------------------------------------------------ training
 
@@ -939,6 +973,32 @@ class Store:
                 c.execute("UPDATE actor_tokens SET revoked_at = ?, revoke_reason = ? WHERE token_id = ?",
                           (revoked_at, reason, token_id))
             return _token_meta(c.execute(_TOKEN_META_SQL + " WHERE t.token_id = ?", (token_id,)).fetchone()), changed
+
+    def grant_site(self, principal_id: str, site_id: str, granted_by: str, now: str) -> bool:
+        """Trusted supervisor scope (admin CLI only). Returns False when the grant is already active."""
+        with self._tx() as c:
+            p = c.execute("SELECT kind FROM principals WHERE principal_id = ?", (principal_id,)).fetchone()
+            if p is None or p["kind"] != "supervisor":
+                raise NotFound("no supervisor principal with this principal_id")
+            if c.execute("SELECT 1 FROM sites WHERE site_id = ?", (site_id,)).fetchone() is None:
+                raise NotFound("no such site (seed the demo site first)")
+            row = c.execute("SELECT revoked_at FROM principal_site_grants WHERE principal_id = ? AND site_id = ?",
+                            (principal_id, site_id)).fetchone()
+            if row is not None and row["revoked_at"] is None:
+                return False
+            c.execute("INSERT INTO principal_site_grants(principal_id, site_id, granted_at, granted_by) VALUES"
+                      " (?, ?, ?, ?) ON CONFLICT(principal_id, site_id) DO UPDATE SET granted_at = excluded.granted_at,"
+                      " granted_by = excluded.granted_by, revoked_at = NULL", (principal_id, site_id, now, granted_by))
+            return True
+
+    def revoke_site(self, principal_id: str, site_id: str, now: str) -> bool:
+        with self._tx() as c:
+            return c.execute("UPDATE principal_site_grants SET revoked_at = ? WHERE principal_id = ? AND site_id = ?"
+                             " AND revoked_at IS NULL", (now, principal_id, site_id)).rowcount == 1
+
+    def granted_sites(self, principal_id: str) -> list[str]:
+        return [r[0] for r in self._all("SELECT site_id FROM principal_site_grants WHERE principal_id = ? AND"
+                                        " revoked_at IS NULL ORDER BY site_id", (principal_id,))]
 
     def owned_verified_sessions(self, operator_id: str) -> list[s.Session]:
         rows = self._all("SELECT * FROM sessions WHERE binding_status = 'catalog_verified' AND operator_id = ?"
@@ -1217,6 +1277,8 @@ class Store:
                     changed = True
             if changed:
                 c.execute("UPDATE sessions SET state_version = state_version + 1 WHERE session_id = ?", (session_id,))
+            if (opened or cleared or updated) and session.site_id and session.binding_status == "catalog_verified":
+                Store.feed_event(c, session.site_id, "alerts.changed", "session", session_id, now)
             version = c.execute("SELECT state_version FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
             result = {
                 "session_id": session_id,

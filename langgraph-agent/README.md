@@ -231,10 +231,18 @@ heat-index bands follow the NWS chart); nothing is a medical assessment, a fall 
 |---|---|---|
 | Consent (D1) | `wellbeing.py`, `policies/consent_notices_v1.json` | `GET/POST /v1/operators/{id}/consents`; operator's own token only; `not_set` = off |
 | Wellbeing advice (D1) | `wellbeing.py`, `policies/wellbeing_v1.json` | `POST .../wellbeing/samples` (retained only under `vitals_processing`, 24 h), `GET .../wellbeing`, `break.start`/`break.end` commands, "I'm taking a break", "why did you suggest a break?" |
+| Supervisor scope and views (D2) | `supervision.py`, `scripts/actor_tokens.py grant-site` | `GET /v1/supervisor/overview?site_id=`, SSE `GET /v1/supervisor/events/stream`, notification receipts; explicit safe fields only |
+| Approvals (D2) | `approvals.py` | `GET /v1/approvals[/{id}]`, `POST /v1/approvals/{id}/decision`; decision and application are separate; one in-app notification per approved escalation |
+| Weather re-planning (D2) | `replanning.py`, `demo/task_constraints_v1.json`, `demo/weather_fixture_replan_*.json` | `POST /v1/shifts/{id}/schedule-proposals` (service); applied only after approval, revalidated |
 
 Raw wellbeing samples are deleted 24 h after receipt (at startup and on each sample request) and at once when the
 operator revokes `vitals_processing`. Derived advice evidence stays as a private operator record. The WESAD source is
 not available (DG-15): every wellbeing profile here is assumption-based.
+
+Supervisors: issue with `python scripts/actor_tokens.py issue --role supervisor --principal-id sup-north --out ...`,
+then `python scripts/actor_tokens.py grant-site --principal-id sup-north --site-id SITE_DEMO_NORTH`. A background
+worker (every `COCOON_WORKER_INTERVAL_SECONDS`, default 2) expires requests, resumes approved-but-unapplied changes
+and prunes the feed (`COCOON_FEED_*` settings); the same pass runs once at startup.
 
 ## Actor tokens (local prototype auth, I02b)
 

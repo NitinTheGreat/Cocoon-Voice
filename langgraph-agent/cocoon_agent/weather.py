@@ -159,11 +159,23 @@ def _record_id(*parts: Any) -> str:
 
 class FixtureWeather:
     def __init__(self, path: Path = DEFAULT_FIXTURE):
-        self.doc = json.loads(path.read_text(encoding="utf-8"))
-        if self.doc.get("schema") != "cocoon.weather-fixture.v1":
-            raise ValueError(f"{path.name} is not a cocoon.weather-fixture.v1 file")
+        self.path = path
+        self._stamp = None
+        self._reload()
+
+    def _reload(self) -> None:
+        """Re-read the file when it changed on disk (a demo "forecast change" is a new fixture_version, so every
+        record ID and value hash changes with it; unchanged content keeps its IDs)."""
+        stamp = self.path.stat().st_mtime_ns
+        if stamp == self._stamp:
+            return
+        doc = json.loads(self.path.read_text(encoding="utf-8"))
+        if doc.get("schema") != "cocoon.weather-fixture.v1":
+            raise ValueError(f"{self.path.name} is not a cocoon.weather-fixture.v1 file")
+        self.doc, self._stamp = doc, stamp
 
     def lookup(self, site: Site, at: datetime, now: datetime) -> tuple[s.WeatherSnapshot | None, str, str | None]:
+        self._reload()
         if self.doc["site_id"] != site.site_id:
             return None, "unavailable", "no fixture weather for this site"
         tz = offset_timezone(site.utc_offset)
