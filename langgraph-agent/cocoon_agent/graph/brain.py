@@ -450,6 +450,11 @@ def _template(a: dict[str, Any]) -> str:
         text = f"I warned you because {alert['explanation'][0].lower()}{alert['explanation'][1:]}"
         if alert.get("recommended_action"):
             text += f" {alert['recommended_action']}"
+        for upd in alert.get("updates") or []:
+            at = str(upd["observed_at"])[11:19]
+            verb = "rose" if (upd["level"], upd.get("previous_level")) in (("danger", "warning"), ("block", "acknowledge"),
+                                                                          ("block", "advisory")) else "changed"
+            text += f" It {verb} to {upd['level']} at {at} UTC."
         if alert["status"] == "cleared":
             text += " That warning has since cleared."
         for rel in a.get("related_alerts") or []:

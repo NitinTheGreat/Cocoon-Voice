@@ -595,4 +595,6 @@ class CocoonService:
 
 def _briefing_conditions(check: s.WorkingConditionsCheck) -> str:
     sentence = conditions_sentence(check)
+    if sentence.lower().startswith("conditions"):
+        return sentence[0].upper() + sentence[1:]
     return "Conditions: " + sentence[0].lower() + sentence[1:]

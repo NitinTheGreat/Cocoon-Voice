@@ -147,11 +147,20 @@ class Demo:
         print(f"\ntranscript: {self.transcript}")
 
 
-def spawn(data_dir: Path, port: int) -> subprocess.Popen:
+def spawn(data_dir: Path, port: int, extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     env = {**os.environ, "COCOON_DATA_DIR": str(data_dir), "COCOON_LLM_MODE": "mock", "COCOON_HOST": "127.0.0.1",
-           "COCOON_PORT": str(port), "SESSION_BINDINGS_PATH": str(data_dir / "demo" / "session_bindings.json")}
-    seeded = subprocess.run([sys.executable, str(SERVICE_DIR / "scripts" / "seed_demo.py")], env=env,
-                            capture_output=True, text=True)
+           "COCOON_PORT": str(port), "SESSION_BINDINGS_PATH": str(data_dir / "demo" / "session_bindings.json"),
+           **(extra_env or {})}
+    seed_args = [sys.executable, str(SERVICE_DIR / "scripts" / "seed_demo.py")]
+    if not (SERVICE_DIR.parent / "Cocoon_Dataset_v1" / "data" / "generated" / "manifest.json").is_file() \
+            and "DATASET_ROOT" not in (extra_env or {}) and "DATASET_ROOT" not in os.environ:
+        # No dataset on this machine: a labelled synthetic stand-in catalog with the same IDs (never dataset data).
+        from cocoon_agent.demo_site import load_fixture, write_stand_in_catalog
+        root = data_dir / "stand_in_catalog"
+        env.update(DATASET_ROOT=str(root), DATASET_MANIFEST_SHA256=write_stand_in_catalog(root, load_fixture()))
+        seed_args.append("--allow-stand-in-catalog")
+        print("Cocoon_Dataset_v1 not found: using a labelled synthetic stand-in catalog (IDs only)")
+    seeded = subprocess.run(seed_args, env=env, capture_output=True, text=True)
     if seeded.returncode != 0:
         raise SystemExit(f"seeding failed: {seeded.stderr.strip()}")
     print(f"seeded isolated demo database in {data_dir}")
@@ -190,7 +199,10 @@ def main() -> int:
     else:
         sim_start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=370)
     run_file.write_text(json.dumps({"sim_start": sim_start.isoformat()}), encoding="utf-8")
-    proc = None if args.base_url else spawn(data_dir, args.port)
+    # The B flow runs on the wall clock, so it keeps weather off by default (the C demo pins a simulation clock and
+    # uses fixture weather); set COCOON_WEATHER_MODE to override.
+    proc = None if args.base_url else spawn(data_dir, args.port,
+                                            {"COCOON_WEATHER_MODE": os.environ.get("COCOON_WEATHER_MODE", "off")})
     try:
         demo = Demo(client(args.base_url or f"http://127.0.0.1:{args.port}"), args.run_id,
                     data_dir / f"demo_transcript_{args.run_id}.json")

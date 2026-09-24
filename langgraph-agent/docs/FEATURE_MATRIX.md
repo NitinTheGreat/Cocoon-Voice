@@ -15,6 +15,8 @@ No row below is `verified` at I00. The existing backend is a working v1 voice-co
 
 I02a (2026-09-24) implemented versioned migrations and catalog-bound session creation (SYS-09 and SYS-13 progress). I02b added operator/supervisor actor tokens, `GET /v1/me` and per-session ownership checks for operator tokens (SYS-09, SYS-04 and ADD-07 prerequisites). No form requirement is verified by it. I01 froze a **proposed** target contract for these requirements (see [Contract readiness after I01](#contract-readiness-after-i01)). Contract readiness is tracked separately: a schema, fixture or passing contract check never changes a row's implementation status.
 
+Batch C (2026-09-24, commits on `ayush-backend`) implemented the remaining required behaviours in mock mode on simulated data: incident severity/time capture (C1), numeric weather and pre-task checks plus proximity, fuel per cycle, sudden motion, slope and repeat rules (C2), explainable duration estimates with the five-row benchmark (C3) and the core LMS (C4). Rows below stay `in_progress`, not `verified`: every numeric limit is a demo assumption, lesson content is unreviewed, the estimator is uncalibrated and no live-model, audio or phone evidence exists.
+
 ## Five required outcomes
 
 | ID | Source | Tier | Backend component | Other owner | Data prerequisite | Stage | Status | Existing baseline (I00 evidence) | Acceptance still required |

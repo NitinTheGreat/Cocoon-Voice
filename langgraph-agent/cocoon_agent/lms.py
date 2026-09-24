@@ -669,12 +669,15 @@ def active_learning(store: Store, session: s.Session) -> dict[str, Any] | None:
 
 
 def coaching_prompts(c: sqlite3.Connection, session: s.Session, req: s.TelemetryRequest) -> list[tuple[str, str]]:
-    """Episode-linked lessons are offered only while the machine is off or idle and no warning is active (urgent
-    alerts first), once per assignment, after any deferral. Returns (assignment_id, speech) to announce."""
+    """Episode-linked lessons are offered only while the machine is off or idle and no hazard warning is active
+    (urgent alerts first; repeat-count and fuel-trend episodes do not hold it back), once per assignment, after any
+    deferral. Returns (assignment_id, speech) to announce."""
     r = req.readings
     if r.engine_on and r.operating_state not in ("off", "idle"):
         return []
-    if c.execute("SELECT 1 FROM alerts WHERE session_id = ? AND status = 'active'", (session.session_id,)).fetchone():
+    # Trend records (repeat counts, fuel per cycle) are not urgent conditions; any other active warning holds coaching.
+    if c.execute("SELECT 1 FROM alerts WHERE session_id = ? AND status = 'active' AND alert_type NOT IN"
+                 " ('repeated_violations', 'abnormal_fuel_per_cycle')", (session.session_id,)).fetchone():
         return []
     rows = c.execute(
         "SELECT ta.assignment_id, l.title, l.duration_minutes FROM training_assignments ta JOIN lessons l USING"
@@ -682,7 +685,14 @@ def coaching_prompts(c: sqlite3.Connection, session: s.Session, req: s.Telemetry
         " 'assigned' AND ta.source_episode_id IS NOT NULL AND ta.coaching_prompted_at IS NULL AND"
         " s.binding_status = ? AND (ta.deferred_until IS NULL OR ta.deferred_until <= ?) ORDER BY ta.assigned_at"
         " LIMIT 1", (session.operator_id, session.binding_status, iso(req.observed_at))).fetchall()
-    return [(r_["assignment_id"],
-             f"When you're parked safely: you have a short lesson waiting, {r_['title']}, about "
-             f"{r_['duration_minutes']} minute{'s' if r_['duration_minutes'] != 1 else ''}. Say start my lesson when "
-             "you're ready, or later to put it off.") for r_ in rows]
+    out = []
+    for r_ in rows:
+        version = c.execute("SELECT content_json FROM lesson_versions WHERE lesson_id = (SELECT lesson_id FROM"
+                            " training_assignments WHERE assignment_id = ?) ORDER BY created_at DESC LIMIT 1",
+                            (r_["assignment_id"],)).fetchone()
+        seconds = json.loads(version["content_json"])["intended_duration_seconds"] if version else \
+            r_["duration_minutes"] * 60
+        length = "about a minute" if seconds <= 90 else f"about {round(seconds / 60)} minutes"
+        out.append((r_["assignment_id"], f"When you're parked safely: you have a short lesson waiting, {r_['title']}, "
+                                          f"{length}. Say start my lesson when you're ready, or later to put it off."))
+    return out

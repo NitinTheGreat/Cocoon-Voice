@@ -196,6 +196,32 @@ Cat 320 belt/idle replay → warning polled from `/events` → "Why did you warn
 - **Training link:** a belt episode assigns lesson L1 (versioned demo text `L1.demo.1`, `demo_authored_unreviewed`)
   once while it is outstanding and links it from the episode. Reading it never marks it complete.
 
+## Batch C: required features (weather, hazards, estimates, LMS)
+
+All C behaviour runs in mock mode and on simulated machine data. Every threshold, rate and lesson is a labelled demo
+assumption or unreviewed demo content; nothing here is validated machine-safety logic or approved training.
+
+```bash
+python scripts/demo_required_features.py            # isolated seeded backend in data/demo_c; prints each step
+python scripts/demo_required_features.py            # same run ID again: every saved result replays
+python scripts/simulate_machine.py --machine EXC_DEMO_001 --scenario proximity_approach   # or proximity_lost,
+#   sudden_stop, slope, fuel_high, fuel_normal, fuel_reset, repeat_belt, normal_operation (synthetic)
+python scripts/weather_smoke.py                     # ONE live Open-Meteo request for the demo site (needs network)
+python scripts/evaluate_estimator.py [--check]      # frozen estimator on the five provided rows -> estimation/
+python scripts/make_lesson_video.py [--verify]      # rebuild / decode-check the original L1 demo clip (ffmpeg)
+```
+
+Without `Cocoon_Dataset_v1` the demo scripts write a labelled synthetic stand-in catalog (the five asset IDs and
+the demo operators only) into their own data directory; the real dataset is used whenever it is present.
+
+| Area | Where | Notes |
+|---|---|---|
+| Incident severity and time (C1) | `cocoon_agent/incident_time.py`, graph `log_incident` | Missing severity → saved draft + one question; "don't know" is recorded; time phrases interpreted against the persisted first receipt |
+| Weather and pre-task checks (C2) | `weather.py`, `conditions.py`, `policies/working_conditions_v1.json`, `demo/weather_fixture_v1.json` | `COCOON_WEATHER_MODE=fixture|live|off`; voice and tap share the start gate |
+| Hazard rules (C2) | `hazards.py`, `policies/hazard_rules_v1.json` | proximity, sudden start/stop, slope, fuel per cycle, repeats; `/state.rule_coverage` |
+| Duration estimates (C3) | `estimation.py`, `planning.py`, `estimation/` | uncalibrated configured prior; saved per input snapshot; start estimate kept |
+| LMS (C4) | `lms.py`, `content/curriculum_v1.json`, `content/media/` | lessons, quizzes, scenario, levels, coaching prompts; `GET .../lessons`, `GET /v1/content/...` |
+
 ## Actor tokens (local prototype auth, I02b)
 
 The trusted service (voice worker, simulator, scripts) keeps using `COCOON_SERVICE_TOKEN`. Operators and supervisors get their own opaque tokens, issued locally. There is no public sign-up, password or token-minting endpoint, and no token is ever embedded in Android or React builds. This is a prototype mechanism, not an identity provider. Beyond localhost, use TLS.

@@ -146,3 +146,31 @@ def _merge_bindings(path: Path, manifest_sha256: str, new: list[dict[str, str]])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return added
+
+
+STAND_IN_ORIGIN = "synthetic_stand_in_catalog"
+_STAND_IN_MACHINES = (("EXC_DEMO_001", "Cat 320", "hydraulic_excavator"), ("DOZ_DEMO_001", "Cat D6", "bulldozer"),
+                      ("LDR_DEMO_001", "Cat 950 GC", "wheel_loader"), ("TRK_DEMO_001", "Cat 793", "mining_truck"),
+                      ("BHL_DEMO_001", "Cat 420", "backhoe_loader"))
+
+
+def write_stand_in_catalog(root: Path, doc: dict[str, Any]) -> str:
+    """A labelled synthetic catalog for demos on machines WITHOUT Cocoon_Dataset_v1: the five asset IDs and the demo
+    fixture's operators only (no skill, no machine age, no history). Never used when the real dataset is present, and
+    never presented as dataset content. Returns the manifest SHA-256 to pin."""
+    import hashlib
+
+    gen = root / "data" / "generated"
+    gen.mkdir(parents=True, exist_ok=True)
+    machines = "machine_id,model,category\n" + "".join(f"{m},{model},{cat}\n" for m, model, cat in _STAND_IN_MACHINES)
+    operators = "operator_id\n" + "".join(f"{a['operator_id']}\n" for a in doc["assignments"])
+    (gen / "machines.csv").write_text(machines, encoding="utf-8")
+    (gen / "operators.csv").write_text(operators, encoding="utf-8")
+    manifest = {"schema_version": "1.0", "dataset_origin": STAND_IN_ORIGIN,
+                "provenance": "Written by the demo because Cocoon_Dataset_v1 is not present. IDs only; not dataset data.",
+                "rows": {"machines": len(_STAND_IN_MACHINES), "operators": len(doc["assignments"])},
+                "sha256": {"machines.csv": hashlib.sha256(machines.encode()).hexdigest(),
+                           "operators.csv": hashlib.sha256(operators.encode()).hexdigest()}}
+    data = (json.dumps(manifest, indent=2) + "\n").encode()
+    (gen / "manifest.json").write_bytes(data)
+    return hashlib.sha256(data).hexdigest()

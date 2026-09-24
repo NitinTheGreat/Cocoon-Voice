@@ -198,5 +198,5 @@
     ]
   },
   "retake_policy": "A failed attempt never completes the lesson. The operator may start a new attempt at any time; every attempt is pinned to the lesson version it started on and kept.",
-  "defer_policy": "Deferring an episode-linked lesson postpones its coaching prompt by 30 minutes of observation time. Coaching prompts are only announced while the machine is off or idle and no warning is active (urgent alerts first)."
+  "defer_policy": "Deferring an episode-linked lesson postpones its coaching prompt by 30 minutes of observation time. Coaching prompts are only announced while the machine is off or idle and no hazard warning is active (urgent alerts first; repeat-count and fuel-trend episodes do not hold them back)."
 }
