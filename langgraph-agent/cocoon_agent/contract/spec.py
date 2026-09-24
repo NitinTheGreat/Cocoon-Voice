@@ -221,16 +221,25 @@ ROUTES: tuple[Route, ...] = (
           "Authoritative command result after a lost response", idempotency="Read-only; never re-executes.",
           target_changes=({"stage": "I15", "change": "Queued/failed/conflict states for offline commands.",
                            "schema": "CommandResult"},)),
-    Route("post", "/v1/sessions/{session_id}/presence", "proposed", "I15", ("operator", "voice_service"),
-          "Report consumer connectivity and voice availability",
-          idempotency="report_id; older per-consumer sequence ignored", request=cm.PresenceReport,
-          responses={200: Resp("Current presence", cm.PresenceRecord), **_errs(401, 403, 404, 422)}),
-    Route("post", "/v1/sessions/{session_id}/events/{event_id}/presentation", "proposed", "I15", ("operator",),
-          "Report screen/vibration presentation (not audio, not acknowledgement)",
-          idempotency="presentation_id: identical retry returns the stored record; changed body → 409",
-          request=cm.PresentationReport,
-          responses={200: Resp("Stored presentation", cm.PresentationRecord), 409: Resp("idempotency_conflict", ERR),
-                     **_errs(401, 403, 404, 422)}),
+    Route("post", "/v1/sessions/{session_id}/presence", "implemented", "D3", ("operator", "voice_service"),
+          "Report consumer connectivity and voice/screen availability (liveness = server receipt + ttl)",
+          idempotency="report_id per session: identical retry → duplicate:true; changed body → 409; an older "
+                      "per-consumer sequence is recorded but ignored",
+          target_changes=({"stage": "D3", "change": "Runtime ConsumerPresenceReport / PresenceResult of the "
+                                                    "proposed PresenceReport / PresenceRecord.",
+                           "schema": "PresenceRecord"},)),
+    Route("post", "/v1/sessions/{session_id}/events/{event_id}/presentation", "implemented", "D3",
+          ("operator", "voice_service"),
+          "Report screen/vibration presentation of one announcement (not audio, not acknowledgement)",
+          idempotency="presentation_id per session: identical retry returns the stored record; changed body → 409",
+          target_changes=({"stage": "D3", "change": "Runtime PresentationReceipt / PresentationView of the proposed "
+                                                    "PresentationReport / PresentationRecord.",
+                           "schema": "PresentationRecord"},)),
+    Route("post", "/v1/sessions/{session_id}/impacts", "implemented", "D3", ("simulator", "operator"),
+          "Typed human-impact candidate (simulated in this prototype) opening or merging an SOS check-in",
+          idempotency="source_event_id per operator: identical retry → status duplicate; changed body → 409",
+          target_changes=({"stage": "I05A", "change": "Also a `human_impact` observation in the typed telemetry "
+                                                      "v2 batch.", "schema": "HumanImpactObservation"},)),
     Route("get", "/v1/operators/{operator_id}/consents", "implemented", "D1", ("operator", "voice_service"),
           "Current purpose-specific consents (runtime OperatorConsentState; not_set is never a grant)",
           target_changes=({"stage": "D1", "change": "Runtime shape of the proposed ConsentState (adds "
@@ -306,6 +315,8 @@ EXTRA_MODELS: tuple[type[BaseModel], ...] = (
     # Proposed shapes of routes implemented in D (kept for fixtures and x-target-changes references).
     idn.ConsentState, idn.ConsentChangeRequest, idn.ConsentChangeResult, tm.VitalsObservation,
     sv.SupervisorOverview, sv.SupervisorFeedEvent, ap.ApprovalPage, ap.DecisionRequest, ap.DecisionResult,
+    cm.PresenceReport, cm.PresenceRecord, cm.PresentationReport, cm.PresentationRecord,
+    tm.HumanImpactObservation, sos.SosEpisode,
 )
 INTERNAL_MODELS: tuple[type[BaseModel], ...] = (inn.ClassifierDecision, inn.ActionPlan)
 STANDALONE: dict[str, type[BaseModel]] = {

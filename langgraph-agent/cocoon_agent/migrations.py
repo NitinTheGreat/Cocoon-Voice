@@ -853,6 +853,110 @@ SUPERVISION_APPROVALS: tuple[str, ...] = (
 )
 
 
+SOS_PRESENCE: tuple[str, ...] = (
+    # Human-impact candidates (person-worn, simulated in this prototype). Every candidate is kept with its capture
+    # time and disposition; duplicates are refused by the key, stale ones never become a current emergency.
+    """CREATE TABLE human_impacts (
+    operator_id TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    site_id TEXT,
+    device_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    peak_accel_g REAL NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    orientation_after TEXT NOT NULL,
+    quality TEXT NOT NULL,
+    provenance TEXT NOT NULL CHECK (provenance IN ('simulated', 'device')),
+    disposition TEXT NOT NULL CHECK (disposition IN ('opened', 'merged', 'historical', 'below_threshold')),
+    episode_id TEXT,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (operator_id, source_event_id)
+)""",
+    # One check-in state machine per episode. Deadlines are server-clock values fixed when set; they are never
+    # moved by later reports. Transitions use the version column as an atomic claim.
+    """CREATE TABLE sos_episodes (
+    episode_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    site_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'offered', 'okay', 'help_requested', 'unresolved_no_response',
+                                         'unreachable')),
+    version INTEGER NOT NULL DEFAULT 1,
+    provenance TEXT NOT NULL,
+    timer_profile TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    first_impact_at TEXT NOT NULL,
+    last_impact_at TEXT NOT NULL,
+    impact_count INTEGER NOT NULL DEFAULT 1,
+    checkin_event_id TEXT NOT NULL,
+    offer_deadline_at TEXT NOT NULL,
+    offered_at TEXT,
+    offer_channel TEXT CHECK (offer_channel IS NULL OR offer_channel IN ('voice', 'screen')),
+    offer_evidence TEXT,
+    response_deadline_at TEXT,
+    response TEXT CHECK (response IS NULL OR response IN ('okay', 'help')),
+    responded_at TEXT,
+    outcome_reason TEXT,
+    notify_status TEXT NOT NULL DEFAULT 'none'
+        CHECK (notify_status IN ('none', 'notified', 'blocked_no_policy', 'blocked_no_recipient')),
+    late_response TEXT CHECK (late_response IS NULL OR late_response IN ('okay', 'help')),
+    late_response_at TEXT,
+    closed_at TEXT,
+    updated_at TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX one_open_sos_episode ON sos_episodes(operator_id) WHERE state IN ('queued', 'offered')",
+    "CREATE INDEX sos_due ON sos_episodes(state, offer_deadline_at, response_deadline_at)",
+    # Ordered audit of every transition with the server time and the rule that decided it.
+    """CREATE TABLE sos_transitions (
+    episode_id TEXT NOT NULL REFERENCES sos_episodes(episode_id),
+    seq INTEGER NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    at TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    PRIMARY KEY (episode_id, seq)
+)""",
+    # Last-known presence per consumer (liveness from server receipt time + ttl) and its idempotency log.
+    """CREATE TABLE presence (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    consumer_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    connection TEXT NOT NULL,
+    voice_available INTEGER NOT NULL,
+    screen_available INTEGER NOT NULL,
+    reported_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, consumer_id)
+)""",
+    """CREATE TABLE presence_reports (
+    session_id TEXT NOT NULL,
+    report_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, report_id)
+)""",
+    # Screen/vibration presentation reports, independent from audio `deliveries`.
+    """CREATE TABLE presentations (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    presentation_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES announcements(event_id),
+    consumer_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('screen', 'vibration')),
+    status TEXT NOT NULL CHECK (status IN ('presented', 'failed', 'unknown')),
+    presented_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    PRIMARY KEY (session_id, presentation_id)
+)""",
+    "CREATE INDEX presentations_by_event ON presentations(event_id)",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -875,6 +979,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(12, "core_lms", CORE_LMS),
     Migration(13, "consent_wellbeing", CONSENT_WELLBEING),
     Migration(14, "supervision_approvals", SUPERVISION_APPROVALS),
+    Migration(15, "sos_presence", SOS_PRESENCE),
 )
 
 

@@ -21,6 +21,7 @@ from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
 from ..approvals import Approvals
+from ..channels import Channels
 from ..conditions import Conditions
 from ..estimation import load_estimator
 from ..lms import load_lms
@@ -29,6 +30,7 @@ from ..replanning import Replanner
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
+from ..sos import Sos, load_emergency_policy
 from ..store import Store
 from ..supervision import Supervision
 from ..weather import OpenMeteoWeather, WeatherService, load_conditions_policy
@@ -117,6 +119,9 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         replanner = Replanner(store, conditions, planner)
         approvals = Approvals(store, replanner)
         supervision = Supervision(store, wellbeing, feed_retention=timedelta(hours=settings.feed_retention_hours))
+        sos = Sos(store, load_emergency_policy(settings.emergency_policy_path), settings.sos_timer_profile)
+        supervision.sos = sos
+        channels = Channels(store, sos, clock=lambda: sos.clock())
         refresher = None
         if weather.live is not None:  # bounded background refresh; lookups never wait for it
             refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
@@ -124,11 +129,11 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
             graph = build_graph(store, brain, conditions=conditions, planner=planner,
-                                lms=lms, wellbeing=wellbeing).compile(checkpointer=saver)
+                                lms=lms, wellbeing=wellbeing, sos=sos).compile(checkpointer=saver)
             service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
                                     catalog_issue=catalog_issue, conditions=conditions, planner=planner, lms=lms,
                                     wellbeing=wellbeing, approvals=approvals, supervision=supervision,
-                                    replanner=replanner)
+                                    replanner=replanner, sos=sos, channels=channels)
             app.state.service = service
             # Startup recovery before serving: expired requests, approved-but-unapplied changes, retention.
             recovered = service.run_due_work()
@@ -419,6 +424,31 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
                             response: Response) -> s.WellbeingView:
         response.headers["Cache-Control"] = "no-store"
         return service.wellbeing_view(session)
+
+    # ------------------------------------------------------------------ SOS, presence and presentation (D3)
+
+    @app.post("/v1/sessions/{session_id}/impacts", response_model=s.ImpactResult, tags=["sos"],
+              **v1({409: {"model": s.ErrorResponse, "description": "source_event_id reused with a different candidate"},
+                    422: {"model": s.ErrorResponse, "description": "Malformed candidate or a future capture time"}},
+                   access=OwnedSession))
+    async def submit_impact(session_id: str, body: s.HumanImpactCandidate, service: Service,
+                            session: Annotated[s.Session, OwnedSession]) -> s.ImpactResult:
+        return service.impact(session, body)
+
+    @app.post("/v1/sessions/{session_id}/presence", response_model=s.PresenceResult, tags=["presence"],
+              **v1({409: {"model": s.ErrorResponse, "description": "report_id reused with a different report"}},
+                   access=OwnedSession))
+    async def report_presence(session_id: str, body: s.ConsumerPresenceReport, service: Service,
+                              session: Annotated[s.Session, OwnedSession]) -> s.PresenceResult:
+        return service.presence(session, body)
+
+    @app.post("/v1/sessions/{session_id}/events/{event_id}/presentation", response_model=s.PresentationView,
+              tags=["announcements"],
+              **v1({409: {"model": s.ErrorResponse, "description": "presentation_id reused with a different report"}},
+                   access=OwnedSession))
+    async def report_presentation(session_id: str, event_id: str, body: s.PresentationReceipt, service: Service,
+                                  session: Annotated[s.Session, OwnedSession]) -> s.PresentationView:
+        return service.presentation(session, event_id, body)
 
     # ------------------------------------------------------------------ supervisor views, feed and approvals (D2)
 

@@ -60,7 +60,8 @@ class Supervision:
                 risks=self._risks(c, site_id, now),
                 notifications=[notification_item(r) for r in c.execute(
                     "SELECT * FROM supervisor_notifications WHERE site_id = ? ORDER BY created_at DESC LIMIT ?",
-                    (site_id, LIST_LIMIT))])
+                    (site_id, LIST_LIMIT))],
+                sos=self.sos.supervisor_items(c, site_id) if self.sos is not None else [])
 
     @staticmethod
     def _tasks(c: sqlite3.Connection, site_id: str, shift_id: str | None) -> list[s.SupervisorTaskItem]:
@@ -155,14 +156,14 @@ class Supervision:
             data = {"operator_id": session["operator_id"] if session else None,
                     "machine_id": session["machine_id"] if session else None,
                     "active_alerts": [a.model_dump(mode="json") for a in self._alerts(c, site_id, ref)]}
-        elif r["type"] == "sos.changed" and self.sos_projection is not None:
-            data = self.sos_projection(c, ref, site_id)
+        elif r["type"] == "sos.changed" and self.sos is not None:
+            data = self.sos.feed_projection(c, ref, site_id)
         else:
             data = {"removed": True}
         return {"schema_version": FEED_SCHEMA, "site_id": site_id, "event_id": r["event_id"],
                 "sequence": r["sequence"], "type": r["type"], "created_at": r["created_at"], "data": data}
 
-    sos_projection: Callable[[sqlite3.Connection, str, str], dict[str, Any]] | None = None
+    sos = None  # cocoon_agent.sos.Sos, set at startup (emergency status projection)
 
     def prune_feed(self, now: datetime | None = None) -> int:
         """Delete feed rows older than the retention window; remember how far replay can still reach."""

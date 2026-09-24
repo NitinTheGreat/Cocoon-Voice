@@ -2030,16 +2030,10 @@
     "/v1/sessions/{session_id}/presence": {
       "post": {
         "tags": [
-          "target"
+          "presence"
         ],
-        "summary": "Report consumer connectivity and voice availability",
-        "operationId": "post_sessions_session_id_presence_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I15",
-        "x-callers": [
-          "operator",
-          "voice_service"
-        ],
+        "summary": "Report Presence",
+        "operationId": "report_presence_v1_sessions__session_id__presence_post",
         "security": [
           {
             "HTTPBearer": []
@@ -2052,87 +2046,125 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Session Id"
             }
           }
         ],
-        "x-idempotency": "report_id; older per-consumer sequence ignored",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PresenceReport"
+                "$ref": "#/components/schemas/ConsumerPresenceReport"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Current presence",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PresenceRecord"
+                  "$ref": "#/components/schemas/PresenceResult"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated principal lacks scope (`forbidden`, `consent_required`)",
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Unknown or out-of-scope resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (`validation_error`, `invalid_cursor`, `unknown_machine`, ...)",
+            "description": "Malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "report_id reused with a different report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "D3",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ],
+        "x-idempotency": "report_id per session: identical retry → duplicate:true; changed body → 409; an older per-consumer sequence is recorded but ignored",
+        "x-target-changes": [
+          {
+            "stage": "D3",
+            "change": "Runtime ConsumerPresenceReport / PresenceResult of the proposed PresenceReport / PresenceRecord.",
+            "schema": "#/components/schemas/PresenceRecord"
+          }
+        ]
       }
     },
     "/v1/sessions/{session_id}/events/{event_id}/presentation": {
       "post": {
         "tags": [
-          "target"
+          "announcements"
         ],
-        "summary": "Report screen/vibration presentation (not audio, not acknowledgement)",
-        "operationId": "post_sessions_session_id_events_event_id_presentation_target",
-        "x-implementation-status": "proposed",
-        "x-target-stage": "I15",
-        "x-callers": [
-          "operator"
-        ],
+        "summary": "Report Presentation",
+        "operationId": "report_presentation_v1_sessions__session_id__events__event_id__presentation_post",
         "security": [
           {
             "HTTPBearer": []
@@ -2145,7 +2177,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Session Id"
             }
           },
           {
@@ -2154,83 +2186,247 @@
             "required": true,
             "schema": {
               "type": "string",
-              "maxLength": 128
+              "title": "Event Id"
             }
           }
         ],
-        "x-idempotency": "presentation_id: identical retry returns the stored record; changed body → 409",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PresentationReport"
+                "$ref": "#/components/schemas/PresentationReceipt"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Stored presentation",
+            "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PresentationRecord"
+                  "$ref": "#/components/schemas/PresentationView"
                 }
               }
             }
           },
           "401": {
-            "description": "Missing or invalid bearer token",
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "403": {
-            "description": "Authenticated principal lacks scope (`forbidden`, `consent_required`)",
+            "description": "forbidden: authenticated, but this role may not use the route",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "404": {
-            "description": "Unknown or out-of-scope resource",
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "idempotency_conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           },
           "422": {
-            "description": "Validation error (`validation_error`, `invalid_cursor`, `unknown_machine`, ...)",
+            "description": "Malformed request",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProposedErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "presentation_id reused with a different report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
           }
-        }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "D3",
+        "x-callers": [
+          "operator",
+          "voice_service"
+        ],
+        "x-idempotency": "presentation_id per session: identical retry returns the stored record; changed body → 409",
+        "x-target-changes": [
+          {
+            "stage": "D3",
+            "change": "Runtime PresentationReceipt / PresentationView of the proposed PresentationReport / PresentationRecord.",
+            "schema": "#/components/schemas/PresentationRecord"
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/impacts": {
+      "post": {
+        "tags": [
+          "sos"
+        ],
+        "summary": "Submit Impact",
+        "operationId": "submit_impact_v1_sessions__session_id__impacts_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumanImpactCandidate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing, malformed, unknown, expired or revoked bearer token, or more than one Authorization header (the cause is deliberately not distinguished)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: authenticated, but this role may not use the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session or resource; also returned for a session an operator does not own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Malformed candidate or a future capture time",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error (retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "auth_unavailable: the token store could not be read (retryable; never treated as success)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "source_event_id reused with a different candidate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "implemented",
+        "x-target-stage": "D3",
+        "x-callers": [
+          "simulator",
+          "operator"
+        ],
+        "x-idempotency": "source_event_id per operator: identical retry → status duplicate; changed body → 409",
+        "x-target-changes": [
+          {
+            "stage": "I05A",
+            "change": "Also a `human_impact` observation in the typed telemetry v2 batch.",
+            "schema": "#/components/schemas/HumanImpactObservation"
+          }
+        ]
       }
     },
     "/v1/operators/{operator_id}/consents": {
@@ -4855,7 +5051,8 @@
               "alert_escalated",
               "coaching_prompt",
               "wellbeing_advice",
-              "schedule_changed"
+              "schedule_changed",
+              "sos_checkin"
             ],
             "title": "Type"
           },
@@ -4908,6 +5105,14 @@
             "type": "array",
             "title": "Deliveries",
             "description": "Latest playback report per consumer. Played is not acknowledgement."
+          },
+          "presentations": {
+            "items": {
+              "$ref": "#/components/schemas/PresentationView"
+            },
+            "type": "array",
+            "title": "Presentations",
+            "description": "Screen/vibration reports (separate from audio playback; never an acknowledgement)."
           }
         },
         "additionalProperties": false,
@@ -5332,6 +5537,14 @@
               "$ref": "#/components/schemas/DeliveryRecord"
             },
             "title": "Deliveries",
+            "type": "array"
+          },
+          "presentations": {
+            "description": "Screen/vibration reports (separate from audio playback; never an acknowledgement).",
+            "items": {
+              "$ref": "#/components/schemas/PresentationView"
+            },
+            "title": "Presentations",
             "type": "array"
           },
           "schema_version": {
@@ -7369,6 +7582,38 @@
             ],
             "title": "Acknowledge Conditions",
             "description": "task.start: the operator confirms starting despite findings that need acknowledgement (never overrides a block)."
+          },
+          "checkin_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+                "examples": [
+                  "lk-item_4f2c9a"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkin Id",
+            "description": "sos.respond: the exact check-in answered."
+          },
+          "response": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "okay",
+                  "help"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response",
+            "description": "sos.respond: the operator's answer."
           }
         },
         "additionalProperties": false,
@@ -8095,6 +8340,138 @@
         ],
         "title": "ConsentState",
         "type": "object"
+      },
+      "ConsumerPresence": {
+        "properties": {
+          "consumer_id": {
+            "type": "string",
+            "title": "Consumer Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence"
+          },
+          "connection": {
+            "type": "string",
+            "enum": [
+              "online",
+              "degraded",
+              "offline"
+            ],
+            "title": "Connection"
+          },
+          "voice_available": {
+            "type": "boolean",
+            "title": "Voice Available"
+          },
+          "screen_available": {
+            "type": "boolean",
+            "title": "Screen Available"
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reported At"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live",
+            "description": "Server receipt + ttl is still in the future (not proof the operator is fine)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "consumer_id",
+          "sequence",
+          "connection",
+          "voice_available",
+          "screen_available",
+          "reported_at",
+          "received_at",
+          "expires_at",
+          "live"
+        ],
+        "title": "ConsumerPresence"
+      },
+      "ConsumerPresenceReport": {
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Report Id",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "consumer_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Consumer Id",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Sequence",
+            "description": "Monotonic per consumer; an older sequence is ignored."
+          },
+          "connection": {
+            "type": "string",
+            "enum": [
+              "online",
+              "degraded",
+              "offline"
+            ],
+            "title": "Connection"
+          },
+          "voice_available": {
+            "type": "boolean",
+            "title": "Voice Available"
+          },
+          "screen_available": {
+            "type": "boolean",
+            "title": "Screen Available"
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reported At",
+            "description": "Client clock (informational; liveness uses server receipt)."
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "maximum": 120.0,
+            "minimum": 5.0,
+            "title": "Ttl Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "report_id",
+          "consumer_id",
+          "sequence",
+          "connection",
+          "voice_available",
+          "screen_available",
+          "reported_at",
+          "ttl_seconds"
+        ],
+        "title": "ConsumerPresenceReport",
+        "description": "POST /v1/sessions/{session_id}/presence (runtime shape of the proposed PresenceReport)."
       },
       "ContentAsset": {
         "additionalProperties": false,
@@ -9604,6 +9981,88 @@
         ],
         "title": "HealthResponse"
       },
+      "HumanImpactCandidate": {
+        "properties": {
+          "source_event_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Source Event Id",
+            "description": "Idempotency key per operator (the device's event ID).",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "device_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Device Id",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At",
+            "description": "Capture time at the device; never re-timed by the server."
+          },
+          "peak_accel_g": {
+            "type": "number",
+            "maximum": 50.0,
+            "minimum": 0.0,
+            "title": "Peak Accel G"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Duration Ms"
+          },
+          "orientation_after": {
+            "type": "string",
+            "enum": [
+              "upright",
+              "prone",
+              "supine",
+              "side",
+              "unknown"
+            ],
+            "title": "Orientation After",
+            "default": "unknown"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "good",
+              "degraded",
+              "poor"
+            ],
+            "title": "Quality"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "device"
+            ],
+            "title": "Provenance",
+            "description": "`simulated` for every backend demo input."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_event_id",
+          "device_id",
+          "observed_at",
+          "peak_accel_g",
+          "duration_ms",
+          "quality",
+          "provenance"
+        ],
+        "title": "HumanImpactCandidate",
+        "description": "POST /v1/sessions/{session_id}/impacts. A person-worn impact CANDIDATE (not a fall diagnosis). Machine control\nimpacts, sudden stops, motion scores and stress labels are never accepted here."
+      },
       "HumanImpactObservation": {
         "additionalProperties": false,
         "description": "A person-worn device impact. Distinct from machine control impacts and from training simulations.",
@@ -9976,6 +10435,53 @@
         ],
         "title": "IdleReasonRecordedAction",
         "description": "The operator's stated reason for idling. Recording it does not clear any warning."
+      },
+      "ImpactResult": {
+        "properties": {
+          "source_event_id": {
+            "type": "string",
+            "title": "Source Event Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "opened",
+              "merged",
+              "historical",
+              "below_threshold",
+              "duplicate"
+            ],
+            "title": "Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SosEpisodeView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_event_id",
+          "status"
+        ],
+        "title": "ImpactResult"
       },
       "Incident": {
         "properties": {
@@ -14214,6 +14720,100 @@
         "title": "PresenceReport",
         "type": "object"
       },
+      "PresenceResult": {
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "title": "Report Id"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied",
+            "description": "False for an older sequence or an identical retry."
+          },
+          "duplicate": {
+            "type": "boolean",
+            "title": "Duplicate"
+          },
+          "ignored_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "older_sequence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignored Reason"
+          },
+          "presence": {
+            "$ref": "#/components/schemas/ConsumerPresence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "report_id",
+          "applied",
+          "duplicate",
+          "presence"
+        ],
+        "title": "PresenceResult"
+      },
+      "PresentationReceipt": {
+        "properties": {
+          "presentation_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Presentation Id",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "consumer_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Consumer Id",
+            "examples": [
+              "lk-item_4f2c9a"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "screen",
+              "vibration"
+            ],
+            "title": "Channel"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "presented",
+              "failed",
+              "unknown"
+            ],
+            "title": "Status"
+          },
+          "presented_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Presented At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "presentation_id",
+          "consumer_id",
+          "channel",
+          "status",
+          "presented_at"
+        ],
+        "title": "PresentationReceipt",
+        "description": "POST /v1/sessions/{session_id}/events/{event_id}/presentation. Screen or vibration, never audio."
+      },
       "PresentationRecord": {
         "additionalProperties": false,
         "properties": {
@@ -14346,6 +14946,61 @@
         ],
         "title": "PresentationReport",
         "type": "object"
+      },
+      "PresentationView": {
+        "properties": {
+          "presentation_id": {
+            "type": "string",
+            "title": "Presentation Id"
+          },
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "consumer_id": {
+            "type": "string",
+            "title": "Consumer Id"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "screen",
+              "vibration"
+            ],
+            "title": "Channel"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "presented",
+              "failed",
+              "unknown"
+            ],
+            "title": "Status"
+          },
+          "presented_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Presented At"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "presentation_id",
+          "event_id",
+          "consumer_id",
+          "channel",
+          "status",
+          "presented_at",
+          "received_at"
+        ],
+        "title": "PresentationView"
       },
       "ProposedErrorBody": {
         "additionalProperties": false,
@@ -16239,7 +16894,8 @@
               "quiz.start",
               "quiz.answer",
               "break.start",
-              "break.end"
+              "break.end",
+              "sos.respond"
             ],
             "title": "Kind"
           },
@@ -16394,6 +17050,17 @@
               }
             ],
             "description": "break.start / break.end outcome."
+          },
+          "sos": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SosEpisodeView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "sos.respond outcome."
           },
           "created_at": {
             "type": "string",
@@ -16724,6 +17391,25 @@
             ],
             "description": "Site conditions at the session's data clock (null when the session has no site)."
           },
+          "sos": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SosEpisodeView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The operator's open check-in, else the latest episode (operator view)."
+          },
+          "presence": {
+            "items": {
+              "$ref": "#/components/schemas/ConsumerPresence"
+            },
+            "type": "array",
+            "title": "Presence",
+            "description": "Last-known connection/channel state per consumer (server receipt time)."
+          },
           "wellbeing": {
             "anyOf": [
               {
@@ -16924,6 +17610,25 @@
             "default": null,
             "description": "Site conditions at the session's data clock (null when the session has no site)."
           },
+          "sos": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SosEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "presence": {
+            "description": "Last-known connection/channel state per consumer (server receipt time).",
+            "items": {
+              "$ref": "#/components/schemas/ConsumerPresence"
+            },
+            "title": "Presence",
+            "type": "array"
+          },
           "wellbeing": {
             "anyOf": [
               {
@@ -17051,17 +17756,6 @@
             "maxItems": 50,
             "title": "Approvals",
             "type": "array"
-          },
-          "sos": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SosEpisode"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
           }
         },
         "required": [
@@ -17388,6 +18082,101 @@
         "title": "SleepSummary",
         "type": "object"
       },
+      "SosAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "sos",
+            "title": "Type"
+          },
+          "event": {
+            "type": "string",
+            "enum": [
+              "response_recorded",
+              "late_response_recorded",
+              "clarify",
+              "no_open_checkin",
+              "rejected"
+            ],
+            "title": "Event"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SosEpisodeView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "event"
+        ],
+        "title": "SosAction"
+      },
+      "SosCheckIn": {
+        "properties": {
+          "checkin_id": {
+            "type": "string",
+            "title": "Checkin Id"
+          },
+          "event_id": {
+            "type": "string",
+            "title": "Event Id",
+            "description": "The `sos_checkin` announcement to speak or show."
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt"
+          },
+          "actions": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "okay",
+                "help"
+              ]
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "checkin_id",
+          "event_id",
+          "prompt"
+        ],
+        "title": "SosCheckIn"
+      },
       "SosEpisode": {
         "additionalProperties": false,
         "properties": {
@@ -17519,6 +18308,224 @@
         ],
         "title": "SosEpisode",
         "type": "object"
+      },
+      "SosEpisodeView": {
+        "properties": {
+          "episode_id": {
+            "type": "string",
+            "title": "Episode Id"
+          },
+          "operator_id": {
+            "type": "string",
+            "title": "Operator Id"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "offered",
+              "okay",
+              "help_requested",
+              "unresolved_no_response",
+              "unreachable"
+            ],
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "device"
+            ],
+            "title": "Provenance"
+          },
+          "opened_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Opened At"
+          },
+          "first_impact_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Impact At"
+          },
+          "impact_count": {
+            "type": "integer",
+            "title": "Impact Count"
+          },
+          "checkin": {
+            "$ref": "#/components/schemas/SosCheckIn"
+          },
+          "offer_deadline_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Offer Deadline At"
+          },
+          "offered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offered At"
+          },
+          "offer_channel": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "voice",
+                  "screen"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offer Channel"
+          },
+          "response_deadline_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Deadline At"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "okay",
+                  "help"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response"
+          },
+          "responded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responded At"
+          },
+          "outcome_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "operator_okay",
+                  "help_requested",
+                  "no_response_after_offer",
+                  "no_live_channel",
+                  "offer_not_confirmed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome Reason"
+          },
+          "notify_status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "notified",
+              "blocked_no_policy",
+              "blocked_no_recipient"
+            ],
+            "title": "Notify Status",
+            "default": "none"
+          },
+          "notification_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notification Ids"
+          },
+          "late_response": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "okay",
+                  "help"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Response"
+          },
+          "late_response_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Response At"
+          },
+          "timer_profile": {
+            "type": "string",
+            "title": "Timer Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "episode_id",
+          "operator_id",
+          "state",
+          "version",
+          "provenance",
+          "opened_at",
+          "first_impact_at",
+          "impact_count",
+          "checkin",
+          "offer_deadline_at",
+          "timer_profile"
+        ],
+        "title": "SosEpisodeView"
       },
       "SosRespondCommand": {
         "additionalProperties": false,
@@ -18764,6 +19771,14 @@
             },
             "type": "array",
             "title": "Notifications"
+          },
+          "sos": {
+            "items": {
+              "$ref": "#/components/schemas/SupervisorSosItem"
+            },
+            "type": "array",
+            "title": "Sos",
+            "description": "Open and recent SOS episodes."
           }
         },
         "additionalProperties": false,
@@ -18781,6 +19796,108 @@
         ],
         "title": "SupervisorSiteOverview",
         "description": "GET /v1/supervisor/overview. Runtime shape of the proposed SupervisorOverview: explicit safe fields only;\nwellbeing is a risk category under the operator's current sharing consent."
+      },
+      "SupervisorSosItem": {
+        "properties": {
+          "episode_id": {
+            "type": "string",
+            "title": "Episode Id"
+          },
+          "operator_id": {
+            "type": "string",
+            "title": "Operator Id"
+          },
+          "machine_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Machine Id"
+          },
+          "site_zone_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Zone Id",
+            "description": "Trusted zone of the operator's active task, if any."
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "outcome_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome Reason"
+          },
+          "notify_status": {
+            "type": "string",
+            "title": "Notify Status"
+          },
+          "opened_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Opened At"
+          },
+          "responded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responded At"
+          },
+          "late_response": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Response"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "device"
+            ],
+            "title": "Provenance"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "episode_id",
+          "operator_id",
+          "state",
+          "notify_status",
+          "opened_at",
+          "provenance"
+        ],
+        "title": "SupervisorSosItem",
+        "description": "Emergency status only: no vitals, no private history, no invented location."
       },
       "SupervisorSosView": {
         "additionalProperties": false,
@@ -21442,6 +22559,9 @@
             "items": {
               "oneOf": [
                 {
+                  "$ref": "#/components/schemas/SosAction"
+                },
+                {
                   "$ref": "#/components/schemas/WellbeingAction"
                 },
                 {
@@ -21525,6 +22645,7 @@
                   "lesson_content": "#/components/schemas/LessonContentAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
+                  "sos": "#/components/schemas/SosAction",
                   "task_completed": "#/components/schemas/TaskTransitionAction",
                   "task_estimate": "#/components/schemas/TaskEstimateAction",
                   "task_rejected": "#/components/schemas/TaskRejectedAction",
@@ -21707,6 +22828,7 @@
                   "lesson_content": "#/components/schemas/LessonContentAction",
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
+                  "sos": "#/components/schemas/SosAction",
                   "task_completed": "#/components/schemas/TaskTransitionAction",
                   "task_estimate": "#/components/schemas/TaskEstimateAction",
                   "task_rejected": "#/components/schemas/TaskRejectedAction",
@@ -21718,6 +22840,9 @@
                 "propertyName": "type"
               },
               "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SosAction"
+                },
                 {
                   "$ref": "#/components/schemas/WellbeingAction"
                 },

@@ -60,7 +60,7 @@ def _history(state: CocoonState) -> list[tuple[str, str]]:
     return out
 
 
-def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=None, wellbeing=None):
+def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=None, wellbeing=None, sos=None):
     """`conditions` (cocoon_agent.conditions.Conditions) enables the working-conditions gate on task starts and the
     conditions intent; without it task starts are ungated (as before Batch C)."""
     def _session(state: CocoonState) -> s.Session:
@@ -109,7 +109,7 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
 
     def choose(state: CocoonState) -> Literal[
         "tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
-        "unsupported", "wellbeing", "compose"
+        "unsupported", "wellbeing", "sos", "compose"
     ]:
         intent = state["route"]["intent"]
         if intent == "answer_pending":
@@ -120,6 +120,8 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
             return "drafts"
         if intent == "smalltalk":
             return "compose"
+        if intent == "sos_respond":
+            return "sos"
         return intent
 
     async def tasks(state: CocoonState) -> CocoonState:
@@ -368,6 +370,10 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
         if intent == "edit_draft":
             return _edit_draft(state)
         pending = state.get("pending") or {}
+        if intent == "affirm" and sos is not None and sos.answerable(_session(state).operator_id) is not None:
+            # a bare "yes" never answers a safety check-in, nor anything else while one is waiting
+            out = s.SosAction(type="sos", event="clarify", episode=sos.answerable(_session(state).operator_id))
+            return {"actions": [out.model_dump(mode="json")]}
         if intent == "affirm" and pending.get("kind") in ("incident_severity", "incident_time"):
             draft = store.get_draft(state["session_id"], pending.get("draft_id") or "")
             if draft is not None and draft.status == "draft" and draft.missing:
@@ -655,6 +661,26 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
                                     advice=advice)
         return {"actions": [out.model_dump(mode="json")]}
 
+    async def sos_node(state: CocoonState) -> CocoonState:
+        """Answer the operator's own check-in (the open one, else a notified one without a late answer). The pending
+        question (an incident or quiz in progress) is left untouched."""
+        session = _session(state)
+        response = state["route"].get("sos_response")
+        saved = _saved(state, "sos.respond")
+        if saved is not None:
+            out = s.SosAction(type="sos", event=saved["event"], episode=saved["sos"], created=False)
+            return {"actions": [out.model_dump(mode="json")]}
+        target = sos.answerable(session.operator_id) if sos is not None and response else None
+        if target is None:
+            return {"actions": [s.SosAction(type="sos", event="no_open_checkin").model_dump(mode="json")]}
+        try:
+            result, duplicate = _command(state, "sos.respond", f"sos.respond:{target.episode_id}:{response}",
+                                         sos.respond_mutation(session, target.episode_id, response))
+        except (InvalidTransition, NotFound) as exc:
+            return {"actions": [s.SosAction(type="sos", event="rejected", reason=str(exc)).model_dump(mode="json")]}
+        out = s.SosAction(type="sos", event=result["event"], episode=result["sos"], created=not duplicate)
+        return {"actions": [out.model_dump(mode="json")]}
+
     async def cancel_pending(state: CocoonState) -> CocoonState:
         """Stop asking. A report already saved as a draft stays saved (it can be finished or dismissed later)."""
         pending = state.get("pending")
@@ -680,12 +706,13 @@ def build_graph(store: Store, brain: Brain, conditions=None, planner=None, lms=N
     g.add_node("explain_alert", explain_alert)
     g.add_node("cancel_pending", cancel_pending)
     g.add_node("wellbeing", wellbeing_node)
+    g.add_node("sos", sos_node)
     g.add_node("compose", compose)
     g.add_edge(START, "load_context")
     g.add_edge("load_context", "route")
     g.add_conditional_edges("route", choose)
     for node in ("tasks", "log_incident", "drafts", "training", "explain_alert", "record_idle_reason", "cancel_pending",
-                 "unsupported", "wellbeing"):
+                 "unsupported", "wellbeing", "sos"):
         g.add_edge(node, "compose")
     g.add_edge("compose", END)
     return g

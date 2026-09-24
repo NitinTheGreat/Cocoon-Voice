@@ -1412,10 +1412,15 @@ class Store:
         for r in rows[:limit]:
             deliveries = [_delivery(d) for d in self._all(
                 "SELECT * FROM deliveries WHERE event_id = ? ORDER BY consumer_id", (r["event_id"],))]
+            shown = [s.PresentationView(presentation_id=p["presentation_id"], event_id=p["event_id"],
+                                        consumer_id=p["consumer_id"], channel=p["channel"], status=p["status"],
+                                        presented_at=parse_dt(p["presented_at"]), received_at=parse_dt(p["received_at"]))
+                     for p in self._all("SELECT * FROM presentations WHERE event_id = ? ORDER BY received_at,"
+                                        " presentation_id", (r["event_id"],))]
             events.append(s.Announcement(
                 event_id=r["event_id"], sequence=r["sequence"], type=r["type"], priority=r["priority"],
                 speech=r["speech"], alert_id=r["alert_id"], created_at=parse_dt(r["created_at"]),
-                expires_at=parse_dt(r["expires_at"]), deliveries=deliveries,
+                expires_at=parse_dt(r["expires_at"]), deliveries=deliveries, presentations=shown,
             ))
         return events, has_more
 

@@ -914,6 +914,7 @@ class WellbeingAction(ContractModel):
 
 ActionResult = Annotated[
     Union[
+        "SosAction",
         WellbeingAction,
         NextTaskAction,
         IncidentLoggedAction,
@@ -994,6 +995,10 @@ class SessionState(ContractModel):
         default_factory=list, description="Whether each safety rule could evaluate the latest observation.")
     site_conditions: WorkingConditionsCheck | None = Field(
         default=None, description="Site conditions at the session's data clock (null when the session has no site).")
+    sos: "SosEpisodeView | None" = Field(
+        default=None, description="The operator's open check-in, else the latest episode (operator view).")
+    presence: list["ConsumerPresence"] = Field(
+        default_factory=list, description="Last-known connection/channel state per consumer (server receipt time).")
     wellbeing: "WellbeingView | None" = Field(
         default=None, description="Operator-private wellbeing advice, rule status and break record (never shown to a "
                                   "supervisor; supervisors get only WellbeingRiskView).")
@@ -1090,7 +1095,7 @@ class Announcement(ContractModel):
     event_id: str
     sequence: int
     type: Literal["alert_started", "alert_cleared", "shift_briefing", "alert_escalated", "coaching_prompt",
-                  "wellbeing_advice", "schedule_changed"]
+                  "wellbeing_advice", "schedule_changed", "sos_checkin"]
     priority: Literal["low", "normal", "high", "critical"]
     speech: str
     alert_id: str | None = None
@@ -1099,6 +1104,9 @@ class Announcement(ContractModel):
     deliveries: list[DeliveryRecord] = Field(
         default_factory=list, description="Latest playback report per consumer. Played is not acknowledgement."
     )
+    presentations: list["PresentationView"] = Field(
+        default_factory=list, description="Screen/vibration reports (separate from audio playback; never an "
+                                          "acknowledgement).")
 
 
 class EventsPage(ContractModel):
@@ -1163,7 +1171,7 @@ class ReadyResponse(ContractModel):
 
 CommandKind = Literal["task.start", "task.complete", "incident.edit", "incident.confirm", "incident.dismiss",
                       "lesson.start", "lesson.next", "lesson.pause", "lesson.resume", "lesson.defer", "quiz.start",
-                      "quiz.answer", "break.start", "break.end"]
+                      "quiz.answer", "break.start", "break.end", "sos.respond"]
 
 
 class CommandPayload(ContractModel):
@@ -1189,6 +1197,8 @@ class CommandPayload(ContractModel):
     acknowledge_conditions: bool | None = Field(
         default=None, description="task.start: the operator confirms starting despite findings that need "
                                   "acknowledgement (never overrides a block).")
+    checkin_id: StableId | None = Field(default=None, description="sos.respond: the exact check-in answered.")
+    response: Literal["okay", "help"] | None = Field(default=None, description="sos.respond: the operator's answer.")
 
 
 class SessionCommand(ContractModel):
@@ -1213,6 +1223,8 @@ class SessionCommand(ContractModel):
         if self.kind == "quiz.answer" and not (self.payload.attempt_id and self.payload.question_id
                                                and self.payload.choice_id):
             raise ValueError("quiz.answer needs payload.attempt_id, question_id and choice_id")
+        if self.kind == "sos.respond" and not (self.payload.checkin_id and self.payload.response):
+            raise ValueError("sos.respond needs payload.checkin_id and payload.response")
         return self
 
 
@@ -1232,6 +1244,7 @@ class SessionCommandResult(ContractModel):
         default=None, description="Pending supervisor-review request created with a confirmation (not a notification).")
     learning: LearningAction | None = Field(default=None, description="lesson.* / quiz.* outcome.")
     break_record: "BreakRecord | None" = Field(default=None, description="break.start / break.end outcome.")
+    sos: "SosEpisodeView | None" = Field(default=None, description="sos.respond outcome.")
     created_at: datetime
 
 
@@ -1590,6 +1603,7 @@ class SupervisorSiteOverview(ContractModel):
     approvals: list[ApprovalView]
     risks: list[WellbeingRiskView]
     notifications: list[SupervisorNotificationItem]
+    sos: list["SupervisorSosItem"] = Field(default_factory=list, description="Open and recent SOS episodes.")
 
 
 class ScheduleProposalRequest(ContractModel):
@@ -1604,7 +1618,150 @@ class ScheduleProposalResult(ContractModel):
                                                 description="no_proposal: the current order as evaluated.")
 
 
+# --------------------------------------------------------------------------- SOS, presence, presentation (D3)
+
+
+class HumanImpactCandidate(ContractModel):
+    """POST /v1/sessions/{session_id}/impacts. A person-worn impact CANDIDATE (not a fall diagnosis). Machine control
+    impacts, sudden stops, motion scores and stress labels are never accepted here."""
+
+    source_event_id: StableId = Field(description="Idempotency key per operator (the device's event ID).")
+    device_id: StableId
+    observed_at: AwareDatetime = Field(description="Capture time at the device; never re-timed by the server.")
+    peak_accel_g: float = Field(ge=0, le=50, allow_inf_nan=False)
+    duration_ms: int = Field(ge=0, le=60_000)
+    orientation_after: Literal["upright", "prone", "supine", "side", "unknown"] = "unknown"
+    quality: Literal["good", "degraded", "poor"]
+    provenance: Literal["simulated", "device"] = Field(description="`simulated` for every backend demo input.")
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
+
+
+class SosCheckIn(ContractModel):
+    checkin_id: str
+    event_id: str = Field(description="The `sos_checkin` announcement to speak or show.")
+    prompt: str
+    actions: list[Literal["okay", "help"]] = Field(default_factory=lambda: ["okay", "help"])
+
+
+class SosEpisodeView(ContractModel):
+    episode_id: str
+    operator_id: str
+    site_id: str | None = None
+    state: Literal["queued", "offered", "okay", "help_requested", "unresolved_no_response", "unreachable"]
+    version: int
+    provenance: Literal["simulated", "device"]
+    opened_at: datetime
+    first_impact_at: datetime
+    impact_count: int
+    checkin: SosCheckIn
+    offer_deadline_at: datetime
+    offered_at: datetime | None = None
+    offer_channel: Literal["voice", "screen"] | None = None
+    response_deadline_at: datetime | None = None
+    response: Literal["okay", "help"] | None = None
+    responded_at: datetime | None = None
+    outcome_reason: Literal["operator_okay", "help_requested", "no_response_after_offer", "no_live_channel",
+                            "offer_not_confirmed"] | None = None
+    notify_status: Literal["none", "notified", "blocked_no_policy", "blocked_no_recipient"] = "none"
+    notification_ids: list[str] = Field(default_factory=list)
+    late_response: Literal["okay", "help"] | None = None
+    late_response_at: datetime | None = None
+    timer_profile: str
+
+
+class ImpactResult(ContractModel):
+    source_event_id: str
+    status: Literal["opened", "merged", "historical", "below_threshold", "duplicate"]
+    reason: str | None = None
+    episode: SosEpisodeView | None = None
+
+
+class SupervisorSosItem(ContractModel):
+    """Emergency status only: no vitals, no private history, no invented location."""
+
+    episode_id: str
+    operator_id: str
+    machine_id: str | None = None
+    site_zone_id: str | None = Field(default=None, description="Trusted zone of the operator's active task, if any.")
+    state: str
+    outcome_reason: str | None = None
+    notify_status: str
+    opened_at: datetime
+    responded_at: datetime | None = None
+    late_response: str | None = None
+    provenance: Literal["simulated", "device"]
+
+
+class ConsumerPresenceReport(ContractModel):
+    """POST /v1/sessions/{session_id}/presence (runtime shape of the proposed PresenceReport)."""
+
+    report_id: StableId
+    consumer_id: StableId
+    sequence: int = Field(ge=0, description="Monotonic per consumer; an older sequence is ignored.")
+    connection: Literal["online", "degraded", "offline"]
+    voice_available: bool
+    screen_available: bool
+    reported_at: AwareDatetime = Field(description="Client clock (informational; liveness uses server receipt).")
+    ttl_seconds: int = Field(ge=5, le=120)
+
+
+class ConsumerPresence(ContractModel):
+    consumer_id: str
+    sequence: int
+    connection: Literal["online", "degraded", "offline"]
+    voice_available: bool
+    screen_available: bool
+    reported_at: datetime
+    received_at: datetime
+    expires_at: datetime
+    live: bool = Field(description="Server receipt + ttl is still in the future (not proof the operator is fine).")
+
+
+class PresenceResult(ContractModel):
+    report_id: str
+    applied: bool = Field(description="False for an older sequence or an identical retry.")
+    duplicate: bool
+    ignored_reason: Literal["older_sequence"] | None = None
+    presence: ConsumerPresence
+
+
+class PresentationReceipt(ContractModel):
+    """POST /v1/sessions/{session_id}/events/{event_id}/presentation. Screen or vibration, never audio."""
+
+    presentation_id: StableId
+    consumer_id: StableId
+    channel: Literal["screen", "vibration"]
+    status: Literal["presented", "failed", "unknown"]
+    presented_at: AwareDatetime
+
+
+class PresentationView(ContractModel):
+    presentation_id: str
+    event_id: str
+    consumer_id: str
+    channel: Literal["screen", "vibration"]
+    status: Literal["presented", "failed", "unknown"]
+    presented_at: datetime
+    received_at: datetime
+
+
+class SosAction(ContractModel):
+    type: Literal["sos"]
+    event: Literal["response_recorded", "late_response_recorded", "clarify", "no_open_checkin", "rejected"]
+    episode: SosEpisodeView | None = None
+    created: bool | None = None
+    reason: str | None = None
+
+
 AlertExplainedAction.model_rebuild()
 WellbeingAction.model_rebuild()
 SessionCommandResult.model_rebuild()
 SessionState.model_rebuild()
+TurnResult.model_rebuild()
+Announcement.model_rebuild()
+EventsPage.model_rebuild()
+SupervisorSiteOverview.model_rebuild()

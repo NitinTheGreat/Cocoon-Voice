@@ -100,7 +100,7 @@ class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
                  bindings: SessionBindings | None = None, catalog_issue: str | None = None,
                  conditions: Conditions | None = None, planner=None, lms=None, wellbeing=None,
-                 approvals=None, supervision=None, replanner=None):
+                 approvals=None, supervision=None, replanner=None, sos=None, channels=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -117,6 +117,8 @@ class CocoonService:
         self.supervision = supervision  # cocoon_agent.supervision.Supervision (site scope, overview, feed)
         self.replanner = replanner  # cocoon_agent.replanning.Replanner (weather reorder proposals)
         self._feed_subscribers = 0
+        self.sos = sos  # cocoon_agent.sos.Sos (impact check-ins, deadlines, emergency notifications)
+        self.channels = channels  # cocoon_agent.channels.Channels (presence and presentation receipts)
         self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
@@ -230,6 +232,11 @@ class CocoonService:
                                     "expected_version": req.expected_version})
         if req.kind.startswith(("lesson.", "quiz.")):
             mutate, noun = self._lms_mutation(session, req), "lesson"
+        elif req.kind == "sos.respond":
+            if self.sos is None:
+                raise ApiError(404, "not_found", "SOS check-ins are not enabled")
+            mutate = self.sos.respond_mutation(session, req.payload.checkin_id, req.payload.response)
+            noun = "check-in"
         elif req.kind.startswith("break."):
             if self.wellbeing is None:
                 raise ApiError(404, "not_found", "break records are not enabled")
@@ -447,7 +454,28 @@ class CocoonService:
             out["feed_pruned"] = self.supervision.prune_feed()
         if self.wellbeing is not None:
             out["samples_purged"] = self.wellbeing.purge_expired()
+        if self.sos is not None:
+            out["sos_deadlines"] = self.sos.run_due()
         return out
+
+    # ------------------------------------------------------------------ SOS, presence, presentation (D3)
+
+    def impact(self, session: s.Session, req: s.HumanImpactCandidate) -> s.ImpactResult:
+        if self.sos is None:
+            raise ApiError(404, "not_found", "SOS check-ins are not enabled")
+        with domain_errors("impact"):
+            result = self.sos.ingest(session, req)
+        log.info("impact candidate session=%s source=%s status=%s episode=%s", session.session_id,
+                 req.source_event_id, result.status, result.episode.episode_id if result.episode else None)
+        return result
+
+    def presence(self, session: s.Session, req: s.ConsumerPresenceReport) -> s.PresenceResult:
+        with domain_errors("presence"):
+            return self.channels.report_presence(session, req)
+
+    def presentation(self, session: s.Session, event_id: str, req: s.PresentationReceipt) -> s.PresentationView:
+        with domain_errors("presentation"):
+            return self.channels.report_presentation(session, event_id, req)
 
     # ------------------------------------------------------------------ consent and wellbeing (D1)
 
@@ -711,6 +739,9 @@ class CocoonService:
             rule_coverage=self.store.rule_coverage(session_id),
             learning=self.learner(session),
             shift_briefing=self.store.get_shift_briefing(session.shift_id) if session.shift_id else None,
+            sos=self.sos.current(session.operator_id) if self.sos is not None
+            and session.binding_status == "catalog_verified" else None,
+            presence=self.channels.presence(session_id) if self.channels is not None else [],
             wellbeing=self.wellbeing.view(session) if self.wellbeing is not None
             and session.binding_status == "catalog_verified" else None,
         )
@@ -798,6 +829,8 @@ class CocoonService:
         if not self.store.announcement_exists(session_id, event_id):
             raise ApiError(404, "not_found", "announcement not found")
         record = self.store.record_delivery(event_id, report)
+        if report.status == "played" and self.sos is not None:  # reported voice playback of a check-in = an offer
+            self.sos.offer_after_report(event_id, "voice", f"delivery:{report.consumer_id}")
         log.info("delivery session=%s event=%s consumer=%s status=%s", session_id, event_id, report.consumer_id,
                  report.status)
         return record

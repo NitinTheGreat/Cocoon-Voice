@@ -30,7 +30,7 @@ Intent = Literal[
     "next_task", "list_tasks", "start_task", "complete_task",
     "log_incident", "review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm",
     "training", "explain_alert", "record_idle_reason", "answer_pending", "cancel_pending", "unsupported", "smalltalk",
-    "conditions", "task_estimate", "wellbeing",
+    "conditions", "task_estimate", "wellbeing", "sos_respond",
 ]
 Branch = Literal["tasks", "safety_incidents", "training", "general_assistance"]
 BRANCH_OF: dict[str, str] = {
@@ -41,7 +41,7 @@ BRANCH_OF: dict[str, str] = {
     "answer_pending": "safety_incidents", "record_idle_reason": "safety_incidents",
     "training": "training",
     "affirm": "general_assistance", "cancel_pending": "general_assistance", "unsupported": "general_assistance",
-    "smalltalk": "general_assistance", "wellbeing": "general_assistance",
+    "smalltalk": "general_assistance", "wellbeing": "general_assistance", "sos_respond": "safety_incidents",
 }
 # Later capabilities the operator may ask for; the reply says they are not available yet.
 UnsupportedCapability = Literal[
@@ -88,6 +88,8 @@ class RouteDecision(BaseModel):
     quiz_choice_id: str | None = Field(
         default=None, description="training/answer: the choice_id of the pending quiz question the operator chose; "
                                   "null if unclear (never guess).")
+    sos_response: Literal["okay", "help"] | None = Field(
+        default=None, description="sos_respond: the operator says they are okay, or that they need help.")
     wellbeing_action: Literal["break_start", "break_end", "explain", "consent_status"] | None = Field(
         default=None, description="wellbeing: start or end a break, explain the wellbeing advice, or read consent.")
 
@@ -175,6 +177,8 @@ _HINTS = [("weather", re.compile(r"\b(weather|wind|gust|rain|visibility|conditio
           ("slope", re.compile(r"\b(slope|tilt|steep|incline|grade|roll)\b")),
           ("fuel", re.compile(r"\bfuel\b")),
           ("repeat", re.compile(r"\b(repeat|again and again|supervisor)\b"))]
+_SOS_OKAY = re.compile(r"\b(i'?m|i am) (ok|okay|fine|alright|all right)\b")
+_SOS_HELP = re.compile(r"\b(i need help|need help now|help me|send help|i'?m hurt|i am hurt|i'?m injured)\b")
 _BREAK_START = re.compile(r"\b(taking|take|starting|start|going on|going for|having) (a |my )?(short |quick )?break\b"
                           r"|\bon (a |my )?break now\b")
 _BREAK_END = re.compile(r"\b(back from (my |a |the )?break|break('s| is) over|end(ing)? (my |the )?break|"
@@ -296,6 +300,10 @@ class MockBrain:
         pending_kind = (ctx.pending or {}).get("kind")
         if ctx.pending and _CANCEL.search(t):
             return RouteDecision(intent="cancel_pending")
+        if _SOS_HELP.search(t):
+            return RouteDecision(intent="sos_respond", sos_response="help")
+        if _SOS_OKAY.search(t):
+            return RouteDecision(intent="sos_respond", sos_response="okay")
         if _BREAK_END.search(t):
             return RouteDecision(intent="wellbeing", wellbeing_action="break_end")
         if _BREAK_START.search(t):
@@ -403,6 +411,8 @@ def _template(a: dict[str, Any]) -> str:
     kind = a["type"]
     if kind == "wellbeing":
         return _wellbeing_speech(a)
+    if kind == "sos":
+        return _sos_speech(a)
     if kind == "next_task":
         task = a["task"]
         return f"Your next task is {task['title']}. {task['details']}" if task else "You have no pending tasks right now."
@@ -545,6 +555,27 @@ def _template(a: dict[str, Any]) -> str:
                     else "You don't have a task in progress to complete.")
         return f"I can't do that: the task is {a.get('current_status') or 'in another state'}."
     raise ValueError(f"unknown action type {kind}")
+
+
+def _sos_speech(a: dict[str, Any]) -> str:
+    event, episode = a["event"], a.get("episode") or {}
+    answer = episode.get("response") or episode.get("late_response")
+    if event == "clarify":
+        return "Please say I'm okay, or I need help."
+    if event == "no_open_checkin":
+        return ("There's no check-in open right now. If this is an emergency, use your radio or the site emergency "
+                "number.")
+    if event == "rejected":
+        return "That check-in was already answered."
+    if answer == "help":
+        if episode.get("notify_status") == "notified":
+            return ("I've sent an urgent alert to your site supervisor in the Cocoon app. Stay where you are if it's "
+                    "safe, and use your radio if you can.")
+        return ("I couldn't alert a supervisor through the app because no emergency contact is set up for this site. "
+                "Use your radio or the site emergency number now.")
+    if event == "late_response_recorded":
+        return "Thanks, I've recorded that you're okay and updated the earlier alert."
+    return "Thanks, glad you're okay. I've recorded it."
 
 
 def _wellbeing_speech(a: dict[str, Any]) -> str:
@@ -706,6 +737,7 @@ Choose exactly one intent:
 - record_idle_reason: the operator explains why they are idling or waiting (for example "I'm waiting for a truck"). Put their words in idle_reason.
 - answer_pending: a pending question exists and this utterance answers it. For pending kind incident_description put the answer in incident_description; for incident_severity fill incident_severity with the level they said, or severity_unknown if they do not know; for incident_time copy their time phrase into incident_time_expression, or set time_unknown if they do not know.
 - cancel_pending: a pending question exists and the operator wants to drop it.
+- sos_respond: the operator answers a safety check-in: sos_response okay ("I'm okay", "I'm fine") or help ("I need help", "I'm hurt"). A bare yes or no is affirm, never sos_respond.
 - wellbeing: set wellbeing_action to break_start when the operator says they are taking a break, break_end when they are back from their break, explain when they ask why Cocoon suggested a break or wellbeing advice, consent_status when they ask what wellbeing data they are sharing. Never grant or revoke consent by voice.
 - unsupported: a capability that does not exist yet (messaging a supervisor without an incident, wellbeing checks). Set unsupported_capability.
 - smalltalk: anything else.
