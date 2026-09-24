@@ -99,14 +99,15 @@ def load_conditions_policy(path: Path | None = None) -> ConditionsPolicy:
 
 def evaluate(policy: ConditionsPolicy, weather: s.WeatherSnapshot | None, coverage: str, *, data_time: datetime,
              now: datetime, task_id: str | None = None, task_type: str | None = None, outdoor: bool | None = True,
-             reason: str | None = None) -> s.ConditionCheck:
+             reason: str | None = None) -> s.WorkingConditionsCheck:
     """Deterministic: the same snapshot, policy and task always give the same check."""
     base = dict(task_id=task_id, policy_version=policy.policy_version, data_time=data_time, checked_at=now)
     if outdoor is False and policy.outdoor_only:
-        return s.ConditionCheck(level="not_applicable", coverage="not_applicable", reason="indoor zone", **base)
+        return s.WorkingConditionsCheck(level="not_applicable", coverage="not_applicable", reason="indoor zone",
+                                        **base)
     if weather is None or coverage in ("unavailable", "misaligned"):
-        return s.ConditionCheck(level="unknown", coverage=coverage if coverage != "fresh" else "unavailable",
-                                reason=reason or "no usable weather", **base)
+        return s.WorkingConditionsCheck(level="unknown", coverage=coverage if coverage != "fresh" else "unavailable",
+                                        reason=reason or "no usable weather", **base)
     findings = []
     for variable in policy.variables:
         lim = policy.limits(variable, task_type)
@@ -129,10 +130,11 @@ def evaluate(policy: ConditionsPolicy, weather: s.WeatherSnapshot | None, covera
     overall = max(known, key=rank) if known else "unknown"
     missing = [f.variable for f in findings if f.level == "unknown"]
     note = reason or (f"not supplied: {', '.join(missing)}" if missing else None)
-    return s.ConditionCheck(level=overall, coverage=coverage, reason=note, findings=findings, weather=weather, **base)
+    return s.WorkingConditionsCheck(level=overall, coverage=coverage, reason=note, findings=findings, weather=weather,
+                                    **base)
 
 
-def start_gate(policy: ConditionsPolicy, check: s.ConditionCheck | None) -> str:
+def start_gate(policy: ConditionsPolicy, check: s.WorkingConditionsCheck | None) -> str:
     """How a task start treats a check: proceed, acknowledge or block. Unknown uses the policy's missing level."""
     if check is None or check.level in ("clear", "not_applicable"):
         return "proceed"

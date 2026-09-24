@@ -1,0 +1,39 @@
+{
+  "schema": "cocoon.duration-estimator.v1",
+  "estimator_version": "demo-estimator-2026-09-24.1",
+  "calibration_status": "uncalibrated_configured_prior",
+  "note": "Configured, NOT fitted. Cocoon_Dataset_v1 (task_history) is not present in this checkout, so nothing here was calibrated on historical outcomes. Every rate and multiplier is a synthetic demo assumption written before evaluation; none was tuned on the five provided benchmark rows. Replace with a calibrated table (chronological train/validation split on task_history) when the dataset is available.",
+  "productivity": {
+    "unit_note": "work units per operating hour, by machine category and task type; the task's work_unit must match",
+    "rates": [
+      {"category": "hydraulic_excavator", "task_type": "earth_excavation", "unit": "m3", "per_hour": 85},
+      {"category": "hydraulic_excavator", "task_type": "trenching", "unit": "m", "per_hour": 30},
+      {"category": "hydraulic_excavator", "task_type": "demolition", "unit": "m3", "per_hour": 22},
+      {"category": "bulldozer", "task_type": "grading", "unit": "m2", "per_hour": 420},
+      {"category": "bulldozer", "task_type": "material_pushing", "unit": "m3", "per_hour": 110},
+      {"category": "wheel_loader", "task_type": "material_loading", "unit": "t", "per_hour": 130},
+      {"category": "wheel_loader", "task_type": "stockpiling", "unit": "m3", "per_hour": 150},
+      {"category": "mining_truck", "task_type": "material_hauling", "unit": "t_km", "per_hour": 210},
+      {"category": "backhoe_loader", "task_type": "utility_trenching", "unit": "m", "per_hour": 34},
+      {"category": "backhoe_loader", "task_type": "backfilling", "unit": "m3", "per_hour": 55}
+    ]
+  },
+  "typical_minutes": {
+    "note": "Last-resort fallback when neither a quantity nor a provided estimate exists (demo assumptions).",
+    "earth_excavation": 60, "trenching": 50, "demolition": 60, "grading": 50, "material_pushing": 45,
+    "material_loading": 60, "stockpiling": 45, "material_hauling": 90, "utility_trenching": 45, "backfilling": 40
+  },
+  "factors": {
+    "ground_condition": {"firm": 1.0, "dry": 1.0, "soft": 1.15, "wet": 1.2, "muddy": 1.3, "rocky": 1.25, "frozen": 1.3},
+    "operator_skill": {"beginner": 1.2, "intermediate": 1.0, "expert": 0.9},
+    "machine_age_years": [{"below": 5, "multiplier": 1.0}, {"below": 10, "multiplier": 1.04},
+                          {"below": 1000, "multiplier": 1.08}],
+    "weather": {
+      "precipitation_rate_mm_h": [{"at_or_above": 4.0, "multiplier": 1.2}, {"at_or_above": 0.5, "multiplier": 1.08}],
+      "wind_gust_ms": [{"at_or_above": 13.0, "multiplier": 1.1}, {"at_or_above": 11.0, "multiplier": 1.04}],
+      "temperature_c": [{"at_or_above": 40.0, "multiplier": 1.1}, {"at_or_above": 35.0, "multiplier": 1.05}],
+      "visibility_m": [{"below": 500.0, "multiplier": 1.15}, {"below": 1000.0, "multiplier": 1.05}]
+    },
+    "categorical_weather": {"sunny": 1.0, "cloudy": 1.0, "rainy": 1.15, "windy": 1.05}
+  }
+}

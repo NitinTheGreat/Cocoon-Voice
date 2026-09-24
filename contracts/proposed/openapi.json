@@ -4740,7 +4740,7 @@
           "conditions": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
@@ -4751,13 +4751,59 @@
           "start_check": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
               }
             ],
             "description": "The saved check the task started under; later weather never rewrites it."
+          },
+          "ground_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Condition",
+            "description": "Synthetic fixture ground condition, if any."
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskDurationEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current saved estimate for this task."
+          },
+          "start_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskDurationEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The estimate in force when the task started; never rewritten afterwards."
+          },
+          "elapsed_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Minutes",
+            "description": "In-progress/completed tasks: wall-clock minutes from started_at to completion (or now). Separate from any estimate."
           }
         },
         "additionalProperties": false,
@@ -5582,114 +5628,74 @@
         "type": "object"
       },
       "ConditionCheck": {
+        "additionalProperties": false,
+        "description": "Pre-task working-condition decision. Workflow advice only; never remote machine control.",
         "properties": {
-          "check_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Check Id",
-            "description": "Set when the check was saved (task start, in-task)."
-          },
           "task_id": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "conditions_id": {
             "anyOf": [
               {
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Task Id"
+            "title": "Conditions Id"
           },
-          "level": {
-            "type": "string",
+          "outcome": {
             "enum": [
               "clear",
               "advisory",
-              "acknowledge",
-              "block",
-              "unknown",
-              "not_applicable"
+              "acknowledgement_required",
+              "policy_block",
+              "conditions_unknown"
             ],
-            "title": "Level"
+            "title": "Outcome",
+            "type": "string"
           },
-          "coverage": {
-            "type": "string",
-            "enum": [
-              "fresh",
-              "stale",
-              "unavailable",
-              "misaligned",
-              "not_applicable"
-            ],
-            "title": "Coverage"
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
           },
-          "reason": {
+          "explanation": {
+            "maxLength": 500,
+            "title": "Explanation",
+            "type": "string"
+          },
+          "recommended_action": {
             "anyOf": [
               {
+                "maxLength": 300,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Reason"
-          },
-          "findings": {
-            "items": {
-              "$ref": "#/components/schemas/ConditionFinding"
-            },
-            "type": "array",
-            "title": "Findings"
-          },
-          "weather": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WeatherSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "policy_version": {
-            "type": "string",
-            "title": "Policy Version"
-          },
-          "data_time": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Data Time",
-            "description": "The session's data clock the conditions were matched to."
-          },
-          "checked_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Checked At"
-          },
-          "acknowledged": {
-            "type": "boolean",
-            "title": "Acknowledged",
-            "description": "The operator confirmed starting despite the findings.",
-            "default": false
+            "default": null,
+            "title": "Recommended Action"
           }
         },
-        "additionalProperties": false,
-        "type": "object",
         "required": [
-          "level",
-          "coverage",
-          "policy_version",
-          "data_time",
-          "checked_at"
+          "task_id",
+          "conditions_id",
+          "outcome",
+          "rule_ids",
+          "explanation"
         ],
         "title": "ConditionCheck",
-        "description": "A deterministic working-conditions check for an outdoor task under a versioned policy.\n\nlevel: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting), block\n(start refused), unknown (no usable weather: shown, never read as fine), not_applicable (indoor zone).\ncoverage: fresh / stale (cached value older than the freshness limit, labelled) / unavailable / misaligned (live\nweather cannot describe a replay's data time) / not_applicable."
+        "type": "object"
       },
       "ConditionFinding": {
         "properties": {
@@ -5782,7 +5788,7 @@
             "title": "Type"
           },
           "check": {
-            "$ref": "#/components/schemas/ConditionCheck"
+            "$ref": "#/components/schemas/WorkingConditionsCheck"
           },
           "task_title": {
             "anyOf": [
@@ -13466,7 +13472,7 @@
           "site_conditions": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
@@ -13642,7 +13648,7 @@
           "site_conditions": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/cocoon_agent__api__schemas__ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
@@ -15708,7 +15714,7 @@
           "condition_check": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/cocoon_agent__contract__telemetry__ConditionCheck"
+                "$ref": "#/components/schemas/ConditionCheck"
               },
               {
                 "type": "null"
@@ -15891,6 +15897,202 @@
         ],
         "title": "TaskDuration"
       },
+      "TaskDurationEstimate": {
+        "properties": {
+          "estimate_id": {
+            "type": "string",
+            "title": "Estimate Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "estimator_version": {
+            "type": "string",
+            "title": "Estimator Version"
+          },
+          "config_sha256": {
+            "type": "string",
+            "title": "Config Sha256"
+          },
+          "calibration_status": {
+            "type": "string",
+            "enum": [
+              "uncalibrated_configured_prior",
+              "calibrated"
+            ],
+            "title": "Calibration Status"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "productivity_with_factors",
+              "provided_estimate_adjusted",
+              "typical_duration_fallback",
+              "not_estimable"
+            ],
+            "title": "Method"
+          },
+          "predicted_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Minutes"
+          },
+          "base_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Minutes"
+          },
+          "base_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Source"
+          },
+          "factors": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDurationFactor"
+            },
+            "type": "array",
+            "title": "Factors"
+          },
+          "missing_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Inputs"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Inputs",
+            "description": "Input snapshot the estimate was computed from."
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "estimate_id",
+          "estimator_version",
+          "config_sha256",
+          "calibration_status",
+          "method",
+          "predicted_minutes",
+          "inputs",
+          "explanation",
+          "created_at"
+        ],
+        "title": "TaskDurationEstimate",
+        "description": "A saved, versioned duration estimate. The explanation lists exactly the factors the calculation applied; no\nstatistical interval is claimed. `calibration_status: uncalibrated_configured_prior` means the configuration was\nnot fitted on historical outcomes. Operator skill here is the dataset/configured skill, never an LMS level."
+      },
+      "TaskDurationFactor": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "ground_condition, operator_skill, machine_age_years, a weather variable, ..."
+          },
+          "value": {
+            "title": "Value"
+          },
+          "multiplier": {
+            "type": "number",
+            "title": "Multiplier"
+          },
+          "effect_minutes": {
+            "type": "number",
+            "title": "Effect Minutes",
+            "description": "Minutes this factor added (negative = removed), applied in order."
+          },
+          "basis": {
+            "type": "string",
+            "title": "Basis",
+            "description": "configured_demo_assumption, fixture_weather or open_meteo_weather."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "value",
+          "multiplier",
+          "effect_minutes",
+          "basis"
+        ],
+        "title": "TaskDurationFactor"
+      },
+      "TaskEstimateAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "task_estimate",
+            "title": "Type"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignedTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskDurationEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "task",
+          "estimate"
+        ],
+        "title": "TaskEstimateAction",
+        "description": "Answer to \"how long will this take?\" from the saved estimate of the current or next task."
+      },
       "TaskRejectedAction": {
         "properties": {
           "type": {
@@ -15931,7 +16133,7 @@
           "conditions": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
@@ -16069,7 +16271,7 @@
           "conditions": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConditionCheck"
+                "$ref": "#/components/schemas/WorkingConditionsCheck"
               },
               {
                 "type": "null"
@@ -17580,6 +17782,9 @@
                   "$ref": "#/components/schemas/ConditionsReportAction"
                 },
                 {
+                  "$ref": "#/components/schemas/TaskEstimateAction"
+                },
+                {
                   "$ref": "#/components/schemas/EscalationRequestedAction"
                 },
                 {
@@ -17609,6 +17814,7 @@
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
                   "task_completed": "#/components/schemas/TaskTransitionAction",
+                  "task_estimate": "#/components/schemas/TaskEstimateAction",
                   "task_rejected": "#/components/schemas/TaskRejectedAction",
                   "task_started": "#/components/schemas/TaskTransitionAction",
                   "training_assigned": "#/components/schemas/TrainingAssignedAction",
@@ -17788,6 +17994,7 @@
                   "next_task": "#/components/schemas/NextTaskAction",
                   "pending_cancelled": "#/components/schemas/PendingCancelledAction",
                   "task_completed": "#/components/schemas/TaskTransitionAction",
+                  "task_estimate": "#/components/schemas/TaskEstimateAction",
                   "task_rejected": "#/components/schemas/TaskRejectedAction",
                   "task_started": "#/components/schemas/TaskTransitionAction",
                   "training_assigned": "#/components/schemas/TrainingAssignedAction",
@@ -17840,6 +18047,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ConditionsReportAction"
+                },
+                {
+                  "$ref": "#/components/schemas/TaskEstimateAction"
                 },
                 {
                   "$ref": "#/components/schemas/EscalationRequestedAction"
@@ -18500,9 +18710,7 @@
         "title": "WellbeingAdvisory",
         "type": "object"
       },
-      "cocoon_agent__api__schemas__ConditionCheck": {
-        "additionalProperties": false,
-        "description": "A deterministic working-conditions check for an outdoor task under a versioned policy.\n\nlevel: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting), block\n(start refused), unknown (no usable weather: shown, never read as fine), not_applicable (indoor zone).\ncoverage: fresh / stale (cached value older than the freshness limit, labelled) / unavailable / misaligned (live\nweather cannot describe a replay's data time) / not_applicable.",
+      "WorkingConditionsCheck": {
         "properties": {
           "check_id": {
             "anyOf": [
@@ -18513,9 +18721,8 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "description": "Set when the check was saved (task start, in-task).",
-            "title": "Check Id"
+            "title": "Check Id",
+            "description": "Set when the check was saved (task start, in-task)."
           },
           "task_id": {
             "anyOf": [
@@ -18526,10 +18733,10 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Task Id"
           },
           "level": {
+            "type": "string",
             "enum": [
               "clear",
               "advisory",
@@ -18538,10 +18745,10 @@
               "unknown",
               "not_applicable"
             ],
-            "title": "Level",
-            "type": "string"
+            "title": "Level"
           },
           "coverage": {
+            "type": "string",
             "enum": [
               "fresh",
               "stale",
@@ -18549,8 +18756,7 @@
               "misaligned",
               "not_applicable"
             ],
-            "title": "Coverage",
-            "type": "string"
+            "title": "Coverage"
           },
           "reason": {
             "anyOf": [
@@ -18561,15 +18767,14 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Reason"
           },
           "findings": {
             "items": {
               "$ref": "#/components/schemas/ConditionFinding"
             },
-            "title": "Findings",
-            "type": "array"
+            "type": "array",
+            "title": "Findings"
           },
           "weather": {
             "anyOf": [
@@ -18579,31 +18784,32 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "policy_version": {
-            "title": "Policy Version",
-            "type": "string"
+            "type": "string",
+            "title": "Policy Version"
           },
           "data_time": {
-            "description": "The session's data clock the conditions were matched to.",
+            "type": "string",
             "format": "date-time",
             "title": "Data Time",
-            "type": "string"
+            "description": "The session's data clock the conditions were matched to."
           },
           "checked_at": {
+            "type": "string",
             "format": "date-time",
-            "title": "Checked At",
-            "type": "string"
+            "title": "Checked At"
           },
           "acknowledged": {
-            "default": false,
-            "description": "The operator confirmed starting despite the findings.",
+            "type": "boolean",
             "title": "Acknowledged",
-            "type": "boolean"
+            "description": "The operator confirmed starting despite the findings.",
+            "default": false
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "level",
           "coverage",
@@ -18611,78 +18817,8 @@
           "data_time",
           "checked_at"
         ],
-        "title": "ConditionCheck",
-        "type": "object"
-      },
-      "cocoon_agent__contract__telemetry__ConditionCheck": {
-        "additionalProperties": false,
-        "description": "Pre-task working-condition decision. Workflow advice only; never remote machine control.",
-        "properties": {
-          "task_id": {
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-            "title": "Task Id",
-            "type": "string"
-          },
-          "conditions_id": {
-            "anyOf": [
-              {
-                "maxLength": 128,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-]{0,127}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conditions Id"
-          },
-          "outcome": {
-            "enum": [
-              "clear",
-              "advisory",
-              "acknowledgement_required",
-              "policy_block",
-              "conditions_unknown"
-            ],
-            "title": "Outcome",
-            "type": "string"
-          },
-          "rule_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Rule Ids",
-            "type": "array"
-          },
-          "explanation": {
-            "maxLength": 500,
-            "title": "Explanation",
-            "type": "string"
-          },
-          "recommended_action": {
-            "anyOf": [
-              {
-                "maxLength": 300,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recommended Action"
-          }
-        },
-        "required": [
-          "task_id",
-          "conditions_id",
-          "outcome",
-          "rule_ids",
-          "explanation"
-        ],
-        "title": "ConditionCheck",
-        "type": "object"
+        "title": "WorkingConditionsCheck",
+        "description": "A deterministic working-conditions check for an outdoor task under a versioned policy.\n\nlevel: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting), block\n(start refused), unknown (no usable weather: shown, never read as fine), not_applicable (indoor zone).\ncoverage: fresh / stale (cached value older than the freshness limit, labelled) / unavailable / misaligned (live\nweather cannot describe a replay's data time) / not_applicable."
       }
     },
     "securitySchemes": {

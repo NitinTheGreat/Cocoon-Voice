@@ -183,7 +183,7 @@ class ConditionFinding(ContractModel):
     basis: Literal["synthetic_demo_assumption", "site_configured", "published_guidance"]
 
 
-class ConditionCheck(ContractModel):
+class WorkingConditionsCheck(ContractModel):
     """A deterministic working-conditions check for an outdoor task under a versioned policy.
 
     level: clear (proceed), advisory (proceed, told), acknowledge (the operator must confirm before starting), block
@@ -202,6 +202,36 @@ class ConditionCheck(ContractModel):
     data_time: datetime = Field(description="The session's data clock the conditions were matched to.")
     checked_at: datetime
     acknowledged: bool = Field(default=False, description="The operator confirmed starting despite the findings.")
+
+
+class TaskDurationFactor(ContractModel):
+    name: str = Field(description="ground_condition, operator_skill, machine_age_years, a weather variable, ...")
+    value: Any
+    multiplier: float
+    effect_minutes: float = Field(description="Minutes this factor added (negative = removed), applied in order.")
+    basis: str = Field(description="configured_demo_assumption, fixture_weather or open_meteo_weather.")
+
+
+class TaskDurationEstimate(ContractModel):
+    """A saved, versioned duration estimate. The explanation lists exactly the factors the calculation applied; no
+    statistical interval is claimed. `calibration_status: uncalibrated_configured_prior` means the configuration was
+    not fitted on historical outcomes. Operator skill here is the dataset/configured skill, never an LMS level."""
+
+    estimate_id: str
+    task_id: str | None = None
+    estimator_version: str
+    config_sha256: str
+    calibration_status: Literal["uncalibrated_configured_prior", "calibrated"]
+    method: Literal["productivity_with_factors", "provided_estimate_adjusted", "typical_duration_fallback",
+                    "not_estimable"]
+    predicted_minutes: float | None
+    base_minutes: float | None = None
+    base_source: str | None = None
+    factors: list[TaskDurationFactor] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
+    inputs: dict[str, Any] = Field(description="Input snapshot the estimate was computed from.")
+    explanation: str
+    created_at: datetime
 
 
 class AssignedTask(ContractModel):
@@ -227,10 +257,17 @@ class AssignedTask(ContractModel):
     weather: TaskConditions
     duration: TaskDuration
     outdoor: bool | None = Field(default=None, description="The task's zone is outdoors (working-condition checks).")
-    conditions: ConditionCheck | None = Field(
+    conditions: WorkingConditionsCheck | None = Field(
         default=None, description="Current working-conditions check for this task (not saved; for display).")
-    start_check: ConditionCheck | None = Field(
+    start_check: WorkingConditionsCheck | None = Field(
         default=None, description="The saved check the task started under; later weather never rewrites it.")
+    ground_condition: str | None = Field(default=None, description="Synthetic fixture ground condition, if any.")
+    estimate: TaskDurationEstimate | None = Field(default=None, description="Current saved estimate for this task.")
+    start_estimate: TaskDurationEstimate | None = Field(
+        default=None, description="The estimate in force when the task started; never rewritten afterwards.")
+    elapsed_minutes: float | None = Field(
+        default=None, description="In-progress/completed tasks: wall-clock minutes from started_at to completion "
+                                  "(or now). Separate from any estimate.")
 
 
 class ShiftInfo(ContractModel):
@@ -626,14 +663,22 @@ class TaskTransitionAction(ContractModel):
     task: AssignedTask
     command_id: str
     created: bool = Field(description="False when this exact command was already committed (retry).")
-    conditions: ConditionCheck | None = Field(default=None, description="The saved start check (task_started).")
+    conditions: WorkingConditionsCheck | None = Field(default=None, description="The saved start check (task_started).")
+
+
+class TaskEstimateAction(ContractModel):
+    """Answer to "how long will this take?" from the saved estimate of the current or next task."""
+
+    type: Literal["task_estimate"]
+    task: AssignedTask | None
+    estimate: TaskDurationEstimate | None
 
 
 class ConditionsReportAction(ContractModel):
     """Answer to "what are the conditions?": the check for the next/current task (or the site when unbound)."""
 
     type: Literal["conditions_report"]
-    check: ConditionCheck
+    check: WorkingConditionsCheck
     task_title: str | None = None
 
 
@@ -677,7 +722,7 @@ class TaskRejectedAction(ContractModel):
     reason: Literal["no_shift", "no_eligible_task", "invalid_transition", "conditions_block",
                     "conditions_need_acknowledgement"]
     current_status: str | None = None
-    conditions: ConditionCheck | None = Field(default=None, description="The check that stopped the start.")
+    conditions: WorkingConditionsCheck | None = Field(default=None, description="The check that stopped the start.")
     task_id: str | None = None
     task_title: str | None = None
 
@@ -699,6 +744,7 @@ ActionResult = Annotated[
         IdleReasonRecordedAction,
         LessonContentAction,
         ConditionsReportAction,
+        TaskEstimateAction,
         EscalationRequestedAction,
         ClarificationAction,
         CapabilityUnavailableAction,
@@ -757,7 +803,7 @@ class SessionState(ContractModel):
     shift_briefing: "ShiftBriefing | None" = None
     rule_coverage: list["RuleCoverage"] = Field(
         default_factory=list, description="Whether each safety rule could evaluate the latest observation.")
-    site_conditions: ConditionCheck | None = Field(
+    site_conditions: WorkingConditionsCheck | None = Field(
         default=None, description="Site conditions at the session's data clock (null when the session has no site).")
 
 

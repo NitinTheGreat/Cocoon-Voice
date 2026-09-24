@@ -21,6 +21,8 @@ from ..auth import Principal, utcnow
 from ..catalog import CatalogError, load_catalog, load_session_bindings
 from ..config import Settings, get_settings
 from ..conditions import Conditions
+from ..estimation import load_estimator
+from ..planning import Planner
 from ..graph.brain import Brain, build_brain
 from ..graph.builder import build_graph
 from ..service import ApiError, CocoonService
@@ -102,15 +104,16 @@ def create_app(settings: Settings | None = None, brain: Brain | None = None,
         weather = injected_weather or WeatherService(settings.weather_mode, fixture_path=settings.weather_fixture_path,
                                                      live=live)
         conditions = Conditions(store, weather, load_conditions_policy(settings.conditions_policy_path))
+        planner = Planner(store, conditions, load_estimator(settings.estimator_config_path), catalog)
         refresher = None
         if weather.live is not None:  # bounded background refresh; lookups never wait for it
             refresher = asyncio.create_task(weather.refresher(store.located_sites(), settings.weather_refresh_seconds,
                                                               utcnow))
         log.info("weather mode=%s policy=%s", settings.weather_mode, conditions.policy.policy_version)
         async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_path)) as saver:
-            graph = build_graph(store, brain, conditions=conditions).compile(checkpointer=saver)
+            graph = build_graph(store, brain, conditions=conditions, planner=planner).compile(checkpointer=saver)
             app.state.service = CocoonService(settings, store, graph, brain, catalog=catalog, bindings=bindings,
-                                              catalog_issue=catalog_issue, conditions=conditions)
+                                              catalog_issue=catalog_issue, conditions=conditions, planner=planner)
             app.state.saver = saver
             log.info("cocoon backend ready llm_mode=%s%s db=%s", brain.mode,
                      " (MOCK: deterministic responses, no provider calls)" if brain.mode == "mock" else "",

@@ -19,7 +19,7 @@ _LABELS = {"temperature_c": ("temperature", "degrees"), "relative_humidity_pct":
            "wind_gust_ms": ("gusts", "metres a second"), "visibility_m": ("visibility", "metres")}
 
 
-def spoken_findings(check: s.ConditionCheck, minimum: str = "advisory") -> str:
+def spoken_findings(check: s.WorkingConditionsCheck, minimum: str = "advisory") -> str:
     """"gusts 14 metres a second, rain 7 millimetres an hour" for findings at or above `minimum`."""
     parts = []
     for f in sorted(check.findings, key=lambda f: -rank(f.level)):
@@ -30,7 +30,7 @@ def spoken_findings(check: s.ConditionCheck, minimum: str = "advisory") -> str:
     return ", ".join(parts)
 
 
-def conditions_sentence(check: s.ConditionCheck) -> str:
+def conditions_sentence(check: s.WorkingConditionsCheck) -> str:
     """One spoken sentence for a check (used by briefings and "what are the conditions?")."""
     if check.level == "not_applicable":
         return "That work is in an indoor zone, so no weather check applies."
@@ -54,7 +54,7 @@ class Conditions:
     def data_time(self, session: s.Session) -> datetime:
         return self.store.data_clock(session.session_id) or self.clock()
 
-    def check(self, session: s.Session, task: s.AssignedTask | None, at: datetime | None = None) -> s.ConditionCheck:
+    def check(self, session: s.Session, task: s.AssignedTask | None, at: datetime | None = None) -> s.WorkingConditionsCheck:
         now = self.clock()
         at = at or self.data_time(session)
         snap, coverage, reason = self.weather.lookup(self.store.get_site(session.site_id), at, now)
@@ -64,12 +64,12 @@ class Conditions:
 
     def gate_for(self, session: s.Session):
         """The task-start gate used inside the start transaction: (check, proceed|acknowledge|block)."""
-        def gate(task: s.AssignedTask) -> tuple[s.ConditionCheck, str]:
+        def gate(task: s.AssignedTask) -> tuple[s.WorkingConditionsCheck, str]:
             check = self.check(session, task)
             return check, start_gate(self.policy, check)
         return gate
 
-    def worsening(self, session: s.Session, observed_at: datetime) -> tuple[RuleOutcome | None, s.ConditionCheck | None]:
+    def worsening(self, session: s.Session, observed_at: datetime) -> tuple[RuleOutcome | None, s.WorkingConditionsCheck | None]:
         """Compare conditions at this observation with the check the in-progress outdoor task started under. An
         episode holds while the level is above both the start level and the policy's announcement minimum; unknown
         weather neither opens nor clears it."""

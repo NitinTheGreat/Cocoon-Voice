@@ -66,7 +66,7 @@ def thread_config(session_id: str) -> RunnableConfig:
 class CocoonService:
     def __init__(self, settings: Settings, store: Store, graph, brain: Brain, catalog: Catalog | None = None,
                  bindings: SessionBindings | None = None, catalog_issue: str | None = None,
-                 conditions: Conditions | None = None):
+                 conditions: Conditions | None = None, planner=None):
         self.settings = settings
         self.store = store
         self.graph = graph  # compiled graph with a durable checkpointer
@@ -76,6 +76,7 @@ class CocoonService:
         self.catalog_issue = catalog_issue
         self.policy: SafetyPolicy = load_policy(settings.safety_policy_path)
         self.conditions = conditions
+        self.planner = planner  # cocoon_agent.planning.Planner (conditions + saved estimates per task)
         self.hazards = HazardEngine(load_hazard_policy(settings.hazard_policy_path))
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         # Telemetry has its own per-session lock: an urgent sample never waits behind a turn's model call.
@@ -105,8 +106,11 @@ class CocoonService:
         parts = [f"Shift briefing for the {machine.model if machine else session.machine_id} at {shift.site_name}, "
                  f"{start:%H:%M} to {end:%H:%M}."]
         if tasks:
-            first = tasks[0]
-            est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
+            first = self.planner.enrich(session, tasks[0]) if self.planner is not None else tasks[0]
+            if first.estimate is not None and first.estimate.predicted_minutes is not None:
+                est = f", about {first.estimate.predicted_minutes:.0f} minutes by the configured demo estimate"
+            else:
+                est = f", about {first.duration.minutes} minutes by the demo estimate" if first.duration.minutes else ""
             parts.append(f"You have {len(tasks)} task{'s' if len(tasks) != 1 else ''}. First: {first.title} in "
                          f"{first.zone_name} at {first.scheduled_start_local}{est}.")
             if self.conditions is not None:
@@ -187,8 +191,11 @@ class CocoonService:
         if req.kind.startswith("task."):
             gate = self.conditions.gate_for(session) if self.conditions is not None and req.kind == "task.start" \
                 else None
-            mutate = Store.task_transition(session, req.kind, req.payload.task_id, req.expected_version, gate,
-                                           acknowledged=bool(req.payload.acknowledge_conditions))
+            mutate = Store.task_transition(
+                session, req.kind, req.payload.task_id, req.expected_version, gate,
+                acknowledged=bool(req.payload.acknowledge_conditions),
+                estimate_for=self.planner.estimate_fn(session) if self.planner is not None and req.kind == "task.start"
+                else None)
             noun = "task"
         else:
             edits = req.payload.model_dump(include={"description", "severity", "severity_unknown", "location_text",
@@ -450,6 +457,8 @@ class CocoonService:
 
     def tasks_with_conditions(self, session: s.Session) -> list[s.AssignedTask]:
         tasks = self.store.list_assigned_tasks(session.shift_id) if session.shift_id else []
+        if self.planner is not None:
+            return [self.planner.enrich(session, t) for t in tasks]
         if self.conditions is None:
             return tasks
         return [t.model_copy(update={"conditions": self.conditions.check(session, t)}) if t.status != "completed"
@@ -534,6 +543,6 @@ class CocoonService:
 
 
 
-def _briefing_conditions(check: s.ConditionCheck) -> str:
+def _briefing_conditions(check: s.WorkingConditionsCheck) -> str:
     sentence = conditions_sentence(check)
     return "Conditions: " + sentence[0].lower() + sentence[1:]

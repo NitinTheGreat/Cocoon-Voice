@@ -19,7 +19,7 @@ import anthropic
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
-from ..api.schemas import Alert, ConditionCheck, IncidentDraft, Lesson
+from ..api.schemas import Alert, WorkingConditionsCheck, IncidentDraft, Lesson
 from ..conditions import conditions_sentence, spoken_findings
 from ..config import Settings
 from ..incident_time import find_expression
@@ -30,11 +30,12 @@ Intent = Literal[
     "next_task", "list_tasks", "start_task", "complete_task",
     "log_incident", "review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm",
     "training", "explain_alert", "record_idle_reason", "answer_pending", "cancel_pending", "unsupported", "smalltalk",
-    "conditions",
+    "conditions", "task_estimate",
 ]
 Branch = Literal["tasks", "safety_incidents", "training", "general_assistance"]
 BRANCH_OF: dict[str, str] = {
     "next_task": "tasks", "list_tasks": "tasks", "start_task": "tasks", "complete_task": "tasks", "conditions": "tasks",
+    "task_estimate": "tasks",
     "log_incident": "safety_incidents", "review_drafts": "safety_incidents", "confirm_draft": "safety_incidents",
     "dismiss_draft": "safety_incidents", "edit_draft": "safety_incidents", "explain_alert": "safety_incidents",
     "answer_pending": "safety_incidents", "record_idle_reason": "safety_incidents",
@@ -156,6 +157,7 @@ _UNSUPPORTED = [
     ("proximity_detection", re.compile(r"\b(how close|proximity|anyone behind|someone behind)\b")),
     ("supervisor_messages", re.compile(r"\b(call|message|text|tell|notify)\b.*\b(supervisor|boss|foreman)\b")),
 ]
+_HOW_LONG = re.compile(r"\bhow long\b|\bhow much time\b|\bwhen will (i|it) (be )?(finish|done)")
 _CONDITIONS = re.compile(r"\b(weather|forecast|conditions|going to rain|raining|windy|wind|visibility|how hot)\b")
 _ACK_START = re.compile(r"\b(start|go ahead|proceed|carry on|continue)\b.*\b(anyway|regardless|anyhow)\b"
                         r"|\b(i understand|acknowledged?|understood)\b")
@@ -279,6 +281,8 @@ class MockBrain:
         for capability, rx in _UNSUPPORTED:
             if rx.search(t):
                 return RouteDecision(intent="unsupported", unsupported_capability=capability)
+        if _HOW_LONG.search(t):
+            return RouteDecision(intent="task_estimate")
         if _CONDITIONS.search(t) and not _START_TASK.search(t):
             return RouteDecision(intent="conditions")
         if _TRAINING.search(t):
@@ -402,8 +406,16 @@ def _template(a: dict[str, Any]) -> str:
         return "Okay, I've dropped that." if a["cancelled"] else "There was nothing to cancel."
     if kind == "assigned_tasks":
         return _tasks_speech(a)
+    if kind == "task_estimate":
+        est, task = a.get("estimate"), a.get("task")
+        if not task:
+            return "I don't have an assigned task to estimate for this session."
+        if not est or est.get("predicted_minutes") is None:
+            return f"I can't estimate {task['title']}: there isn't enough information about it."
+        started = " when you started it" if task.get("start_estimate") else ""
+        return f"For {task['title']}{started}: {est['explanation']}"
     if kind == "conditions_report":
-        check = ConditionCheck.model_validate(a["check"])
+        check = WorkingConditionsCheck.model_validate(a["check"])
         lead = f"For {a['task_title']}: " if a.get("task_title") else "At the site: "
         return lead + conditions_sentence(check)
     if kind in ("task_started", "task_completed"):
@@ -411,7 +423,7 @@ def _template(a: dict[str, Any]) -> str:
         if kind == "task_started":
             text = f"Started {task['title']} in {task['zone_name']}."
             if a.get("conditions"):
-                check = ConditionCheck.model_validate(a["conditions"])
+                check = WorkingConditionsCheck.model_validate(a["conditions"])
                 if check.level == "unknown":
                     text += " Weather isn't available, so check conditions yourself."
                 elif check.level in ("advisory", "acknowledge"):
@@ -420,7 +432,7 @@ def _template(a: dict[str, Any]) -> str:
         return f"Marked {task['title']} as complete."
     if kind == "task_rejected":
         if a["reason"] in ("conditions_block", "conditions_need_acknowledgement"):
-            check = ConditionCheck.model_validate(a["conditions"]) if a.get("conditions") else None
+            check = WorkingConditionsCheck.model_validate(a["conditions"]) if a.get("conditions") else None
             found = spoken_findings(check) if check else "no usable weather"
             if a["reason"] == "conditions_block":
                 return (f"I can't start {a.get('task_title') or 'that task'}: {found}. That's past the demo limit, "
@@ -472,9 +484,11 @@ def _tasks_speech(a: dict[str, Any]) -> str:
         if not tasks:
             return "All your tasks for this shift are done."
         t = tasks[0]
+        est = t.get("start_estimate") or t.get("estimate") or {}
+        about = f", about {est['predicted_minutes']:.0f} minutes" if est.get("predicted_minutes") else ""
         if t["status"] == "in_progress":
-            return f"You're on {t['title']} in {t['zone_name']}."
-        return f"Your next task is {t['title']} in {t['zone_name']}, scheduled for {t['scheduled_start_local']}."
+            return f"You're on {t['title']} in {t['zone_name']}{about}."
+        return f"Your next task is {t['title']} in {t['zone_name']}, scheduled for {t['scheduled_start_local']}{about}."
     if not tasks:
         return "You have no tasks assigned for this shift."
     parts = [f"{t['title']} ({t['status'].replace('_', ' ')})" for t in tasks]
@@ -489,6 +503,7 @@ Choose exactly one intent:
 - list_tasks: the operator asks for all of today's tasks.
 - start_task: the operator says they are starting the next task (or "it"). Set acknowledge_conditions only when they explicitly confirm starting despite a working-conditions warning ("start anyway").
 - conditions: the operator asks about the weather or working conditions (wind, rain, heat, visibility) for their work.
+- task_estimate: the operator asks how long their current or next task will take.
 - complete_task: the operator says they finished the current task.
 - log_incident: the operator wants to report or log an incident, damage, hazard or near miss. Fill incident_description only if they actually described what happened; otherwise leave it null. Fill incident_severity only if they stated a level (low, medium, high, critical); never infer it from how alarming the event sounds. Set severity_unknown if they say they do not know the severity. Copy any phrase saying when it happened ("ten minutes ago", "at 9:30", "this morning") verbatim into incident_time_expression; never compute a timestamp. Fill incident_location only if stated. Set notify_supervisor when they also ask to tell or escalate to a supervisor.
 - review_drafts: the operator asks to hear their draft (unconfirmed) incident reports.

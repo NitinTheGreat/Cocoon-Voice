@@ -56,7 +56,7 @@ def _history(state: CocoonState) -> list[tuple[str, str]]:
     return out
 
 
-def build_graph(store: Store, brain: Brain, conditions=None):
+def build_graph(store: Store, brain: Brain, conditions=None, planner=None):
     """`conditions` (cocoon_agent.conditions.Conditions) enables the working-conditions gate on task starts and the
     conditions intent; without it task starts are ungated (as before Batch C)."""
     def _session(state: CocoonState) -> s.Session:
@@ -109,7 +109,7 @@ def build_graph(store: Store, brain: Brain, conditions=None):
         intent = state["route"]["intent"]
         if intent == "answer_pending":
             return "log_incident"  # the only pending question kind
-        if intent in ("next_task", "list_tasks", "start_task", "complete_task", "conditions"):
+        if intent in ("next_task", "list_tasks", "start_task", "complete_task", "conditions", "task_estimate"):
             return "tasks"
         if intent in ("review_drafts", "confirm_draft", "dismiss_draft", "edit_draft", "affirm"):
             return "drafts"
@@ -124,6 +124,9 @@ def build_graph(store: Store, brain: Brain, conditions=None):
         intent = state["route"]["intent"]
         if intent == "conditions" and not session.shift_id:
             return {"actions": [_conditions_report(session, None)]}
+        if intent == "task_estimate" and not session.shift_id:
+            action = s.TaskEstimateAction(type="task_estimate", task=None, estimate=None)
+            return {"actions": [action.model_dump(mode="json")]}
         if not session.shift_id:
             if intent == "next_task":
                 return {"actions": [s.NextTaskAction(type="next_task", task=store.next_task()).model_dump(mode="json")]}
@@ -134,9 +137,17 @@ def build_graph(store: Store, brain: Brain, conditions=None):
                                               for_action="task.start" if intent == "start_task" else "task.complete")
             return {"actions": [action.model_dump(mode="json")]}
         assigned = store.list_assigned_tasks(session.shift_id)
-        if conditions is not None:
+        if planner is not None:
+            assigned = [planner.enrich(session, t) for t in assigned]
+        elif conditions is not None:
             assigned = [t.model_copy(update={"conditions": conditions.check(session, t)}) if t.status != "completed"
                         else t for t in assigned]
+        if intent == "task_estimate":
+            current = next((t for t in assigned if t.status == "in_progress"), None) or \
+                next((t for t in assigned if t.status == "scheduled"), None)
+            action = s.TaskEstimateAction(type="task_estimate", task=current,
+                                          estimate=(current.start_estimate or current.estimate) if current else None)
+            return {"actions": [action.model_dump(mode="json")]}
         if intent == "conditions":
             current = next((t for t in assigned if t.status == "in_progress"), None) or \
                 next((t for t in assigned if t.status == "scheduled"), None)
@@ -224,8 +235,9 @@ def build_graph(store: Store, brain: Brain, conditions=None):
         pending = state.get("pending")
         keep = None if pending and pending.get("kind") == "task_start_ack" else pending
         try:
-            result, duplicate = _command(state, kind, fingerprint,
-                                         Store.task_transition(session, kind, task_id, None, gate, acknowledged=ack))
+            result, duplicate = _command(state, kind, fingerprint, Store.task_transition(
+                session, kind, task_id, None, gate, acknowledged=ack,
+                estimate_for=planner.estimate_fn(session) if planner is not None else None))
         except NotFound:
             action = s.TaskRejectedAction(type="task_rejected", for_action=kind, reason="no_eligible_task")
             return {"actions": [action.model_dump(mode="json")], "pending": keep}

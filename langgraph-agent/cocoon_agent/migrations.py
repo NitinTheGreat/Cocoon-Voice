@@ -548,6 +548,27 @@ HAZARD_RULES: tuple[str, ...] = (
 )
 
 
+TASK_ESTIMATES: tuple[str, ...] = (
+    # Versioned duration estimates, saved once per task + estimator version + input snapshot.
+    """CREATE TABLE task_estimates (
+    estimate_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    estimator_version TEXT NOT NULL,
+    config_sha256 TEXT NOT NULL,
+    inputs_sha256 TEXT NOT NULL,
+    method TEXT NOT NULL,
+    predicted_minutes REAL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (task_id, config_sha256, inputs_sha256)
+)""",
+    # The estimate in force when a task started (kept when weather or the estimator changes later).
+    "ALTER TABLE task_assignments ADD COLUMN start_estimate_id TEXT",
+    # Synthetic fixture ground condition (estimator input); NULL = not stated.
+    "ALTER TABLE task_assignments ADD COLUMN ground_condition TEXT",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -566,6 +587,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(8, "incident_capture", INCIDENT_CAPTURE),
     Migration(9, "site_conditions", SITE_CONDITIONS),
     Migration(10, "hazard_rules", HAZARD_RULES),
+    Migration(11, "task_estimates", TASK_ESTIMATES),
 )
 
 

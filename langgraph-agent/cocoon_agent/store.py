@@ -83,7 +83,7 @@ class VersionConflict(Exception):
 class ConditionsGate(Exception):
     """A task start stopped by the working-conditions check (block, or a finding that needs acknowledgement)."""
 
-    def __init__(self, reason: str, check: s.ConditionCheck | None, task: s.AssignedTask):
+    def __init__(self, reason: str, check: s.WorkingConditionsCheck | None, task: s.AssignedTask):
         super().__init__(reason)
         self.reason, self.check, self.task = reason, check, task
 
@@ -474,7 +474,7 @@ class Store:
             return result, False
 
     @staticmethod
-    def save_condition_check(c: sqlite3.Connection, session: s.Session, check: s.ConditionCheck, purpose: str) -> str:
+    def save_condition_check(c: sqlite3.Connection, session: s.Session, check: s.WorkingConditionsCheck, purpose: str) -> str:
         """Persist a check and the exact weather values it used (the snapshot row is written once)."""
         check_id = "CHK-" + uuid.uuid4().hex[:12]
         check = check.model_copy(update={"check_id": check_id})
@@ -492,6 +492,35 @@ class Store:
                    check.model_dump_json(), record_id, check.policy_version, iso(check.data_time),
                    int(check.acknowledged), iso(utcnow())))
         return check_id
+
+    @staticmethod
+    def save_estimate(c: sqlite3.Connection, task_id: str, result: dict[str, Any]) -> s.TaskDurationEstimate:
+        """Save an estimate once per task + estimator config + input snapshot; return the saved one."""
+        row = c.execute("SELECT result_json FROM task_estimates WHERE task_id = ? AND config_sha256 = ? AND"
+                        " inputs_sha256 = ?", (task_id, result["config_sha256"], result["inputs_sha256"])).fetchone()
+        if row is not None:
+            return s.TaskDurationEstimate.model_validate_json(row["result_json"])
+        est = s.TaskDurationEstimate(
+            estimate_id="EST-" + uuid.uuid4().hex[:12], task_id=task_id, created_at=utcnow(),
+            **{k: v for k, v in result.items() if k in s.TaskDurationEstimate.model_fields and k != "inputs_sha256"})
+        c.execute("INSERT INTO task_estimates(estimate_id, task_id, estimator_version, config_sha256, inputs_sha256,"
+                  " method, predicted_minutes, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (est.estimate_id, task_id, est.estimator_version, est.config_sha256, result["inputs_sha256"],
+                   est.method, est.predicted_minutes, est.model_dump_json(), iso(est.created_at)))
+        return est
+
+    def estimate_for_task(self, task_id: str, result: dict[str, Any]) -> s.TaskDurationEstimate:
+        with self._tx() as c:
+            return Store.save_estimate(c, task_id, result)
+
+    def fill_task_ground(self, task_id: str, ground: str) -> bool:
+        """Fixture extension: fill the ground condition once; a different stored value is never overwritten."""
+        with self._tx() as c:
+            row = c.execute("SELECT ground_condition FROM task_assignments WHERE task_id = ?", (task_id,)).fetchone()
+            if row is None or row["ground_condition"] is not None:
+                return False
+            c.execute("UPDATE task_assignments SET ground_condition = ? WHERE task_id = ?", (ground, task_id))
+            return True
 
     def get_site(self, site_id: str | None) -> "Site | None":
         if not site_id:
@@ -531,8 +560,10 @@ class Store:
 
     @staticmethod
     def task_transition(session: s.Session, kind: str, task_id: str | None, expected_version: int | None,
-                        check_for: "Callable[[s.AssignedTask], tuple[s.ConditionCheck | None, str]] | None" = None,
-                        acknowledged: bool = False) -> Callable[[sqlite3.Connection], dict[str, Any]]:
+                        check_for: "Callable[[s.AssignedTask], tuple[s.WorkingConditionsCheck | None, str]] | None" = None,
+                        acknowledged: bool = False,
+                        estimate_for: "Callable[[s.AssignedTask], dict[str, Any]] | None" = None,
+                        ) -> Callable[[sqlite3.Connection], dict[str, Any]]:
         """Mutation for task.start / task.complete, scoped to the session's trusted shift.
 
         task.start runs the working-conditions gate on the task actually selected (`check_for` returns the check and
@@ -565,9 +596,13 @@ class Store:
                 if check is not None:
                     check_id = Store.save_condition_check(
                         c, session, check.model_copy(update={"acknowledged": gate == "acknowledge"}), "task_start")
+            estimate_id = None
+            if kind == "task.start" and estimate_for is not None:  # the estimate in force at the start, kept for good
+                estimate_id = Store.save_estimate(c, row["task_id"], estimate_for(_assigned_task(row))).estimate_id
             if kind == "task.start":
                 c.execute("UPDATE task_assignments SET status = 'in_progress', version = version + 1, started_at = ?,"
-                          " updated_at = ?, start_check_id = ? WHERE task_id = ?", (now, now, check_id, row["task_id"]))
+                          " updated_at = ?, start_check_id = ?, start_estimate_id = ? WHERE task_id = ?",
+                          (now, now, check_id, estimate_id, row["task_id"]))
             else:
                 c.execute("UPDATE task_assignments SET status = 'completed', version = version + 1, completed_at = ?,"
                           " updated_at = ? WHERE task_id = ?", (now, now, row["task_id"]))
@@ -1053,7 +1088,7 @@ class Store:
     def apply_observation(self, session: s.Session, req: s.TelemetryRequest, request_hash: str, policy: "SafetyPolicy",
                           machine_category: str | None, announcement_ttl: timedelta,
                           requires_engine_on: bool, outcomes: "list[RuleOutcome] | None" = None,
-                          in_task_check: "s.ConditionCheck | None" = None,
+                          in_task_check: "s.WorkingConditionsCheck | None" = None,
                           evaluate_in_tx: "Callable[[sqlite3.Connection, dict], tuple[list[RuleOutcome], dict]] | None"
                           = None,
                           repeat_in_tx: "Callable[[sqlite3.Connection], list[RuleOutcome]] | None" = None) -> dict[str, Any]:
@@ -1200,7 +1235,7 @@ class Store:
 
     def _rule_outcome(self, c: sqlite3.Connection, session: s.Session, req: s.TelemetryRequest, o: RuleOutcome,
                       now: datetime, ttl: timedelta,
-                      in_task_check: "s.ConditionCheck | None") -> list[tuple[str, str, str | None]]:
+                      in_task_check: "s.WorkingConditionsCheck | None") -> list[tuple[str, str, str | None]]:
         """Open, update or close one C-family episode inside the observation transaction. The opening evidence is
         saved once; a later level change is an `alert_updates` row with its own evidence (announced once per episode
         when it rises); a close records why it closed."""
@@ -1312,11 +1347,12 @@ class Store:
 
 # ---------------------------------------------------------------------- row mappers
 
-_TASK_SQL = ("SELECT t.*, z.name AS zone_name, z.outdoor AS zone_outdoor, si.utc_offset, cc.check_json AS start_check_json"
-             " FROM task_assignments t"
+_TASK_SQL = ("SELECT t.*, z.name AS zone_name, z.outdoor AS zone_outdoor, si.utc_offset, cc.check_json AS start_check_json,"
+             " te.result_json AS start_estimate_json FROM task_assignments t"
              " JOIN site_zones z ON z.site_zone_id = t.site_zone_id"
              " JOIN shifts sh ON sh.shift_id = t.shift_id JOIN sites si ON si.site_id = sh.site_id"
-             " LEFT JOIN condition_checks cc ON cc.check_id = t.start_check_id")
+             " LEFT JOIN condition_checks cc ON cc.check_id = t.start_check_id"
+             " LEFT JOIN task_estimates te ON te.estimate_id = t.start_estimate_id")
 
 
 def _local_hhmm(when: datetime, utc_offset: str) -> str:
@@ -1339,7 +1375,10 @@ def _assigned_task(r: sqlite3.Row) -> s.AssignedTask:
                                  temperature_c=weather.get("temperature_c")),
         duration=s.TaskDuration(minutes=r["duration_minutes"], source=r["duration_source"]),
         outdoor=bool(r["zone_outdoor"]),
-        start_check=s.ConditionCheck.model_validate_json(r["start_check_json"]) if r["start_check_json"] else None,
+        start_check=s.WorkingConditionsCheck.model_validate_json(r["start_check_json"]) if r["start_check_json"] else None,
+        ground_condition=r["ground_condition"],
+        start_estimate=s.TaskDurationEstimate.model_validate_json(r["start_estimate_json"]) if r["start_estimate_json"]
+        else None,
     )
 
 

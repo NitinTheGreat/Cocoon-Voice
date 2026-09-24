@@ -166,6 +166,11 @@ Valid new-session request against the development catalog:
 - `/state.rule_coverage` reports, per rule, whether the latest observation could be evaluated (`evaluated`, `unknown`, `not_applicable`, `not_configured`). Unknown is never "safe".
 - A repeat-violation trigger creates one pending `ApprovalRequest` (`kind: repeated_violations`, `alert_id`) and one coaching assignment. Pending review is not a notification or a decision.
 
+### Duration estimates (C3)
+
+- `AssignedTask.estimate` (`TaskDurationEstimate`) is the saved estimate for the task's current inputs; `start_estimate` is the one in force when the task started and never changes afterwards; `elapsed_minutes` is wall-clock time since the start. `method`: `productivity_with_factors`, `provided_estimate_adjusted`, `typical_duration_fallback`, `not_estimable`. `calibration_status: uncalibrated_configured_prior` means nothing was fitted on historical outcomes.
+- Runtime component names `WorkingConditionsCheck`, `TaskDurationEstimate` and `TaskDurationFactor` are deliberately distinct from the proposed contract's `ConditionCheck`, `DurationEstimate` and `DurationFactor`, which stay as specified in `contracts/proposed/`.
+
 ### Example requests
 
 Bash:

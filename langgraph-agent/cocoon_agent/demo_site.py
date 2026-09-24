@@ -109,6 +109,10 @@ def seed(store: Store, catalog: Catalog, doc: dict[str, Any], service_date: str,
                 t.get("work_quantity"), t.get("work_unit"), weather, t.get("duration_minutes"),
                 "demo_supplied_estimate", now, "synthetic_demo_fixture")))
     report = store.seed_demo_site(rows)
+    for a in doc["assignments"]:  # fixture 1.1 extension: filled once, never overwriting a stored value
+        for t in a["tasks"]:
+            if t.get("ground_condition"):
+                store.fill_task_ground(ids.task_id(a["machine_id"], t["order"]), t["ground_condition"])
     loc = site.get("location")
     if loc:  # trusted coordinates for weather lookups, filled once and never overwritten with other values
         report["site_location_added"] = store.set_site_location(site["site_id"], loc["latitude"], loc["longitude"],

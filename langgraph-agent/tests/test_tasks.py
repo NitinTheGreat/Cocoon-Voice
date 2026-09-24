@@ -90,7 +90,8 @@ def test_voice_task_lifecycle_and_same_turn_retry(tmp_path):
     with TestClient(create_app(settings)) as c:
         sid = session_for(c, "EXC_DEMO_001")["session_id"]
         nxt = say(c, sid, "t1", "what's my next task")
-        assert nxt["speech"] == "Your next task is Excavate the north pit bench in North pit, scheduled for 07:30."
+        assert nxt["speech"] == ("Your next task is Excavate the north pit bench in North pit, scheduled for 07:30, "
+                                 "about 64 minutes.")  # C3: the saved configured estimate is spoken
         started = say(c, sid, "t2", "start the next task")
         action = started["actions"][0]
         assert action["type"] == "task_started" and action["task"]["version"] == 2 and action["created"] is True

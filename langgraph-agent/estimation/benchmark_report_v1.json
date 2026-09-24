@@ -1,0 +1,127 @@
+{
+  "schema": "cocoon.estimator-benchmark-report.v1",
+  "benchmark_version": "provided-5-2026-09-24",
+  "estimator_version": "demo-estimator-2026-09-24.1",
+  "estimator_config_sha256": "c9b7e2f7623f769079d379936fa703cd1cee79276c8cd3112d2caa0c2415026d",
+  "calibration_status": "uncalibrated_configured_prior",
+  "count": 5,
+  "baseline": {
+    "total_abs_error_min": 38,
+    "mae_min": 7.6,
+    "bias_min": -6.0
+  },
+  "estimator": {
+    "total_abs_error_min": 38.0,
+    "mae_min": 7.6,
+    "bias_min": -6.0
+  },
+  "rows": [
+    {
+      "task_id": "T001",
+      "task_type": "earth_excavation",
+      "provided_estimate_min": 60,
+      "provided_actual_min": 58,
+      "baseline_error_min": 2,
+      "method": "provided_estimate_adjusted",
+      "predicted_min": 60.0,
+      "error_min": 2.0,
+      "factors_applied": [],
+      "missing_inputs": [
+        "work_quantity",
+        "machine_identity",
+        "ground_condition",
+        "operator_skill",
+        "machine_age_years",
+        "weather"
+      ]
+    },
+    {
+      "task_id": "T002",
+      "task_type": "trenching",
+      "provided_estimate_min": 45,
+      "provided_actual_min": 52,
+      "baseline_error_min": -7,
+      "method": "provided_estimate_adjusted",
+      "predicted_min": 45.0,
+      "error_min": -7.0,
+      "factors_applied": [],
+      "missing_inputs": [
+        "work_quantity",
+        "machine_identity",
+        "ground_condition",
+        "operator_skill",
+        "machine_age_years",
+        "weather"
+      ]
+    },
+    {
+      "task_id": "T003",
+      "task_type": "material_loading",
+      "provided_estimate_min": 30,
+      "provided_actual_min": 42,
+      "baseline_error_min": -12,
+      "method": "provided_estimate_adjusted",
+      "predicted_min": 30.0,
+      "error_min": -12.0,
+      "factors_applied": [],
+      "missing_inputs": [
+        "work_quantity",
+        "machine_identity",
+        "ground_condition",
+        "operator_skill",
+        "machine_age_years",
+        "weather"
+      ]
+    },
+    {
+      "task_id": "T004",
+      "task_type": "grading",
+      "provided_estimate_min": 35,
+      "provided_actual_min": 33,
+      "baseline_error_min": 2,
+      "method": "provided_estimate_adjusted",
+      "predicted_min": 35.0,
+      "error_min": 2.0,
+      "factors_applied": [],
+      "missing_inputs": [
+        "work_quantity",
+        "machine_identity",
+        "ground_condition",
+        "operator_skill",
+        "machine_age_years",
+        "weather"
+      ]
+    },
+    {
+      "task_id": "T005",
+      "task_type": "demolition",
+      "provided_estimate_min": 90,
+      "provided_actual_min": 105,
+      "baseline_error_min": -15,
+      "method": "provided_estimate_adjusted",
+      "predicted_min": 90.0,
+      "error_min": -15.0,
+      "factors_applied": [],
+      "missing_inputs": [
+        "work_quantity",
+        "machine_identity",
+        "ground_condition",
+        "operator_skill",
+        "machine_age_years",
+        "weather"
+      ]
+    }
+  ],
+  "missing_input_handling": "Reduced path provided_estimate_adjusted for every row: quantity, ground condition and machine identity are absent from the provided rows (DG-14), and the source CSV's weather/skill/age columns are not in this checkout, so no context factor could be applied. Missing inputs were not synthesised.",
+  "audit": {
+    "label": "illustrative_benchmark_not_independent",
+    "actuals_used_for_fitting": false,
+    "reasons": [
+      "No parameter was fitted: the configuration is an uncalibrated prior and the dataset is absent.",
+      "The configuration author had seen the five actual durations (they are printed in the assignment), so the five rows cannot count as an independent holdout even though they were not used for tuning.",
+      "Whether the provided actuals influenced the synthetic dataset's generated targets cannot be audited here: Cocoon_Dataset_v1 and its generator are not in this checkout.",
+      "No synthetic training/validation split was run (no historical data available here)."
+    ]
+  },
+  "conclusion": "no improvement: estimator MAE 7.6 min equals the provided baseline (no context factor was available for these rows)"
+}
